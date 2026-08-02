@@ -1,0 +1,30 @@
+{
+    "name": "nwidart/mailbox",
+    "description": "",
+    "authors": [
+        {
+            "name": "Nicolas Widart",
+            "email": "n.widart@gmail.com"
+        }
+    ],
+    "extra": {
+        "laravel": {
+            "providers": [],
+            "aliases": {
+
+            }
+        }
+    },
+    "autoload": {
+        "psr-4": {
+            "Modules\\Mailbox\\": "app/",
+            "Modules\\Mailbox\\Database\\Factories\\": "database/factories/",
+            "Modules\\Mailbox\\Database\\Seeders\\": "database/seeders/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Modules\\Mailbox\\Tests\\": "tests/"
+        }
+    }
+}
