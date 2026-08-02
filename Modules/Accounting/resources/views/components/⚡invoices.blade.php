@@ -26,10 +26,10 @@ class extends Component
                 ['label' => 'Overdue', 'value' => '—', 'tone' => 'text-destructive'],
             ],
             'invoices' => [
-                ['no' => 'INV-0041', 'client' => 'Northwind Ltd', 'issued' => '2026-07-20', 'due' => '2026-08-19', 'total' => '$2,400.00', 'status' => 'sent'],
-                ['no' => 'INV-0040', 'client' => 'Acme Studio',   'issued' => '2026-07-02', 'due' => '2026-08-01', 'total' => '$980.00',   'status' => 'overdue'],
-                ['no' => 'INV-0039', 'client' => 'Bluepeak',      'issued' => '2026-06-18', 'due' => '2026-07-18', 'total' => '$5,150.00', 'status' => 'paid'],
-                ['no' => 'INV-0038', 'client' => 'Northwind Ltd', 'issued' => '2026-06-01', 'due' => '2026-07-01', 'total' => '$1,200.00', 'status' => 'paid'],
+                ['id' => 41, 'no' => 'INV-0041', 'client' => 'Northwind Ltd', 'issued' => '2026-07-20', 'due' => '2026-08-19', 'total' => '$2,400.00', 'status' => 'sent'],
+                ['id' => 40, 'no' => 'INV-0040', 'client' => 'Acme Studio',   'issued' => '2026-07-02', 'due' => '2026-08-01', 'total' => '$980.00',   'status' => 'overdue'],
+                ['id' => 39, 'no' => 'INV-0039', 'client' => 'Bluepeak',      'issued' => '2026-06-18', 'due' => '2026-07-18', 'total' => '$5,150.00', 'status' => 'paid'],
+                ['id' => 38, 'no' => 'INV-0038', 'client' => 'Northwind Ltd', 'issued' => '2026-06-01', 'due' => '2026-07-01', 'total' => '$1,200.00', 'status' => 'paid'],
             ],
             'badge' => [
                 'draft' => 'kt-badge-outline',
@@ -50,9 +50,14 @@ class extends Component
             <h1 class="text-xl font-semibold text-mono">Invoices</h1>
             <p class="text-sm text-secondary-foreground mt-1">Bill clients and track what is still owed.</p>
         </div>
-        <button class="kt-btn kt-btn-primary gap-2">
-            <i class="ki-filled ki-plus"></i> New invoice
-        </button>
+        <div class="flex items-center gap-2">
+            <a href="{{ route('accounting.recurring') }}" wire:navigate class="kt-btn kt-btn-outline gap-2">
+                <i class="ki-filled ki-arrows-circle"></i> Recurring
+            </a>
+            <a href="{{ route('accounting.invoice-create') }}" wire:navigate class="kt-btn kt-btn-primary gap-2">
+                <i class="ki-filled ki-plus"></i> New invoice
+            </a>
+        </div>
     </div>
 
     <div class="grid grid-cols-1 sm:grid-cols-3 gap-5">
@@ -99,7 +104,10 @@ class extends Component
                     <tbody>
                         @foreach ($invoices as $inv)
                             <tr>
-                                <td class="font-medium text-mono">{{ $inv['no'] }}</td>
+                                <td>
+                                    <a href="{{ route('accounting.invoice-show', ['invoice' => $inv['id']]) }}" wire:navigate
+                                       class="font-medium text-mono hover:text-primary">{{ $inv['no'] }}</a>
+                                </td>
                                 <td>{{ $inv['client'] }}</td>
                                 <td class="text-secondary-foreground">{{ $inv['issued'] }}</td>
                                 <td class="text-secondary-foreground">{{ $inv['due'] }}</td>
@@ -108,9 +116,10 @@ class extends Component
                                     <span class="kt-badge kt-badge-sm {{ $badge[$inv['status']] }}">{{ ucfirst($inv['status']) }}</span>
                                 </td>
                                 <td class="text-end">
-                                    <button class="kt-btn kt-btn-icon kt-btn-ghost size-7">
-                                        <i class="ki-filled ki-dots-vertical text-sm"></i>
-                                    </button>
+                                    <a href="{{ route('accounting.invoice-edit', ['invoice' => $inv['id']]) }}" wire:navigate
+                                       class="kt-btn kt-btn-icon kt-btn-ghost size-7" title="Edit invoice" aria-label="Edit invoice">
+                                        <i class="ki-filled ki-pencil text-sm"></i>
+                                    </a>
                                 </td>
                             </tr>
                         @endforeach

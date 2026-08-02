@@ -44,7 +44,7 @@ class extends Component
             <p class="text-sm text-secondary-foreground mt-1">Lists, subscribers and the suppression file.</p>
         </div>
         <div class="flex items-center gap-2">
-            <button class="kt-btn kt-btn-outline gap-2"><i class="ki-filled ki-file-up"></i> Import CSV</button>
+            <a href="{{ route('mail.contact-import') }}" class="kt-btn kt-btn-outline gap-2"><i class="ki-filled ki-file-up"></i> Import CSV</a>
             <button class="kt-btn kt-btn-primary gap-2"><i class="ki-filled ki-plus"></i> New list</button>
         </div>
     </div>
@@ -74,7 +74,7 @@ class extends Component
                     <p class="text-xs text-muted-foreground mt-2">
                         Hard bounces and complaints land here and are blocked across every provider.
                     </p>
-                    <a href="#" class="kt-btn kt-btn-sm kt-btn-outline w-full justify-center mt-3">View suppressed</a>
+                    <a href="{{ route('mail.suppression') }}" class="kt-btn kt-btn-sm kt-btn-outline w-full justify-center mt-3">View suppressed</a>
                 </div>
             </div>
         </div>

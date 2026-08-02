@@ -1,66 +1,343 @@
 <?php
 
 use Livewire\Attributes\Title;
+use Livewire\Attributes\Url;
 use Livewire\Component;
 
 /**
  * Trello-style board.
  *
- * Frontend phase: lists and cards come from a static fixture so the interaction
- * model (drag between lists, reorder within a list) can be built and reviewed
- * before any persistence exists. The `moveCard` action is already the exact
- * signature the backend will implement — only its body changes later.
+ * Frontend phase: boards, lists and cards come from a static fixture so the
+ * interaction model (drag between lists, reorder within a list, filtering,
+ * inline creation) can be built and reviewed before any persistence exists.
+ * `moveCard`, `addCard` and `addList` already carry the exact signature the
+ * backend will implement — only their bodies change later.
+ *
+ * The card drawer and the board template picker are nested components; this
+ * page opens them by dispatching an event rather than by holding their state.
  */
 new
 #[Title('Boards — Kargah')]
 class extends Component
 {
+    #[Url(as: 'board')]
     public string $activeBoard = 'client-work';
 
-    public function with(): array
+    /** Free-text filter, shared by the toolbar search box and the filter panel. */
+    #[Url]
+    public string $search = '';
+
+    /** @var string[] Label keys the filter is limited to. */
+    #[Url(as: 'label')]
+    public array $filterLabels = [];
+
+    /** @var string[] Member keys the filter is limited to. */
+    #[Url(as: 'who')]
+    public array $filterAssignees = [];
+
+    /** One of '', 'overdue', 'soon', 'none'. */
+    #[Url(as: 'due')]
+    public string $filterDue = '';
+
+    public bool $filterOpen = false;
+
+    public bool $boardPickerOpen = false;
+
+    /** The list whose ⋯ menu is open, if any. */
+    public ?string $listMenuOpen = null;
+
+    /** The list whose inline "add a card" form is open, if any. */
+    public ?string $addingCardIn = null;
+
+    public string $newCardTitle = '';
+
+    public bool $addingList = false;
+
+    public string $newListName = '';
+
+    /** Labels available on this board. */
+    private function labels(): array
     {
         return [
-            'boards' => [
-                ['key' => 'client-work', 'name' => 'Client Work',  'color' => 'bg-primary'],
-                ['key' => 'outreach',    'name' => 'Outreach',     'color' => 'bg-success'],
-                ['key' => 'personal',    'name' => 'Personal',     'color' => 'bg-warning'],
-            ],
-            'lists' => [
+            'copy' => ['name' => 'Copywriting', 'chip' => 'bg-primary/15 text-primary', 'dot' => 'bg-primary'],
+            'outreach' => ['name' => 'Outreach', 'chip' => 'bg-success/15 text-success', 'dot' => 'bg-success'],
+            'dev' => ['name' => 'Development', 'chip' => 'bg-info/15 text-info', 'dot' => 'bg-info'],
+            'bug' => ['name' => 'Bug', 'chip' => 'bg-destructive/15 text-destructive', 'dot' => 'bg-destructive'],
+            'finance' => ['name' => 'Finance', 'chip' => 'bg-warning/15 text-warning', 'dot' => 'bg-warning'],
+            'admin' => ['name' => 'Admin', 'chip' => 'bg-accent/60 text-secondary-foreground', 'dot' => 'bg-muted-foreground'],
+        ];
+    }
+
+    /** People who can be assigned a card. */
+    private function members(): array
+    {
+        return [
+            'nima' => ['name' => 'Nima Fazlipour', 'initials' => 'NF', 'tone' => 'bg-primary/15 text-primary'],
+            'sara' => ['name' => 'Sara Rahimi', 'initials' => 'SR', 'tone' => 'bg-success/15 text-success'],
+            'dan' => ['name' => 'Daniel Whitfield', 'initials' => 'DW', 'tone' => 'bg-info/15 text-info'],
+            'mina' => ['name' => 'Mina Karimi', 'initials' => 'MK', 'tone' => 'bg-warning/15 text-warning'],
+        ];
+    }
+
+    private function boards(): array
+    {
+        return [
+            ['key' => 'client-work', 'name' => 'Client Work', 'color' => 'bg-primary'],
+            ['key' => 'outreach', 'name' => 'Outreach', 'color' => 'bg-success'],
+            ['key' => 'personal', 'name' => 'Personal', 'color' => 'bg-warning'],
+        ];
+    }
+
+    /** Every list of the active board, before filtering. */
+    private function lists(): array
+    {
+        $all = [
+            'client-work' => [
                 [
                     'id' => 'backlog', 'name' => 'Backlog',
                     'cards' => [
-                        ['id' => 1, 'title' => 'Rewrite portfolio landing copy', 'labels' => [['name' => 'copy', 'class' => 'bg-primary/15 text-primary']], 'checklist' => [0, 4], 'due' => null, 'comments' => 2],
-                        ['id' => 2, 'title' => 'Collect testimonials from past clients', 'labels' => [], 'checklist' => [1, 3], 'due' => 'Aug 12', 'comments' => 0],
+                        ['id' => 1, 'title' => 'Rewrite portfolio landing copy', 'labels' => ['copy'], 'assignee' => 'nima', 'due' => null, 'checklist' => [0, 4], 'comments' => 2, 'attachments' => 1],
+                        ['id' => 2, 'title' => 'Collect testimonials from past clients', 'labels' => ['outreach', 'admin'], 'assignee' => 'sara', 'due' => ['label' => 'Aug 12', 'state' => 'later'], 'checklist' => [1, 3], 'comments' => 0, 'attachments' => 0],
+                        ['id' => 8, 'title' => 'Scope the Bluepeak booking widget', 'labels' => ['dev'], 'assignee' => null, 'due' => null, 'checklist' => [0, 0], 'comments' => 0, 'attachments' => 2],
                     ],
                 ],
                 [
                     'id' => 'todo', 'name' => 'To Do',
                     'cards' => [
-                        ['id' => 3, 'title' => 'Send resume to 20 agencies', 'labels' => [['name' => 'outreach', 'class' => 'bg-success/15 text-success']], 'checklist' => [5, 20], 'due' => 'Aug 05', 'comments' => 1],
-                        ['id' => 4, 'title' => 'Fix invoice PDF margins', 'labels' => [['name' => 'bug', 'class' => 'bg-destructive/15 text-destructive']], 'checklist' => [0, 0], 'due' => null, 'comments' => 0],
+                        ['id' => 3, 'title' => 'Send the Northwind retainer proposal', 'labels' => ['outreach'], 'assignee' => 'nima', 'due' => ['label' => 'Aug 05', 'state' => 'soon'], 'checklist' => [5, 20], 'comments' => 1, 'attachments' => 1],
+                        ['id' => 4, 'title' => 'Fix invoice PDF margins', 'labels' => ['bug'], 'assignee' => 'dan', 'due' => null, 'checklist' => [0, 0], 'comments' => 0, 'attachments' => 0],
                     ],
                 ],
                 [
                     'id' => 'doing', 'name' => 'In Progress',
                     'cards' => [
-                        ['id' => 5, 'title' => 'Build Kargah mail module', 'labels' => [['name' => 'dev', 'class' => 'bg-info/15 text-info']], 'checklist' => [3, 9], 'due' => 'Aug 20', 'comments' => 4],
+                        ['id' => 5, 'title' => 'Build the Acme Studio mail module', 'labels' => ['dev'], 'assignee' => 'nima', 'due' => ['label' => 'Aug 20', 'state' => 'later'], 'checklist' => [3, 9], 'comments' => 4, 'attachments' => 3],
                     ],
                 ],
                 [
                     'id' => 'review', 'name' => 'Review',
                     'cards' => [
-                        ['id' => 6, 'title' => 'Q3 expense reconciliation', 'labels' => [['name' => 'finance', 'class' => 'bg-warning/15 text-warning']], 'checklist' => [8, 8], 'due' => 'Aug 01', 'comments' => 0],
+                        ['id' => 6, 'title' => 'Q3 expense reconciliation', 'labels' => ['finance'], 'assignee' => 'mina', 'due' => ['label' => 'Aug 01', 'state' => 'overdue'], 'checklist' => [8, 8], 'comments' => 0, 'attachments' => 1],
                     ],
                 ],
                 [
                     'id' => 'done', 'name' => 'Done',
                     'cards' => [
-                        ['id' => 7, 'title' => 'Register kargah.dev domain', 'labels' => [], 'checklist' => [0, 0], 'due' => null, 'comments' => 0],
+                        ['id' => 7, 'title' => 'Register the kargah.dev domain', 'labels' => ['admin'], 'assignee' => 'nima', 'due' => null, 'checklist' => [0, 0], 'comments' => 0, 'attachments' => 0],
+                    ],
+                ],
+            ],
+            'outreach' => [
+                [
+                    'id' => 'leads', 'name' => 'Leads',
+                    'cards' => [
+                        ['id' => 11, 'title' => 'Orbit Studio — referred by Bluepeak', 'labels' => ['outreach'], 'assignee' => 'nima', 'due' => ['label' => 'Aug 04', 'state' => 'soon'], 'checklist' => [1, 4], 'comments' => 1, 'attachments' => 0],
+                        ['id' => 12, 'title' => 'Follow up with Harbour & Finch', 'labels' => ['outreach'], 'assignee' => 'sara', 'due' => ['label' => 'Jul 28', 'state' => 'overdue'], 'checklist' => [0, 0], 'comments' => 3, 'attachments' => 0],
+                    ],
+                ],
+                [
+                    'id' => 'talking', 'name' => 'In Conversation',
+                    'cards' => [
+                        ['id' => 13, 'title' => 'Northwind Ltd — retainer renewal call', 'labels' => ['finance'], 'assignee' => 'nima', 'due' => ['label' => 'Aug 14', 'state' => 'later'], 'checklist' => [2, 5], 'comments' => 2, 'attachments' => 1],
+                    ],
+                ],
+                [
+                    'id' => 'won', 'name' => 'Won',
+                    'cards' => [
+                        ['id' => 14, 'title' => 'Acme Studio — signed for Q3', 'labels' => ['admin'], 'assignee' => 'nima', 'due' => null, 'checklist' => [0, 0], 'comments' => 0, 'attachments' => 2],
+                    ],
+                ],
+            ],
+            'personal' => [
+                [
+                    'id' => 'admin', 'name' => 'Admin',
+                    'cards' => [
+                        ['id' => 21, 'title' => 'File the Q2 self-assessment', 'labels' => ['finance'], 'assignee' => 'nima', 'due' => ['label' => 'Aug 07', 'state' => 'soon'], 'checklist' => [2, 6], 'comments' => 0, 'attachments' => 1],
+                    ],
+                ],
+                [
+                    'id' => 'learning', 'name' => 'Learning',
+                    'cards' => [
+                        ['id' => 22, 'title' => 'Finish the Livewire 4 upgrade notes', 'labels' => ['dev'], 'assignee' => 'nima', 'due' => null, 'checklist' => [4, 11], 'comments' => 1, 'attachments' => 0],
                     ],
                 ],
             ],
         ];
+
+        return $all[$this->activeBoard] ?? [];
     }
+
+    /** Cards that survive the current filter, list by list. */
+    private function filtered(array $lists): array
+    {
+        return array_map(function (array $list): array {
+            $list['cards'] = array_values(array_filter($list['cards'], function (array $card): bool {
+                if ($this->search !== '' && stripos($card['title'], trim($this->search)) === false) {
+                    return false;
+                }
+
+                if ($this->filterLabels !== [] && array_intersect($this->filterLabels, $card['labels']) === []) {
+                    return false;
+                }
+
+                if ($this->filterAssignees !== [] && ! in_array($card['assignee'], $this->filterAssignees, true)) {
+                    return false;
+                }
+
+                return match ($this->filterDue) {
+                    'overdue' => ($card['due']['state'] ?? null) === 'overdue',
+                    'soon' => in_array($card['due']['state'] ?? null, ['overdue', 'soon'], true),
+                    'none' => $card['due'] === null,
+                    default => true,
+                };
+            }));
+
+            return $list;
+        }, $lists);
+    }
+
+    private function countCards(array $lists): int
+    {
+        return array_sum(array_map(fn (array $list): int => count($list['cards']), $lists));
+    }
+
+    public function with(): array
+    {
+        $lists = $this->lists();
+        $visible = $this->filtered($lists);
+
+        return [
+            'boards' => $this->boards(),
+            'labels' => $this->labels(),
+            'members' => $this->members(),
+            'lists' => $visible,
+            'totalCards' => $this->countCards($lists),
+            'visibleCards' => $this->countCards($visible),
+            'activeFilters' => count($this->filterLabels)
+                + count($this->filterAssignees)
+                + ($this->filterDue !== '' ? 1 : 0)
+                + ($this->search !== '' ? 1 : 0),
+            'dueOptions' => [
+                'overdue' => ['label' => 'Overdue', 'icon' => 'ki-time', 'tone' => 'text-destructive'],
+                'soon' => ['label' => 'Due in the next week', 'icon' => 'ki-calendar', 'tone' => 'text-warning'],
+                'none' => ['label' => 'No due date', 'icon' => 'ki-calendar-remove', 'tone' => 'text-muted-foreground'],
+            ],
+        ];
+    }
+
+    /** The active board's display name, for the heading. */
+    public function boardName(): string
+    {
+        foreach ($this->boards() as $board) {
+            if ($board['key'] === $this->activeBoard) {
+                return $board['name'];
+            }
+        }
+
+        return 'Board';
+    }
+
+    public function selectBoard(string $key): void
+    {
+        $this->activeBoard = $key;
+        $this->boardPickerOpen = false;
+        $this->cancelAddCard();
+        $this->cancelAddList();
+    }
+
+    public function toggleBoardPicker(): void
+    {
+        $this->boardPickerOpen = ! $this->boardPickerOpen;
+        $this->filterOpen = false;
+    }
+
+    public function toggleListMenu(string $listId): void
+    {
+        $this->listMenuOpen = $this->listMenuOpen === $listId ? null : $listId;
+    }
+
+    /* Filtering ---------------------------------------------------------- */
+
+    public function toggleFilterPanel(): void
+    {
+        $this->filterOpen = ! $this->filterOpen;
+        $this->boardPickerOpen = false;
+    }
+
+    public function closeFilterPanel(): void
+    {
+        $this->filterOpen = false;
+    }
+
+    public function toggleLabelFilter(string $key): void
+    {
+        $this->filterLabels = in_array($key, $this->filterLabels, true)
+            ? array_values(array_diff($this->filterLabels, [$key]))
+            : [...$this->filterLabels, $key];
+    }
+
+    public function toggleAssigneeFilter(string $key): void
+    {
+        $this->filterAssignees = in_array($key, $this->filterAssignees, true)
+            ? array_values(array_diff($this->filterAssignees, [$key]))
+            : [...$this->filterAssignees, $key];
+    }
+
+    public function setDueFilter(string $state): void
+    {
+        $this->filterDue = $this->filterDue === $state ? '' : $state;
+    }
+
+    public function clearFilters(): void
+    {
+        $this->search = '';
+        $this->filterLabels = [];
+        $this->filterAssignees = [];
+        $this->filterDue = '';
+    }
+
+    /* Inline creation ---------------------------------------------------- */
+
+    public function startAddCard(string $listId): void
+    {
+        $this->addingCardIn = $listId;
+        $this->newCardTitle = '';
+        $this->addingList = false;
+        $this->listMenuOpen = null;
+    }
+
+    public function cancelAddCard(): void
+    {
+        $this->addingCardIn = null;
+        $this->newCardTitle = '';
+    }
+
+    /** Create a card at the bottom of a list. */
+    public function addCard(string $listId): void
+    {
+        // Backend: persist the card, then clear $newCardTitle and keep the form open.
+    }
+
+    public function startAddList(): void
+    {
+        $this->addingList = true;
+        $this->newListName = '';
+        $this->addingCardIn = null;
+    }
+
+    public function cancelAddList(): void
+    {
+        $this->addingList = false;
+        $this->newListName = '';
+    }
+
+    /** Create a list at the end of the board. */
+    public function addList(): void
+    {
+        // Backend: persist the list, then clear $newListName and keep the form open.
+    }
+
+    /* Card and list actions ---------------------------------------------- */
 
     /**
      * Called by Sortable when a card is dropped.
@@ -71,22 +348,45 @@ class extends Component
         // no-op during the frontend phase
     }
 
-    public function selectBoard(string $key): void
+    /** Open the card drawer, which listens for this event. */
+    public function openCard(int $cardId): void
     {
-        $this->activeBoard = $key;
+        $this->dispatch('open-card', cardId: $cardId);
+    }
+
+    /** Open the board template picker, which listens for this event. */
+    public function openTemplates(): void
+    {
+        $this->dispatch('open-board-templates');
+    }
+
+    public function archiveList(string $listId): void
+    {
+        // Backend: archive the list and every card still in it.
+    }
+
+    public function archiveCardsInList(string $listId): void
+    {
+        // Backend: archive the cards but keep the empty list on the board.
     }
 };
 
 ?>
 
-<div class="flex flex-col gap-5 h-full" wire:ignore.self>
+<div class="flex flex-col gap-5 h-full">
 
     {{-- Board toolbar --}}
-    <div class="flex flex-wrap items-center justify-between gap-3">
+    <div class="flex flex-wrap items-start justify-between gap-3">
+
         <div class="flex items-center gap-3">
-            <h1 class="text-xl font-semibold text-mono">Boards</h1>
-            <div class="kt-dropdown" data-kt-dropdown="true" data-kt-dropdown-trigger="click" data-kt-dropdown-placement="bottom-start">
-                <button class="kt-btn kt-btn-outline gap-2" data-kt-dropdown-toggle="true">
+            <div>
+                <h1 class="text-xl font-semibold text-mono">{{ $this->boardName() }}</h1>
+                <p class="text-sm text-secondary-foreground mt-1">Everything you owe a client, in the order you will do it.</p>
+            </div>
+
+            {{-- Board picker --}}
+            <div class="relative">
+                <button wire:click="toggleBoardPicker" class="kt-btn kt-btn-outline gap-2" aria-haspopup="true" aria-expanded="{{ $boardPickerOpen ? 'true' : 'false' }}">
                     @foreach ($boards as $b)
                         @if ($b['key'] === $activeBoard)
                             <span class="size-2.5 rounded-full {{ $b['color'] }}"></span>
@@ -95,15 +395,22 @@ class extends Component
                     @endforeach
                     <i class="ki-filled ki-down text-xs"></i>
                 </button>
-                <div class="kt-dropdown-content w-[220px]" data-kt-dropdown-content="true">
+
+                <div class="kt-dropdown absolute z-20 mt-1 w-[240px] start-0 {{ $boardPickerOpen ? 'open' : '' }}">
                     <div class="p-2 flex flex-col gap-1">
                         @foreach ($boards as $b)
                             <button wire:click="selectBoard('{{ $b['key'] }}')"
-                                    class="kt-btn kt-btn-ghost justify-start gap-2 {{ $b['key'] === $activeBoard ? 'bg-accent/60' : '' }}">
+                                    class="kt-btn kt-btn-ghost justify-start gap-2 w-full {{ $b['key'] === $activeBoard ? 'bg-accent/60' : '' }}">
                                 <span class="size-2.5 rounded-full {{ $b['color'] }}"></span>
                                 {{ $b['name'] }}
                             </button>
                         @endforeach
+                    </div>
+                    <div class="border-t border-border p-2">
+                        <a href="{{ route('projects.board-settings', ['board' => $activeBoard]) }}" wire:navigate
+                           class="kt-btn kt-btn-ghost justify-start gap-2 w-full">
+                            <i class="ki-filled ki-setting-2 text-sm"></i> Board settings
+                        </a>
                     </div>
                 </div>
             </div>
@@ -112,12 +419,103 @@ class extends Component
         <div class="flex items-center gap-2">
             <div class="kt-input max-w-[220px]">
                 <i class="ki-filled ki-magnifier text-muted-foreground"></i>
-                <input type="text" placeholder="Search cards…">
+                <input type="text" placeholder="Search cards…" aria-label="Search cards"
+                       wire:model.live.debounce.300ms="search">
             </div>
-            <button class="kt-btn kt-btn-outline kt-btn-icon" title="Filter">
-                <i class="ki-filled ki-filter"></i>
-            </button>
-            <button class="kt-btn kt-btn-primary gap-2">
+
+            {{-- Filter panel --}}
+            <div class="relative">
+                <button wire:click="toggleFilterPanel"
+                        class="kt-btn kt-btn-outline gap-2 {{ $activeFilters > 0 ? 'border-primary/30 text-primary' : '' }}"
+                        aria-haspopup="true" aria-expanded="{{ $filterOpen ? 'true' : 'false' }}">
+                    <i class="ki-filled ki-filter"></i>
+                    Filter
+                    @if ($activeFilters > 0)
+                        <span class="kt-badge kt-badge-sm kt-badge-primary">{{ $activeFilters }}</span>
+                    @endif
+                </button>
+
+                <div class="kt-dropdown absolute z-20 mt-1 end-0 w-[320px] {{ $filterOpen ? 'open' : '' }}" wire:keydown.escape="closeFilterPanel">
+
+                    <div class="flex items-center justify-between gap-2 px-4 py-3 border-b border-border">
+                        <h3 class="text-sm font-semibold text-mono">Filter cards</h3>
+                        <button wire:click="closeFilterPanel" class="kt-btn kt-btn-icon kt-btn-ghost size-7"
+                                title="Close filters" aria-label="Close filters">
+                            <i class="ki-filled ki-cross text-sm"></i>
+                        </button>
+                    </div>
+
+                    <div class="flex flex-col gap-4 px-4 py-4 max-h-[420px] overflow-y-auto kt-scrollable-y">
+
+                        <div class="flex flex-col gap-1.5">
+                            <label class="kt-form-label text-xs" for="filter-query">Card text</label>
+                            <input id="filter-query" type="text" class="kt-input" placeholder="Words in the card title"
+                                   wire:model.live.debounce.300ms="search">
+                        </div>
+
+                        <div class="flex flex-col gap-2">
+                            <span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Labels</span>
+                            @foreach ($labels as $key => $label)
+                                <button wire:click="toggleLabelFilter('{{ $key }}')"
+                                        class="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-start hover:bg-accent/60 {{ in_array($key, $filterLabels, true) ? 'bg-accent/60' : '' }}">
+                                    <span class="size-3 rounded-sm {{ $label['dot'] }}"></span>
+                                    <span class="grow text-secondary-foreground">{{ $label['name'] }}</span>
+                                    @if (in_array($key, $filterLabels, true))
+                                        <i class="ki-filled ki-check text-sm text-primary"></i>
+                                    @endif
+                                </button>
+                            @endforeach
+                        </div>
+
+                        <div class="flex flex-col gap-2">
+                            <span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Members</span>
+                            @foreach ($members as $key => $member)
+                                <button wire:click="toggleAssigneeFilter('{{ $key }}')"
+                                        class="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-start hover:bg-accent/60 {{ in_array($key, $filterAssignees, true) ? 'bg-accent/60' : '' }}">
+                                    <span class="size-6 rounded-full grid place-items-center text-[10px] font-semibold {{ $member['tone'] }}">{{ $member['initials'] }}</span>
+                                    <span class="grow text-secondary-foreground">{{ $member['name'] }}</span>
+                                    @if (in_array($key, $filterAssignees, true))
+                                        <i class="ki-filled ki-check text-sm text-primary"></i>
+                                    @endif
+                                </button>
+                            @endforeach
+                        </div>
+
+                        <div class="flex flex-col gap-2">
+                            <span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Due date</span>
+                            @foreach ($dueOptions as $key => $option)
+                                <button wire:click="setDueFilter('{{ $key }}')"
+                                        class="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-start hover:bg-accent/60 {{ $filterDue === $key ? 'bg-accent/60' : '' }}">
+                                    <i class="ki-filled {{ $option['icon'] }} text-sm {{ $option['tone'] }}"></i>
+                                    <span class="grow text-secondary-foreground">{{ $option['label'] }}</span>
+                                    @if ($filterDue === $key)
+                                        <i class="ki-filled ki-check text-sm text-primary"></i>
+                                    @endif
+                                </button>
+                            @endforeach
+                        </div>
+                    </div>
+
+                    <div class="flex items-center justify-between gap-2 px-4 py-3 border-t border-border">
+                        <span class="text-xs text-muted-foreground" wire:loading.remove wire:target="search">
+                            Showing {{ $visibleCards }} of {{ $totalCards }} cards
+                        </span>
+                        <span class="text-xs text-muted-foreground" wire:loading wire:target="search">
+                            <i class="ki-filled ki-loading animate-spin"></i> Filtering…
+                        </span>
+                        <button wire:click="clearFilters" class="kt-btn kt-btn-sm kt-btn-ghost" @disabled($activeFilters === 0)>
+                            Clear all
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <a href="{{ route('projects.board-settings', ['board' => $activeBoard]) }}" wire:navigate
+               class="kt-btn kt-btn-outline kt-btn-icon" title="Board settings" aria-label="Board settings">
+                <i class="ki-filled ki-setting-2"></i>
+            </a>
+
+            <button wire:click="openTemplates" class="kt-btn kt-btn-primary gap-2">
                 <i class="ki-filled ki-plus"></i> New board
             </button>
         </div>
@@ -127,34 +525,57 @@ class extends Component
     <div class="flex gap-4 overflow-x-auto pb-4 kt-scrollable-x items-start" id="kargah-board">
 
         @foreach ($lists as $list)
-            <div class="kt-card w-[290px] shrink-0 bg-muted/40" data-list-id="{{ $list['id'] }}">
+            <div class="kt-card w-[290px] shrink-0 bg-muted/40" data-list-id="{{ $list['id'] }}" wire:key="list-{{ $list['id'] }}">
 
                 <div class="flex items-center justify-between px-4 py-3">
                     <div class="flex items-center gap-2">
                         <h3 class="text-sm font-semibold text-mono">{{ $list['name'] }}</h3>
                         <span class="kt-badge kt-badge-sm kt-badge-outline">{{ count($list['cards']) }}</span>
                     </div>
-                    <button class="kt-btn kt-btn-icon kt-btn-ghost size-7">
-                        <i class="ki-filled ki-dots-horizontal text-sm"></i>
-                    </button>
+
+                    <div class="relative">
+                        <button wire:click="toggleListMenu('{{ $list['id'] }}')" class="kt-btn kt-btn-icon kt-btn-ghost size-7"
+                                title="List actions" aria-label="List actions">
+                            <i class="ki-filled ki-dots-horizontal text-sm"></i>
+                        </button>
+                        <div class="kt-dropdown absolute z-20 end-0 mt-1 w-[210px] {{ $listMenuOpen === $list['id'] ? 'open' : '' }}">
+                            <div class="p-2 flex flex-col gap-1">
+                                <button wire:click="startAddCard('{{ $list['id'] }}')" class="kt-btn kt-btn-ghost justify-start gap-2 w-full">
+                                    <i class="ki-filled ki-plus text-sm"></i> Add a card
+                                </button>
+                                <button wire:click="archiveCardsInList('{{ $list['id'] }}')" class="kt-btn kt-btn-ghost justify-start gap-2 w-full">
+                                    <i class="ki-filled ki-archive text-sm"></i> Archive the cards
+                                </button>
+                                <button wire:click="archiveList('{{ $list['id'] }}')" class="kt-btn kt-btn-ghost justify-start gap-2 w-full text-destructive">
+                                    <i class="ki-filled ki-trash text-sm"></i> Archive this list
+                                </button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="kargah-list flex flex-col gap-2 px-3 pb-3 min-h-[60px]" data-list="{{ $list['id'] }}">
-                    @foreach ($list['cards'] as $card)
-                        <div class="kt-card bg-background border border-border rounded-lg p-3 cursor-grab hover:border-primary/40 transition-colors active:cursor-grabbing"
+                    @forelse ($list['cards'] as $card)
+                        <div wire:click="openCard({{ $card['id'] }})"
+                             wire:key="card-{{ $card['id'] }}"
+                             role="button" tabindex="0"
+                             aria-label="Open card {{ $card['title'] }}"
+                             class="kt-card bg-background border border-border rounded-lg p-3 cursor-grab hover:border-primary/40 transition-colors active:cursor-grabbing"
                              data-card-id="{{ $card['id'] }}">
 
                             @if (count($card['labels']))
                                 <div class="flex flex-wrap gap-1 mb-2">
-                                    @foreach ($card['labels'] as $label)
-                                        <span class="text-[10px] font-medium px-1.5 py-0.5 rounded {{ $label['class'] }}">{{ $label['name'] }}</span>
+                                    @foreach ($card['labels'] as $labelKey)
+                                        <span class="text-[10px] font-medium px-1.5 py-0.5 rounded {{ $labels[$labelKey]['chip'] }}">
+                                            {{ $labels[$labelKey]['name'] }}
+                                        </span>
                                     @endforeach
                                 </div>
                             @endif
 
                             <p class="text-sm text-mono leading-snug">{{ $card['title'] }}</p>
 
-                            @if ($card['checklist'][1] > 0 || $card['due'] || $card['comments'] > 0)
+                            @if ($card['checklist'][1] > 0 || $card['due'] || $card['comments'] > 0 || $card['attachments'] > 0 || $card['assignee'])
                                 <div class="flex items-center gap-3 mt-2.5 text-xs text-muted-foreground">
                                     @if ($card['checklist'][1] > 0)
                                         <span class="inline-flex items-center gap-1 {{ $card['checklist'][0] === $card['checklist'][1] ? 'text-success' : '' }}">
@@ -163,8 +584,8 @@ class extends Component
                                         </span>
                                     @endif
                                     @if ($card['due'])
-                                        <span class="inline-flex items-center gap-1">
-                                            <i class="ki-filled ki-calendar text-sm"></i>{{ $card['due'] }}
+                                        <span class="inline-flex items-center gap-1 {{ $card['due']['state'] === 'overdue' ? 'text-destructive' : ($card['due']['state'] === 'soon' ? 'text-warning' : '') }}">
+                                            <i class="ki-filled ki-calendar text-sm"></i>{{ $card['due']['label'] }}
                                         </span>
                                     @endif
                                     @if ($card['comments'] > 0)
@@ -172,25 +593,87 @@ class extends Component
                                             <i class="ki-filled ki-message-text-2 text-sm"></i>{{ $card['comments'] }}
                                         </span>
                                     @endif
+                                    @if ($card['attachments'] > 0)
+                                        <span class="inline-flex items-center gap-1">
+                                            <i class="ki-filled ki-paper-clip text-sm"></i>{{ $card['attachments'] }}
+                                        </span>
+                                    @endif
+                                    @if ($card['assignee'])
+                                        <span class="ms-auto size-6 rounded-full grid place-items-center text-[10px] font-semibold {{ $members[$card['assignee']]['tone'] }}"
+                                              title="{{ $members[$card['assignee']]['name'] }}">
+                                            {{ $members[$card['assignee']]['initials'] }}
+                                        </span>
+                                    @endif
                                 </div>
                             @endif
                         </div>
-                    @endforeach
+                    @empty
+                        <p class="text-xs text-muted-foreground text-center py-4">
+                            {{ $activeFilters > 0 ? 'No cards match the filter.' : 'Nothing in this list yet.' }}
+                        </p>
+                    @endforelse
                 </div>
 
-                <button class="kt-btn kt-btn-ghost w-full justify-start gap-2 text-sm text-secondary-foreground px-4 py-2.5 rounded-b-lg">
-                    <i class="ki-filled ki-plus text-sm"></i> Add a card
-                </button>
+                {{-- Inline card creation --}}
+                @if ($addingCardIn === $list['id'])
+                    <div class="flex flex-col gap-2 px-3 pb-3">
+                        <textarea rows="2" class="kt-textarea" autofocus
+                                  aria-label="New card title"
+                                  placeholder="e.g. Draft the Northwind scope document"
+                                  wire:model="newCardTitle"
+                                  wire:keydown.escape="cancelAddCard"
+                                  wire:keydown.enter.prevent="addCard('{{ $list['id'] }}')"></textarea>
+                        <div class="flex items-center gap-2">
+                            <button wire:click="addCard('{{ $list['id'] }}')"
+                                    wire:loading.attr="disabled" wire:target="addCard"
+                                    class="kt-btn kt-btn-sm kt-btn-primary gap-1">
+                                <span wire:loading.remove wire:target="addCard">Add card</span>
+                                <span wire:loading wire:target="addCard"><i class="ki-filled ki-loading animate-spin"></i> Adding…</span>
+                            </button>
+                            <button wire:click="cancelAddCard" class="kt-btn kt-btn-sm kt-btn-ghost">Cancel</button>
+                            <span class="text-[11px] text-muted-foreground ms-auto">Enter to add, Esc to cancel</span>
+                        </div>
+                    </div>
+                @else
+                    <button wire:click="startAddCard('{{ $list['id'] }}')"
+                            class="kt-btn kt-btn-ghost w-full justify-start gap-2 text-sm text-secondary-foreground px-4 py-2.5 rounded-b-lg">
+                        <i class="ki-filled ki-plus text-sm"></i> Add a card
+                    </button>
+                @endif
             </div>
         @endforeach
 
-        {{-- Add list --}}
-        <button class="kt-card w-[290px] shrink-0 bg-muted/20 border border-dashed border-border hover:border-primary/50 transition-colors">
-            <span class="flex items-center gap-2 px-4 py-4 text-sm text-secondary-foreground">
-                <i class="ki-filled ki-plus"></i> Add another list
-            </span>
-        </button>
+        {{-- Inline list creation --}}
+        @if ($addingList)
+            <div class="kt-card w-[290px] shrink-0 bg-muted/40 p-3 flex flex-col gap-2">
+                <input type="text" class="kt-input" autofocus
+                       aria-label="New list name"
+                       placeholder="e.g. Waiting on client"
+                       wire:model="newListName"
+                       wire:keydown.escape="cancelAddList"
+                       wire:keydown.enter.prevent="addList">
+                <div class="flex items-center gap-2">
+                    <button wire:click="addList" wire:loading.attr="disabled" wire:target="addList"
+                            class="kt-btn kt-btn-sm kt-btn-primary gap-1">
+                        <span wire:loading.remove wire:target="addList">Add list</span>
+                        <span wire:loading wire:target="addList"><i class="ki-filled ki-loading animate-spin"></i> Adding…</span>
+                    </button>
+                    <button wire:click="cancelAddList" class="kt-btn kt-btn-sm kt-btn-ghost">Cancel</button>
+                </div>
+            </div>
+        @else
+            <button wire:click="startAddList"
+                    class="kt-card w-[290px] shrink-0 bg-muted/20 border border-dashed border-border hover:border-primary/50 transition-colors">
+                <span class="flex items-center gap-2 px-4 py-4 text-sm text-secondary-foreground">
+                    <i class="ki-filled ki-plus"></i> Add another list
+                </span>
+            </button>
+        @endif
     </div>
+
+    {{-- Nested components --}}
+    <livewire:project::card-detail />
+    <livewire:project::board-templates />
 </div>
 
 @push('scripts')

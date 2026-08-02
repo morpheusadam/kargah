@@ -5,61 +5,80 @@
      * Each module contributes one top-level group. Adding a module means adding
      * one entry here — nothing else in the layout needs to change.
      */
+    /**
+     * `route` is the link target. `match` (optional) is the pattern that keeps the
+     * item highlighted on that section's detail pages — without it, opening an
+     * invoice would un-highlight Invoices.
+     */
     $nav = [
         [
             'label' => 'Projects',
             'icon'  => 'ki-abstract-26',
-            'match' => 'projects*',
+            'match' => 'projects.*',
             'items' => [
-                ['label' => 'Boards',   'route' => 'projects.boards'],
-                ['label' => 'Archive',  'route' => 'projects.archive'],
+                ['label' => 'Boards',  'route' => 'projects.boards',  'match' => ['projects.boards', 'projects.board-settings']],
+                ['label' => 'Archive', 'route' => 'projects.archive'],
             ],
         ],
         [
             'label' => 'Accounting',
             'icon'  => 'ki-dollar',
-            'match' => 'accounting*',
+            'match' => 'accounting.*',
             'items' => [
-                ['label' => 'Invoices', 'route' => 'accounting.invoices'],
-                ['label' => 'Expenses', 'route' => 'accounting.expenses'],
-                ['label' => 'Clients',  'route' => 'accounting.clients'],
-                ['label' => 'Reports',  'route' => 'accounting.reports'],
+                ['label' => 'Invoices',  'route' => 'accounting.invoices', 'match' => ['accounting.invoices', 'accounting.invoice-*']],
+                ['label' => 'Recurring', 'route' => 'accounting.recurring'],
+                ['label' => 'Expenses',  'route' => 'accounting.expenses', 'match' => ['accounting.expenses', 'accounting.expense-*']],
+                ['label' => 'Clients',   'route' => 'accounting.clients',  'match' => ['accounting.clients', 'accounting.client-*']],
+                ['label' => 'Reports',   'route' => 'accounting.reports'],
             ],
         ],
         [
             'label' => 'Mail',
             'icon'  => 'ki-sms',
-            'match' => 'mail*',
+            'match' => 'mail.*',
             'items' => [
-                ['label' => 'Inbox',     'route' => 'mail.inbox'],
-                ['label' => 'Campaigns', 'route' => 'mail.campaigns'],
-                ['label' => 'Contacts',  'route' => 'mail.contacts'],
-                ['label' => 'Providers', 'route' => 'mail.providers'],
+                ['label' => 'Inbox',       'route' => 'mail.inbox'],
+                ['label' => 'Campaigns',   'route' => 'mail.campaigns', 'match' => ['mail.campaigns', 'mail.campaign-*']],
+                ['label' => 'Contacts',    'route' => 'mail.contacts',  'match' => ['mail.contacts', 'mail.contact-*']],
+                ['label' => 'Providers',   'route' => 'mail.providers', 'match' => ['mail.providers', 'mail.provider-*']],
+                ['label' => 'Suppression', 'route' => 'mail.suppression'],
             ],
         ],
         [
             'label' => 'Data',
             'icon'  => 'ki-folder',
-            'match' => 'data*',
+            'match' => 'data.*',
             'items' => [
                 ['label' => 'Files',        'route' => 'data.files'],
-                ['label' => 'Passwords',    'route' => 'data.passwords'],
-                ['label' => 'Links & Bots', 'route' => 'data.links'],
-                ['label' => 'GitHub Repos', 'route' => 'data.repos'],
-                ['label' => 'Backups',      'route' => 'data.backups'],
+                ['label' => 'Passwords',    'route' => 'data.passwords', 'match' => ['data.passwords', 'data.credential-*']],
+                ['label' => 'Links & Bots', 'route' => 'data.links',     'match' => ['data.links', 'data.link-*']],
+                ['label' => 'GitHub Repos', 'route' => 'data.repos',     'match' => ['data.repos', 'data.repo-*']],
+                ['label' => 'Backups',      'route' => 'data.backups',   'match' => ['data.backups', 'data.backup-*']],
             ],
         ],
         [
             'label' => 'Social',
             'icon'  => 'ki-share',
-            'match' => 'social*',
+            'match' => 'social.*',
             'items' => [
                 ['label' => 'Notifications', 'route' => 'social.notifications'],
                 ['label' => 'Publish',       'route' => 'social.publish'],
-                ['label' => 'Accounts',      'route' => 'social.accounts'],
+                ['label' => 'Calendar',      'route' => 'social.calendar'],
+                ['label' => 'Queue',         'route' => 'social.posts',    'match' => ['social.posts', 'social.post-*']],
+                ['label' => 'Accounts',      'route' => 'social.accounts', 'match' => ['social.accounts', 'social.account-*']],
             ],
         ],
     ];
+
+    // Drop anything whose module has been disabled rather than blowing up on route().
+    $nav = collect($nav)
+        ->map(fn (array $group) => [
+            ...$group,
+            'items' => collect($group['items'])->filter(fn ($i) => Route::has($i['route']))->values()->all(),
+        ])
+        ->filter(fn (array $group) => count($group['items']) > 0)
+        ->values()
+        ->all();
 @endphp
 
 <div class="kt-sidebar bg-background border-e border-e-border fixed top-0 bottom-0 z-20 hidden lg:flex flex-col items-stretch shrink-0 [--kt-drawer-enable:true] lg:[--kt-drawer-enable:false]"
@@ -128,7 +147,8 @@
 
                         <div class="kt-menu-accordion gap-1 ps-[10px] relative before:absolute before:start-[20px] before:top-0 before:bottom-0 before:border-s before:border-border">
                             @foreach ($group['items'] as $item)
-                                <div class="kt-menu-item {{ request()->routeIs($item['route']) ? 'active' : '' }}">
+                                @php $itemActive = request()->routeIs(...($item['match'] ?? [$item['route']])); @endphp
+                                <div class="kt-menu-item {{ $itemActive ? 'active' : '' }}">
                                     <a class="kt-menu-link border border-transparent items-center grow kt-menu-item-active:bg-accent/60 kt-menu-item-active:rounded-lg hover:bg-accent/60 hover:rounded-lg gap-[14px] ps-[10px] pe-[10px] py-[8px]"
                                        href="{{ route($item['route']) }}"
                                        tabindex="0">

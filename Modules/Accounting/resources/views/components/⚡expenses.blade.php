@@ -32,9 +32,9 @@ class extends Component
             <h1 class="text-xl font-semibold text-mono">Expenses</h1>
             <p class="text-sm text-secondary-foreground mt-1">What the business costs you to run.</p>
         </div>
-        <button class="kt-btn kt-btn-primary gap-2">
+        <a href="{{ route('accounting.expense-create') }}" wire:navigate class="kt-btn kt-btn-primary gap-2">
             <i class="ki-filled ki-plus"></i> Record expense
-        </button>
+        </a>
     </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">

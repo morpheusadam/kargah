@@ -21,7 +21,7 @@ class extends Component
                 [
                     'name' => 'Brevo', 'driver' => 'brevo', 'stream' => 'Marketing',
                     'domain' => 'news.kargah.dev', 'quota' => 300, 'used' => 0,
-                    'health' => 100, 'status' => 'connected', 'icon' => 'ki-send',
+                    'health' => 100, 'status' => 'connected', 'icon' => 'ki-paper-plane',
                 ],
                 [
                     'name' => 'Resend', 'driver' => 'resend', 'stream' => 'Transactional',
@@ -86,7 +86,7 @@ class extends Component
                     </div>
 
                     <div class="flex items-center gap-2 text-sm">
-                        <i class="ki-filled ki-global text-muted-foreground text-base"></i>
+                        <i class="ki-filled ki-map text-muted-foreground text-base"></i>
                         <span class="text-secondary-foreground truncate">{{ $p['domain'] }}</span>
                     </div>
 
@@ -105,9 +105,9 @@ class extends Component
                         <span class="text-sm font-medium {{ $p['health'] >= 80 ? 'text-success' : 'text-warning' }}">{{ $p['health'] }}%</span>
                     </div>
 
-                    <button class="kt-btn kt-btn-outline w-full justify-center gap-2">
+                    <a href="{{ route('mail.provider-edit', $p['driver']) }}" class="kt-btn kt-btn-outline w-full justify-center gap-2">
                         <i class="ki-filled ki-setting-2"></i> Configure
-                    </button>
+                    </a>
 
                 </div>
             </div>

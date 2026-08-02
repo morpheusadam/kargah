@@ -28,6 +28,21 @@
         {{-- Right side --}}
         <div class="flex items-center gap-2 lg:gap-3.5">
 
+            <button type="button"
+                    onclick="window.Livewire && Livewire.dispatch('palette-open')"
+                    class="hidden md:flex items-center gap-2 h-9 px-3 rounded-lg border border-border text-sm text-muted-foreground hover:border-primary/40 transition-colors"
+                    title="Search (Ctrl+K)">
+                <i class="ki-filled ki-magnifier text-base"></i>
+                <span>Search…</span>
+                <kbd class="ms-6 text-[10px] px-1.5 py-0.5 rounded border border-border">Ctrl K</kbd>
+            </button>
+
+            <button type="button"
+                    onclick="window.Livewire && Livewire.dispatch('palette-open')"
+                    class="kt-btn kt-btn-icon kt-btn-ghost size-9 md:hidden" title="Search">
+                <i class="ki-filled ki-magnifier text-lg"></i>
+            </button>
+
             <button class="kt-btn kt-btn-icon kt-btn-ghost size-9" data-kt-toggle="html" data-kt-toggle-class="dark" title="Toggle theme">
                 <i class="ki-filled ki-moon text-lg dark:hidden"></i>
                 <i class="ki-filled ki-sun text-lg hidden dark:inline"></i>
@@ -39,19 +54,31 @@
             </button>
 
             {{-- User menu --}}
-            <div class="kt-dropdown" data-kt-dropdown="true" data-kt-dropdown-offset="10px, 10px" data-kt-dropdown-placement="bottom-end" data-kt-dropdown-trigger="click">
-                <button class="flex items-center gap-2 cursor-pointer" data-kt-dropdown-toggle="true">
+            <div data-kt-dropdown="true" data-kt-dropdown-offset="10px, 10px" data-kt-dropdown-placement="bottom-end" data-kt-dropdown-trigger="click">
+                <button class="flex items-center gap-2 cursor-pointer" data-kt-dropdown-toggle="true" aria-label="Account menu">
                     <span class="inline-flex items-center justify-center size-9 rounded-full bg-primary/10 text-primary text-sm font-semibold">
                         {{ strtoupper(substr(auth()->user()?->name ?? 'K', 0, 1)) }}
                     </span>
                 </button>
 
-                <div class="kt-dropdown-content w-[220px]" data-kt-dropdown-content="true">
+                <div class="kt-dropdown-menu w-[220px] p-0" data-kt-dropdown-menu="true">
                     <div class="px-4 py-3 border-b border-border">
                         <div class="text-sm font-semibold text-mono truncate">{{ auth()->user()?->name ?? 'Guest' }}</div>
                         <div class="text-xs text-secondary-foreground truncate">{{ auth()->user()?->email }}</div>
                     </div>
-                    <div class="p-2">
+                    <div class="p-2 flex flex-col gap-0.5">
+                        <a href="{{ route('settings.profile') }}" class="kt-btn kt-btn-ghost w-full justify-start gap-2">
+                            <i class="ki-filled ki-user text-base"></i> Profile
+                        </a>
+                        <a href="{{ route('settings.appearance') }}" class="kt-btn kt-btn-ghost w-full justify-start gap-2">
+                            <i class="ki-filled ki-color-swatch text-base"></i> Appearance
+                        </a>
+                        <a href="{{ route('settings.security') }}" class="kt-btn kt-btn-ghost w-full justify-start gap-2">
+                            <i class="ki-filled ki-shield-tick text-base"></i> Security
+                        </a>
+
+                        <div class="border-t border-border my-1"></div>
+
                         <form method="POST" action="{{ route('logout') }}">
                             @csrf
                             <button type="submit" class="kt-btn kt-btn-ghost w-full justify-start gap-2 text-destructive">

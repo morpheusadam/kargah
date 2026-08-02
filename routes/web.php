@@ -22,6 +22,14 @@ Route::middleware('guest')->group(function () {
 Route::middleware('auth')->group(function () {
     Route::livewire('/dashboard', 'pages::dashboard')->name('dashboard');
 
+    Route::prefix('settings')->name('settings.')->group(function () {
+        Route::redirect('/', '/settings/profile');
+        Route::livewire('/profile', 'pages::settings.profile')->name('profile');
+        Route::livewire('/security', 'pages::settings.security')->name('security');
+        Route::livewire('/appearance', 'pages::settings.appearance')->name('appearance');
+        Route::livewire('/notifications', 'pages::settings.notifications')->name('notifications');
+    });
+
     Route::post('/logout', function (Request $request) {
         Auth::logout();
         $request->session()->invalidate();

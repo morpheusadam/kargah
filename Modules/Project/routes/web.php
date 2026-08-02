@@ -10,4 +10,5 @@ use Illuminate\Support\Facades\Route;
 Route::middleware('auth')->prefix('projects')->name('projects.')->group(function () {
     Route::livewire('/', 'project::boards')->name('boards');
     Route::livewire('/archive', 'project::archive')->name('archive');
+    Route::livewire('/{board}/settings', 'project::board-settings')->name('board-settings');
 });

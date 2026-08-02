@@ -25,7 +25,7 @@ class extends Component
         return [
             'kinds' => [
                 'all'      => ['label' => 'All',       'icon' => 'ki-element-11'],
-                'bot'      => ['label' => 'Telegram bots', 'icon' => 'ki-send'],
+                'bot'      => ['label' => 'Telegram bots', 'icon' => 'ki-paper-plane'],
                 'project'  => ['label' => 'Projects',  'icon' => 'ki-rocket'],
                 'panel'    => ['label' => 'Panels',    'icon' => 'ki-setting-2'],
                 'resource' => ['label' => 'Resources', 'icon' => 'ki-book'],
@@ -106,7 +106,7 @@ class extends Component
         @empty
             <div class="col-span-full kt-card">
                 <div class="kt-card-content flex flex-col items-center py-14 text-center">
-                    <i class="ki-filled ki-link text-4xl text-muted-foreground mb-3"></i>
+                    <i class="ki-filled ki-arrow-up-right text-4xl text-muted-foreground mb-3"></i>
                     <p class="text-sm text-secondary-foreground">No links saved yet.</p>
                 </div>
             </div>

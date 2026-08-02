@@ -14,10 +14,10 @@ class extends Component
         return [
             'filters' => ['all' => 'All', 'draft' => 'Draft', 'scheduled' => 'Scheduled', 'sending' => 'Sending', 'sent' => 'Sent'],
             'campaigns' => [
-                ['name' => 'Resume — design agencies UK', 'list' => 'Agencies UK', 'recipients' => 240, 'sent' => 240, 'opens' => '38%', 'clicks' => '9%', 'bounces' => '1.2%', 'status' => 'sent',      'when' => 'Jul 22'],
-                ['name' => 'Follow-up #1',                'list' => 'Agencies UK', 'recipients' => 186, 'sent' => 186, 'opens' => '31%', 'clicks' => '6%', 'bounces' => '0.5%', 'status' => 'sent',      'when' => 'Jul 29'],
-                ['name' => 'Resume — startups DE',        'list' => 'Startups DE', 'recipients' => 310, 'sent' => 0,   'opens' => '—',   'clicks' => '—',  'bounces' => '—',    'status' => 'scheduled', 'when' => 'Aug 05'],
-                ['name' => 'Newsletter draft',            'list' => '—',           'recipients' => 0,   'sent' => 0,   'opens' => '—',   'clicks' => '—',  'bounces' => '—',    'status' => 'draft',     'when' => '—'],
+                ['id' => 1, 'name' => 'Resume — design agencies UK', 'list' => 'Agencies UK', 'recipients' => 240, 'sent' => 240, 'opens' => '38%', 'clicks' => '9%', 'bounces' => '1.2%', 'status' => 'sent',      'when' => 'Jul 22'],
+                ['id' => 2, 'name' => 'Follow-up #1',                'list' => 'Agencies UK', 'recipients' => 186, 'sent' => 186, 'opens' => '31%', 'clicks' => '6%', 'bounces' => '0.5%', 'status' => 'sent',      'when' => 'Jul 29'],
+                ['id' => 3, 'name' => 'Resume — startups DE',        'list' => 'Startups DE', 'recipients' => 310, 'sent' => 0,   'opens' => '—',   'clicks' => '—',  'bounces' => '—',    'status' => 'scheduled', 'when' => 'Aug 05'],
+                ['id' => 4, 'name' => 'Newsletter draft',            'list' => '—',           'recipients' => 0,   'sent' => 0,   'opens' => '—',   'clicks' => '—',  'bounces' => '—',    'status' => 'draft',     'when' => '—'],
             ],
             'badge' => [
                 'draft' => 'kt-badge-outline', 'scheduled' => 'kt-badge-info',
@@ -36,9 +36,9 @@ class extends Component
             <h1 class="text-xl font-semibold text-mono">Campaigns</h1>
             <p class="text-sm text-secondary-foreground mt-1">Bulk sends, throttled across your providers.</p>
         </div>
-        <button class="kt-btn kt-btn-primary gap-2">
+        <a href="{{ route('mail.campaign-create') }}" class="kt-btn kt-btn-primary gap-2">
             <i class="ki-filled ki-plus"></i> New campaign
-        </button>
+        </a>
     </div>
 
     <div class="kt-card">
@@ -71,7 +71,11 @@ class extends Component
                     <tbody>
                         @foreach ($campaigns as $c)
                             <tr>
-                                <td class="font-medium text-mono">{{ $c['name'] }}</td>
+                                <td>
+                                    <a href="{{ route('mail.campaign-show', $c['id']) }}" class="font-medium text-mono hover:text-primary">
+                                        {{ $c['name'] }}
+                                    </a>
+                                </td>
                                 <td class="text-secondary-foreground">{{ $c['list'] }}</td>
                                 <td class="text-end">{{ $c['recipients'] ?: '—' }}</td>
                                 <td class="text-end">{{ $c['opens'] }}</td>

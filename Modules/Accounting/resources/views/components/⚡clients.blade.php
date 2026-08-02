@@ -13,9 +13,9 @@ class extends Component
     {
         return [
             'clients' => [
-                ['name' => 'Northwind Ltd', 'contact' => 'Sam Okafor',  'email' => 'sam@northwind.example',  'country' => 'UK', 'billed' => '$14,200', 'open' => 1],
-                ['name' => 'Acme Studio',   'contact' => 'Rita Vance',  'email' => 'rita@acme.example',      'country' => 'US', 'billed' => '$6,880',  'open' => 1],
-                ['name' => 'Bluepeak',      'contact' => 'Jonas Reyes', 'email' => 'jonas@bluepeak.example', 'country' => 'DE', 'billed' => '$5,150',  'open' => 0],
+                ['id' => 1, 'name' => 'Northwind Ltd', 'contact' => 'Sam Okafor',  'email' => 'sam@northwind.example',  'country' => 'UK', 'billed' => '$14,200.00', 'open' => 1],
+                ['id' => 2, 'name' => 'Acme Studio',   'contact' => 'Rita Vance',  'email' => 'rita@acme.example',      'country' => 'US', 'billed' => '$6,880.00',  'open' => 1],
+                ['id' => 3, 'name' => 'Bluepeak',      'contact' => 'Jonas Reyes', 'email' => 'jonas@bluepeak.example', 'country' => 'DE', 'billed' => '$5,150.00',  'open' => 0],
             ],
         ];
     }
@@ -47,15 +47,16 @@ class extends Component
                 <div class="kt-card-content p-5 flex flex-col gap-4">
 
                     <div class="flex items-start justify-between gap-3">
-                        <div class="flex items-center gap-3 min-w-0">
+                        <a href="{{ route('accounting.client-show', ['client' => $c['id']]) }}" wire:navigate
+                           class="flex items-center gap-3 min-w-0 group">
                             <span class="inline-flex items-center justify-center size-11 rounded-lg bg-primary/10 text-primary font-semibold shrink-0">
                                 {{ strtoupper(substr($c['name'], 0, 2)) }}
                             </span>
                             <div class="min-w-0">
-                                <div class="font-semibold text-mono truncate">{{ $c['name'] }}</div>
+                                <div class="font-semibold text-mono truncate group-hover:text-primary">{{ $c['name'] }}</div>
                                 <div class="text-sm text-secondary-foreground truncate">{{ $c['contact'] }}</div>
                             </div>
-                        </div>
+                        </a>
                         <span class="kt-badge kt-badge-sm kt-badge-outline shrink-0">{{ $c['country'] }}</span>
                     </div>
 

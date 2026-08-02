@@ -22,7 +22,7 @@ class extends Component
         return [
             'networks' => [
                 'all'       => ['label' => 'All',       'icon' => 'ki-element-11', 'tone' => 'text-primary'],
-                'telegram'  => ['label' => 'Telegram',  'icon' => 'ki-send',       'tone' => 'text-info'],
+                'telegram'  => ['label' => 'Telegram',  'icon' => 'ki-paper-plane',       'tone' => 'text-info'],
                 'linkedin'  => ['label' => 'LinkedIn',  'icon' => 'ki-abstract-41','tone' => 'text-info'],
                 'x'         => ['label' => 'X',         'icon' => 'ki-abstract-39','tone' => 'text-foreground'],
                 'instagram' => ['label' => 'Instagram', 'icon' => 'ki-instagram',  'tone' => 'text-destructive'],

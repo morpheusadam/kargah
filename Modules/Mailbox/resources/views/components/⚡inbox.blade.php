@@ -28,7 +28,7 @@ class extends Component
             'folders' => [
                 ['key' => 'inbox',    'label' => 'Inbox',    'icon' => 'ki-sms',            'count' => 3],
                 ['key' => 'starred',  'label' => 'Starred',  'icon' => 'ki-star',           'count' => 0],
-                ['key' => 'sent',     'label' => 'Sent',     'icon' => 'ki-send',           'count' => 0],
+                ['key' => 'sent',     'label' => 'Sent',     'icon' => 'ki-paper-plane',           'count' => 0],
                 ['key' => 'drafts',   'label' => 'Drafts',   'icon' => 'ki-notepad-edit',   'count' => 1],
                 ['key' => 'replies',  'label' => 'Campaign replies', 'icon' => 'ki-message-programming', 'count' => 0],
                 ['key' => 'bounces',  'label' => 'Bounces',  'icon' => 'ki-shield-cross',   'count' => 0],
@@ -62,7 +62,7 @@ class extends Component
             <button class="kt-btn kt-btn-outline gap-2">
                 <i class="ki-filled ki-arrows-circle"></i> Sync now
             </button>
-            <button class="kt-btn kt-btn-primary gap-2">
+            <button class="kt-btn kt-btn-primary gap-2" wire:click="$dispatch('open-compose')">
                 <i class="ki-filled ki-pencil"></i> Compose
             </button>
         </div>
@@ -164,7 +164,7 @@ class extends Component
                                 <button class="kt-btn kt-btn-icon kt-btn-ghost size-8"><i class="ki-filled ki-picture text-base"></i></button>
                             </div>
                             <button class="kt-btn kt-btn-primary gap-2">
-                                <i class="ki-filled ki-send"></i> Send reply
+                                <i class="ki-filled ki-paper-plane"></i> Send reply
                             </button>
                         </div>
                     </div>
@@ -178,4 +178,7 @@ class extends Component
         </div>
 
     </div>
+
+    {{-- Composer. Opened by the Compose button above via the `open-compose` event. --}}
+    <livewire:mailbox::compose />
 </div>
