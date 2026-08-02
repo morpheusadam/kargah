@@ -207,8 +207,23 @@ re-mount after Livewire updates:
 @endpush
 ```
 
-Globals the layout actually loads: `ApexCharts`, `FullCalendar`, `Sortable`, `KTMenu`, `KTDrawer`,
-`KTDropdown`, `KTModal`, jQuery.
+Globals the layout loads on **every** page: `Sortable`, `KTMenu`, `KTDrawer`, `KTDropdown`,
+`KTModal`, jQuery. That is the whole list, and it should stay short — the layout is the one file
+whose weight every page pays for.
+
+Anything heavy and single-purpose is loaded by the page that needs it, from `@push('scripts')`,
+with the init guarded:
+
+| Library | Size | Path |
+| --- | --- | --- |
+| ApexCharts | 563 KB | `/assets/vendors/apexcharts/apexcharts.min.js` (+ its CSS) |
+| FullCalendar | 277 KB | `/assets/vendors/fullcalendar/index.global.min.js` |
+| TinyMCE | large | `/assets/vendors/tinymce/tinymce.min.js` |
+| DataTables | — | `/assets/vendors/datatables-net/…` |
+| Dropzone | — | `/assets/vendors/dropzone/…` |
+
+Loading ApexCharts and FullCalendar globally once added 854 KB to every page and made the
+single-threaded dev server queue requests until they timed out. Do not put them back.
 
 Two caveats that have already cost time:
 

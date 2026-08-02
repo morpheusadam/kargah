@@ -10,7 +10,6 @@
     <link rel="icon" href="/assets/media/app/favicon.ico">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="/assets/vendors/keenicons/styles.bundle.css" rel="stylesheet">
-    <link href="/assets/vendors/apexcharts/apexcharts.css" rel="stylesheet">
     <link href="/assets/css/styles.css" rel="stylesheet">
     {{-- Utilities the prebuilt theme bundle does not contain. See docs/theme.md. --}}
     <link href="/assets/css/kargah.css" rel="stylesheet">
@@ -73,12 +72,15 @@
 
 @include('partials.toasts')
 
+{{--
+    Only what every page needs. Heavy single-purpose libraries (ApexCharts 563 KB,
+    FullCalendar 277 KB, TinyMCE, DataTables, Dropzone) are loaded by the page that
+    uses them via @push('scripts'), not from here — see docs/frontend-conventions.md.
+--}}
 <script src="/assets/js/core.bundle.js"></script>
 <script src="/assets/vendors/ktui/ktui.min.js"></script>
-<script src="/assets/vendors/apexcharts/apexcharts.min.js"></script>
 {{-- The theme bundles Sortable as a webpack module with no global, so ship it separately. --}}
 <script src="/vendor/sortablejs/Sortable.min.js"></script>
-<script src="/assets/vendors/fullcalendar/index.global.min.js"></script>
 <script src="/assets/js/layouts/demo1.js"></script>
 
 @livewireScripts

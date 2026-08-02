@@ -2,16 +2,18 @@
     /**
      * Sidebar navigation.
      *
-     * Each module contributes one top-level group. Adding a module means adding
-     * one entry here — nothing else in the layout needs to change.
-     */
-    /**
-     * `route` is the link target. `match` (optional) is the pattern that keeps the
-     * item highlighted on that section's detail pages — without it, opening an
-     * invoice would un-highlight Invoices.
+     * `route` is the link target. `match` (optional) is the set of patterns that
+     * keeps an item highlighted on that section's detail pages — without it,
+     * opening an invoice would un-highlight Invoices.
+     *
+     * The accordion is driven by this file's own JavaScript rather than KTUI:
+     * the theme's controller does not pick up a menu rendered inside a Livewire
+     * layout, which left every group permanently collapsed and made the whole
+     * sidebar look dead.
      */
     $nav = [
         [
+            'key'   => 'projects',
             'label' => 'Projects',
             'icon'  => 'ki-abstract-26',
             'match' => 'projects.*',
@@ -21,6 +23,7 @@
             ],
         ],
         [
+            'key'   => 'accounting',
             'label' => 'Accounting',
             'icon'  => 'ki-dollar',
             'match' => 'accounting.*',
@@ -33,6 +36,7 @@
             ],
         ],
         [
+            'key'   => 'mail',
             'label' => 'Mail',
             'icon'  => 'ki-sms',
             'match' => 'mail.*',
@@ -45,6 +49,7 @@
             ],
         ],
         [
+            'key'   => 'data',
             'label' => 'Data',
             'icon'  => 'ki-folder',
             'match' => 'data.*',
@@ -57,6 +62,7 @@
             ],
         ],
         [
+            'key'   => 'social',
             'label' => 'Social',
             'icon'  => 'ki-share',
             'match' => 'social.*',
@@ -91,10 +97,11 @@
             <span class="inline-flex items-center justify-center size-8 rounded-lg bg-primary text-primary-foreground font-bold text-sm shrink-0">K</span>
             <span class="kt-sidebar-collapse:hidden text-lg font-semibold text-mono tracking-tight">Kargah</span>
         </a>
-        <button class="kt-btn kt-btn-outline kt-btn-icon size-[30px] absolute start-full top-2/4 -translate-x-2/4 -translate-y-2/4 rtl:translate-x-2/4"
+        <button class="kt-btn kt-btn-outline kt-btn-icon size-[30px] absolute start-full top-2/4 -translate-x-2/4 -translate-y-2/4"
                 data-kt-toggle="body"
                 data-kt-toggle-class="kt-sidebar-collapse"
-                id="sidebar_toggle">
+                id="sidebar_toggle"
+                aria-label="Collapse sidebar">
             <i class="ki-filled ki-black-left-line kt-toggle-active:rotate-180 transition-all duration-300"></i>
         </button>
     </div>
@@ -108,16 +115,18 @@
              data-kt-scrollable-wrappers="#sidebar_content"
              id="sidebar_scrollable">
 
-            <div class="kt-menu flex flex-col grow gap-1" data-kt-menu="true" data-kt-menu-accordion-expand-all="false" id="sidebar_menu">
+            <nav class="kt-menu kt-menu-default flex flex-col grow gap-1" id="sidebar_menu" aria-label="Main">
 
-                {{-- Dashboard: single link, no accordion --}}
-                <div class="kt-menu-item {{ request()->routeIs('dashboard') ? 'active' : '' }}">
-                    <a class="kt-menu-link flex items-center grow border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] rounded-lg hover:bg-accent/60 kt-menu-item-active:bg-accent/60"
-                       href="{{ route('dashboard') }}">
-                        <span class="kt-menu-icon items-start text-muted-foreground w-[20px]">
+                {{-- Dashboard: a plain link, no accordion --}}
+                @php $dashActive = request()->routeIs('dashboard'); @endphp
+                <div class="kt-menu-item {{ $dashActive ? 'active' : '' }}">
+                    <a class="kt-menu-link flex items-center grow border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] rounded-lg hover:bg-accent/60 {{ $dashActive ? 'bg-accent/60' : '' }}"
+                       href="{{ route('dashboard') }}"
+                       @if ($dashActive) aria-current="page" @endif>
+                        <span class="kt-menu-icon items-start w-[20px] {{ $dashActive ? 'text-primary' : 'text-muted-foreground' }}">
                             <i class="ki-filled ki-element-11 text-lg"></i>
                         </span>
-                        <span class="kt-menu-title text-sm font-medium text-foreground kt-menu-item-active:text-primary kt-menu-link-hover:!text-primary">
+                        <span class="kt-menu-title text-sm {{ $dashActive ? 'text-primary font-semibold' : 'text-foreground font-medium' }}">
                             Dashboard
                         </span>
                     </a>
@@ -126,34 +135,42 @@
                 <div class="border-b border-border my-2"></div>
 
                 @foreach ($nav as $group)
-                    @php $groupActive = request()->routeIs($group['match']); @endphp
+                    @php
+                        $groupActive = request()->routeIs($group['match']);
+                        // A group starts open when one of its pages is on screen; the rest
+                        // of the time the client script restores whatever the user chose.
+                        $groupOpen = $groupActive;
+                    @endphp
 
-                    <div class="kt-menu-item {{ $groupActive ? 'show' : '' }}"
-                         data-kt-menu-item-toggle="accordion"
-                         data-kt-menu-item-trigger="click">
+                    <div class="kt-menu-item {{ $groupOpen ? 'show' : '' }}" data-kargah-group="{{ $group['key'] }}">
 
-                        <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px]" tabindex="0">
-                            <span class="kt-menu-icon items-start text-muted-foreground w-[20px]">
+                        <button type="button"
+                                class="kt-menu-link flex items-center grow w-full cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] rounded-lg hover:bg-accent/40 text-start"
+                                data-kargah-accordion
+                                aria-expanded="{{ $groupOpen ? 'true' : 'false' }}"
+                                aria-controls="submenu-{{ $group['key'] }}">
+                            <span class="kt-menu-icon items-start w-[20px] {{ $groupActive ? 'text-primary' : 'text-muted-foreground' }}">
                                 <i class="ki-filled {{ $group['icon'] }} text-lg"></i>
                             </span>
-                            <span class="kt-menu-title text-sm font-medium text-foreground kt-menu-item-active:text-primary kt-menu-link-hover:!text-primary">
+                            <span class="kt-menu-title text-sm font-medium {{ $groupActive ? 'text-primary' : 'text-foreground' }}">
                                 {{ $group['label'] }}
                             </span>
-                            <span class="kt-menu-arrow text-muted-foreground w-[20px] shrink-0 justify-end ms-1 me-[-10px]">
-                                <span class="inline-flex kt-menu-item-show:hidden"><i class="ki-filled ki-plus text-[11px]"></i></span>
-                                <span class="hidden kt-menu-item-show:inline-flex"><i class="ki-filled ki-minus text-[11px]"></i></span>
+                            <span class="kt-menu-arrow text-muted-foreground w-[20px] shrink-0 flex justify-end ms-1 me-[-10px]">
+                                <i class="ki-filled ki-down text-[11px] transition-transform duration-200 {{ $groupOpen ? 'rotate-180' : '' }}"
+                                   data-kargah-chevron></i>
                             </span>
-                        </div>
+                        </button>
 
-                        <div class="kt-menu-accordion gap-1 ps-[10px] relative before:absolute before:start-[20px] before:top-0 before:bottom-0 before:border-s before:border-border">
+                        <div class="kt-menu-accordion gap-1 ps-[10px] relative before:absolute before:start-[20px] before:top-0 before:bottom-0 before:border-s before:border-border"
+                             id="submenu-{{ $group['key'] }}">
                             @foreach ($group['items'] as $item)
                                 @php $itemActive = request()->routeIs(...($item['match'] ?? [$item['route']])); @endphp
                                 <div class="kt-menu-item {{ $itemActive ? 'active' : '' }}">
-                                    <a class="kt-menu-link border border-transparent items-center grow kt-menu-item-active:bg-accent/60 kt-menu-item-active:rounded-lg hover:bg-accent/60 hover:rounded-lg gap-[14px] ps-[10px] pe-[10px] py-[8px]"
+                                    <a class="kt-menu-link border border-transparent flex items-center grow rounded-lg hover:bg-accent/60 gap-[14px] ps-[10px] pe-[10px] py-[8px] {{ $itemActive ? 'bg-accent/60' : '' }}"
                                        href="{{ route($item['route']) }}"
-                                       tabindex="0">
-                                        <span class="kt-menu-bullet flex w-[6px] -start-[3px] relative before:absolute before:top-0 before:size-[6px] before:rounded-full before:-translate-y-1/2 kt-menu-item-active:before:bg-primary kt-menu-item-hover:before:bg-primary"></span>
-                                        <span class="kt-menu-title text-2sm font-normal text-foreground kt-menu-item-active:text-primary kt-menu-item-active:font-semibold kt-menu-link-hover:!text-primary">
+                                       @if ($itemActive) aria-current="page" @endif>
+                                        <span class="flex w-[6px] -start-[3px] relative before:absolute before:top-0 before:size-[6px] before:rounded-full before:-translate-y-1/2 {{ $itemActive ? 'before:bg-primary' : 'before:bg-border' }}"></span>
+                                        <span class="text-2sm {{ $itemActive ? 'text-primary font-semibold' : 'text-foreground font-normal' }}">
                                             {{ $item['label'] }}
                                         </span>
                                     </a>
@@ -163,7 +180,89 @@
                     </div>
                 @endforeach
 
-            </div>
+                <div class="border-b border-border my-2"></div>
+
+                @php $setActive = request()->routeIs('settings.*'); @endphp
+                <div class="kt-menu-item {{ $setActive ? 'active' : '' }}">
+                    <a class="kt-menu-link flex items-center grow border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] rounded-lg hover:bg-accent/60 {{ $setActive ? 'bg-accent/60' : '' }}"
+                       href="{{ route('settings.profile') }}"
+                       @if ($setActive) aria-current="page" @endif>
+                        <span class="kt-menu-icon items-start w-[20px] {{ $setActive ? 'text-primary' : 'text-muted-foreground' }}">
+                            <i class="ki-filled ki-setting-2 text-lg"></i>
+                        </span>
+                        <span class="kt-menu-title text-sm {{ $setActive ? 'text-primary font-semibold' : 'text-foreground font-medium' }}">
+                            Settings
+                        </span>
+                    </a>
+                </div>
+
+            </nav>
         </div>
     </div>
 </div>
+
+@push('scripts')
+<script>
+(function () {
+    if (window.__kargahSidebarBound) return;
+    window.__kargahSidebarBound = true;
+
+    var STORE = 'kargah.sidebar.open';
+
+    function readStored() {
+        try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch (e) { return {}; }
+    }
+
+    function writeStored(state) {
+        try { localStorage.setItem(STORE, JSON.stringify(state)); } catch (e) { /* private mode */ }
+    }
+
+    function setOpen(group, open) {
+        group.classList.toggle('show', open);
+
+        var button = group.querySelector('[data-kargah-accordion]');
+        if (button) button.setAttribute('aria-expanded', open ? 'true' : 'false');
+
+        var chevron = group.querySelector('[data-kargah-chevron]');
+        if (chevron) chevron.classList.toggle('rotate-180', open);
+    }
+
+    // Restore the user's choices, but never collapse the group they are inside.
+    function restore() {
+        var stored = readStored();
+
+        document.querySelectorAll('[data-kargah-group]').forEach(function (group) {
+            var key = group.dataset.kargahGroup;
+            var hasActiveChild = !!group.querySelector('[aria-current="page"]');
+
+            if (hasActiveChild) {
+                setOpen(group, true);
+            } else if (Object.prototype.hasOwnProperty.call(stored, key)) {
+                setOpen(group, stored[key]);
+            }
+        });
+    }
+
+    document.addEventListener('click', function (e) {
+        var button = e.target.closest('[data-kargah-accordion]');
+        if (!button) return;
+
+        e.preventDefault();
+
+        var group = button.closest('[data-kargah-group]');
+        if (!group) return;
+
+        var open = !group.classList.contains('show');
+        setOpen(group, open);
+
+        var stored = readStored();
+        stored[group.dataset.kargahGroup] = open;
+        writeStored(stored);
+    });
+
+    document.addEventListener('DOMContentLoaded', restore);
+    document.addEventListener('livewire:navigated', restore);
+    restore();
+})();
+</script>
+@endpush
