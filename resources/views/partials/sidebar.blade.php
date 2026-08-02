@@ -227,18 +227,24 @@
         if (chevron) chevron.classList.toggle('rotate-180', open);
     }
 
-    // Restore the user's choices, but never collapse the group they are inside.
+    // Restore the user's choice, but never collapse the group they are inside,
+    // and never leave two groups open at once.
     function restore() {
         var stored = readStored();
+        var groups = document.querySelectorAll('[data-kargah-group]');
+        var active = null;
 
-        document.querySelectorAll('[data-kargah-group]').forEach(function (group) {
+        groups.forEach(function (group) {
+            if (group.querySelector('[aria-current="page"]')) active = group;
+        });
+
+        groups.forEach(function (group) {
             var key = group.dataset.kargahGroup;
-            var hasActiveChild = !!group.querySelector('[aria-current="page"]');
 
-            if (hasActiveChild) {
-                setOpen(group, true);
-            } else if (Object.prototype.hasOwnProperty.call(stored, key)) {
-                setOpen(group, stored[key]);
+            if (active) {
+                setOpen(group, group === active);
+            } else {
+                setOpen(group, stored[key] === true);
             }
         });
     }
@@ -253,9 +259,19 @@
         if (!group) return;
 
         var open = !group.classList.contains('show');
-        setOpen(group, open);
-
         var stored = readStored();
+
+        // Accordion, not a set of independent toggles: opening one closes the rest.
+        if (open) {
+            document.querySelectorAll('[data-kargah-group]').forEach(function (other) {
+                if (other !== group && other.classList.contains('show')) {
+                    setOpen(other, false);
+                    stored[other.dataset.kargahGroup] = false;
+                }
+            });
+        }
+
+        setOpen(group, open);
         stored[group.dataset.kargahGroup] = open;
         writeStored(stored);
     });

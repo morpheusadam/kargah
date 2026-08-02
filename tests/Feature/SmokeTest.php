@@ -25,7 +25,10 @@ class SmokeTest extends TestCase
     {
         $this->get('/login')
             ->assertOk()
-            ->assertSee('Sign in to Kargah', false);
+            ->assertSee('Sign in', false)
+            ->assertSee('Keep me signed in', false)
+            // dark is the default, applied before first paint
+            ->assertSee('data-kt-theme-mode="dark"', false);
     }
 
     public function test_guests_cannot_reach_the_dashboard(): void

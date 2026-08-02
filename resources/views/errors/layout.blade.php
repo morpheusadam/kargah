@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html class="h-full" data-kt-theme="true" data-kt-theme-mode="light" dir="ltr" lang="{{ str_replace('_', '-', app()->getLocale()) }}">
+<html class="h-full" data-kt-theme="true" data-kt-theme-mode="dark" dir="ltr" lang="{{ str_replace('_', '-', app()->getLocale()) }}">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
@@ -11,12 +11,13 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="/assets/vendors/keenicons/styles.bundle.css" rel="stylesheet">
     <link href="/assets/css/styles.css" rel="stylesheet">
+    <link href="/assets/css/kargah.css" rel="stylesheet">
 </head>
 <body class="antialiased flex h-full text-base text-foreground bg-muted">
 
 <script>
     if (document.documentElement) {
-        document.documentElement.classList.add(localStorage.getItem('kt-theme') || 'light');
+        document.documentElement.classList.add(localStorage.getItem('kt-theme') || 'dark');
     }
 </script>
 
