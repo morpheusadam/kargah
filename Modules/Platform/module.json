@@ -1,0 +1,11 @@
+{
+  "name": "Platform",
+  "alias": "platform",
+  "description": "The edge: application passwords today, the HTTP API, the assistant and the CLI on top of them.",
+  "keywords": [],
+  "priority": 10,
+  "providers": [
+    "Modules\\Platform\\Providers\\PlatformServiceProvider"
+  ],
+  "files": []
+}

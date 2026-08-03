@@ -4,5 +4,6 @@
     "Mailbox": true,
     "Data": true,
     "Social": true,
-    "Core": true
+    "Core": true,
+    "Platform": true
 }

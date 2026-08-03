@@ -1,0 +1,30 @@
+{
+    "name": "kargah/platform",
+    "description": "Application passwords, and the HTTP surface that authenticates with them.",
+    "authors": [
+        {
+            "name": "Kargah",
+            "email": "nima@kargah.local"
+        }
+    ],
+    "extra": {
+        "laravel": {
+            "providers": [],
+            "aliases": {
+
+            }
+        }
+    },
+    "autoload": {
+        "psr-4": {
+            "Modules\\Platform\\": "app/",
+            "Modules\\Platform\\Database\\Factories\\": "database/factories/",
+            "Modules\\Platform\\Database\\Seeders\\": "database/seeders/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Modules\\Platform\\Tests\\": "tests/"
+        }
+    }
+}

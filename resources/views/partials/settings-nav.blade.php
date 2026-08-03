@@ -4,7 +4,13 @@
         ['route' => 'settings.security',      'label' => 'Security',      'icon' => 'ki-shield-tick',    'hint' => 'Password, sessions, tokens'],
         ['route' => 'settings.appearance',    'label' => 'Appearance',    'icon' => 'ki-color-swatch',   'hint' => 'Theme and density'],
         ['route' => 'settings.notifications', 'label' => 'Notifications', 'icon' => 'ki-notification-status', 'hint' => 'What reaches you, and how'],
+        ['route' => 'platform.application-passwords', 'label' => 'Application passwords', 'icon' => 'ki-key', 'hint' => 'Credentials for scripts and the API'],
     ];
+
+    // Drop anything whose module has been disabled, rather than blowing up on
+    // route(). The same guard the sidebar uses, and for the same reason: the
+    // first four tabs are application routes, the fifth belongs to a module.
+    $tabs = array_values(array_filter($tabs, fn (array $tab): bool => Route::has($tab['route'])));
 @endphp
 
 <div class="kt-card">

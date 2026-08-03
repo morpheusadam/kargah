@@ -40,6 +40,7 @@ return [
         'mailbox' => base_path('Modules/Mailbox/resources/views/components'),
         'data' => base_path('Modules/Data/resources/views/components'),
         'social' => base_path('Modules/Social/resources/views/components'),
+        'platform' => base_path('Modules/Platform/resources/views/components'),
     ],
 
     /*

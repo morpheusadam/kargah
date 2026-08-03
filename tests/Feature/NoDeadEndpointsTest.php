@@ -26,11 +26,33 @@ class NoDeadEndpointsTest extends TestCase
 {
     use RefreshDatabase;
 
+    /**
+     * Endpoints somebody deliberately wrote, with a controller and a test.
+     *
+     * The original assertion was "no route starts with `api/v1/`", which was
+     * exactly right while Kargah had no API at all. It stopped being right the
+     * moment one was written: `07-platform.md` names `/api/v1/whoami`, and it
+     * is real — `Modules\Platform\Http\Controllers\WhoamiController`, covered
+     * by `ApplicationPasswordTest`.
+     *
+     * So the list is here rather than the assertion being deleted. Adding a
+     * line to it is a deliberate act with a reviewer attached; what the test
+     * still catches is `php artisan module:make` scaffolding an apiResource
+     * nobody asked for, which is the failure it was written for.
+     *
+     * @var list<string>
+     */
+    private const WRITTEN = [
+        'api/v1/whoami',
+    ];
+
     public function test_no_module_ships_the_scaffolded_api_resource(): void
     {
         $scaffolded = collect(Route::getRoutes()->getRoutes())
             ->map(fn ($route): string => $route->uri())
             ->filter(fn (string $uri): bool => str_starts_with($uri, 'api/v1/'))
+            ->reject(fn (string $uri): bool => in_array($uri, self::WRITTEN, true))
+            ->unique()
             ->values()
             ->all();
 
@@ -39,6 +61,24 @@ class NoDeadEndpointsTest extends TestCase
             $scaffolded,
             "These are nwidart's scaffolding, not an API anybody wrote:\n".implode("\n", $scaffolded),
         );
+    }
+
+    /**
+     * Every endpoint on the allowlist above actually exists.
+     *
+     * Without this, the allowlist would quietly keep excusing a route that had
+     * been deleted, and the next scaffolded one to land on the same URI would
+     * be waved through.
+     */
+    public function test_every_allowed_api_endpoint_is_routed(): void
+    {
+        $routed = collect(Route::getRoutes()->getRoutes())
+            ->map(fn ($route): string => $route->uri())
+            ->all();
+
+        foreach (self::WRITTEN as $uri) {
+            $this->assertContains($uri, $routed, $uri.' is allowed by name but is not routed.');
+        }
     }
 
     /**

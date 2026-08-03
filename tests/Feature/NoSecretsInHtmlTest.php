@@ -40,6 +40,12 @@ class NoSecretsInHtmlTest extends TestCase
      * Matched by suffix rather than listed by hand, so a new module's
      * `whatever_encrypted` column is covered the day it is created rather than
      * the day somebody remembers to add it here.
+     *
+     * `token_hash` was added for `application_passwords`. Note it is not the
+     * broader `_hash$`: `crypto_payments.tx_hash` is a blockchain transaction
+     * reference, which is public by construction and is printed on the invoice
+     * page on purpose. A pattern that cannot tell those two apart would fail
+     * this test for doing the right thing.
      */
     private function secretColumns(): array
     {
@@ -49,7 +55,7 @@ class NoSecretsInHtmlTest extends TestCase
             $table = str_contains($table, '.') ? explode('.', $table)[1] : $table;
 
             foreach (DB::getSchemaBuilder()->getColumnListing($table) as $column) {
-                if (preg_match('/(_encrypted|^secret|_secret|password|_token$|credentials)/i', $column)) {
+                if (preg_match('/(_encrypted|^secret|_secret|password|_token$|token_hash$|credentials)/i', $column)) {
                     $found[] = [$table, $column];
                 }
             }
@@ -67,7 +73,7 @@ class NoSecretsInHtmlTest extends TestCase
 
         $tables = array_unique(array_column($columns, 0));
 
-        foreach (['mail_accounts', 'credentials', 'social_accounts', 'delivery_providers'] as $expected) {
+        foreach (['mail_accounts', 'credentials', 'social_accounts', 'delivery_providers', 'application_passwords'] as $expected) {
             $this->assertContains($expected, $tables, $expected.' holds a secret and is not being covered.');
         }
     }
