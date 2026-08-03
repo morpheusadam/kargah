@@ -40,6 +40,7 @@ class SmokeTest extends TestCase
     {
         return [
             'dashboard' => ['/dashboard'],
+            'core notifications' => ['/notifications'],
             'boards' => ['/projects'],
             'archive' => ['/projects/archive'],
             'board settings' => ['/projects/client-work/settings'],
@@ -80,6 +81,7 @@ class SmokeTest extends TestCase
             'social post' => ['/social/posts/1'],
             'accounts' => ['/social/accounts'],
             'account connect' => ['/social/accounts/connect'],
+            'application passwords' => ['/settings/application-passwords'],
         ];
     }
 

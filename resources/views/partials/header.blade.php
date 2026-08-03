@@ -51,10 +51,33 @@
                 <i class="ki-filled ki-sun text-lg hidden dark:inline"></i>
             </button>
 
-            <button class="kt-btn kt-btn-icon kt-btn-ghost size-9 relative" title="Notifications">
-                <i class="ki-filled ki-notification-status text-lg"></i>
-                <span class="absolute top-1.5 end-1.5 size-2 rounded-full bg-destructive"></span>
-            </button>
+            {{-- The bell.
+
+                 Core owns the feed, because a notification's subject may be a
+                 card, an invoice or an email and only Core may be depended on
+                 by all three. The count is read through Core's contract rather
+                 than its model, and the whole thing disappears rather than
+                 throwing if the module is ever disabled.
+
+                 It is plain Blade, so the number is whatever it was when the
+                 page was served — the layout does not re-render on a Livewire
+                 round trip. That is the right trade for one query per page
+                 load; the feed itself keeps a live count. --}}
+            @if (Route::has('core.notifications') && auth()->check())
+                @php
+                    $unreadNotifications = app(\Modules\Core\Contracts\Notifier::class)->unreadCount(auth()->id());
+                @endphp
+                <a href="{{ route('core.notifications') }}" wire:navigate
+                   class="kt-btn kt-btn-icon kt-btn-ghost size-9 relative"
+                   title="{{ $unreadNotifications === 0 ? 'Notifications' : $unreadNotifications.' unread' }}"
+                   aria-label="Notifications">
+                    <i class="ki-filled ki-notification-status text-lg"></i>
+                    @if ($unreadNotifications > 0)
+                        <span class="absolute -top-0.5 -end-0.5 min-w-4 h-4 px-1 rounded-full bg-destructive text-white text-[10px] font-semibold inline-flex items-center justify-center"
+                              data-kargah-bell-count>{{ $unreadNotifications > 99 ? '99+' : $unreadNotifications }}</span>
+                    @endif
+                </a>
+            @endif
 
             {{-- User menu --}}
             <div data-kt-dropdown="true" data-kt-dropdown-offset="10px, 10px" data-kt-dropdown-placement="bottom-end" data-kt-dropdown-trigger="click">

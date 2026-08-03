@@ -131,6 +131,28 @@
                     </a>
                 </div>
 
+                {{-- The in-app feed. A plain link like Dashboard, and above the
+                     module groups on purpose: it is not one module's page. Note
+                     Social's own "Notifications" item lower down is a different
+                     thing — what the networks said, not what Kargah has to
+                     say — and the two routes are `social.notifications` and
+                     `core.notifications`. --}}
+                @if (Route::has('core.notifications'))
+                    @php $notifActive = request()->routeIs('core.notifications'); @endphp
+                    <div class="kt-menu-item {{ $notifActive ? 'active' : '' }}">
+                        <a class="kt-menu-link flex items-center grow border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] rounded-lg hover:bg-accent/60 {{ $notifActive ? 'bg-accent/60' : '' }}"
+                           href="{{ route('core.notifications') }}"
+                           @if ($notifActive) aria-current="page" @endif>
+                            <span class="kt-menu-icon items-start w-[20px] {{ $notifActive ? 'text-primary' : 'text-muted-foreground' }}">
+                                <i class="ki-filled ki-notification-status text-lg"></i>
+                            </span>
+                            <span class="kt-menu-title text-sm {{ $notifActive ? 'text-primary font-semibold' : 'text-foreground font-medium' }}">
+                                Notifications
+                            </span>
+                        </a>
+                    </div>
+                @endif
+
                 <div class="border-b border-border my-2"></div>
 
                 @foreach ($nav as $group)

@@ -35,6 +35,7 @@ return [
 
         // Module namespaces. Each module owns its own Livewire components so a
         // module can be dropped in or removed without touching the app shell.
+        'core' => base_path('Modules/Core/resources/views/components'),
         'project' => base_path('Modules/Project/resources/views/components'),
         'accounting' => base_path('Modules/Accounting/resources/views/components'),
         'mailbox' => base_path('Modules/Mailbox/resources/views/components'),
