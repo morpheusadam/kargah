@@ -13,6 +13,8 @@ use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\Relations\HasOneThrough;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Modules\Core\Concerns\Linkable;
 use Modules\Core\Models\Company;
 use Modules\Core\Models\Customer;
@@ -32,6 +34,7 @@ class Card extends Model
         'description',
         'customer_id',
         'company_id',
+        'start_on',
         'due_on',
         'completed_at',
         'archived_at',
@@ -41,10 +44,76 @@ class Card extends Model
     protected function casts(): array
     {
         return [
+            'start_on' => 'date',
             'due_on' => 'date',
             'completed_at' => 'datetime',
             'archived_at' => 'datetime',
         ];
+    }
+
+    /**
+     * Assigns the per-board card number the moment a card gets its origin
+     * placement — the earliest point a card's board is actually known, since
+     * `cards` itself carries no board reference (see the card-placements
+     * decision in DECISIONS.md). Listening on `CardPlacement`'s own event
+     * rather than on `Card::creating` is what a normal Observer would do from
+     * `CardPlacement::boot()`, but that file is owned by another agent's work
+     * in flight; registering the listener here, from the model this task
+     * owns, reaches the same moment without touching it.
+     *
+     * `CardService::append()` always creates the `Card` row before the
+     * `CardPlacement` row, in the same transaction, so `Card::booted()` has
+     * always run — and this listener is always registered — before the first
+     * placement of a request is written. `CardFactory` follows the same
+     * order. A mirror placement (`is_origin = false`) is skipped: only the
+     * list a card lives in numbers it.
+     *
+     * The counter lives on `boards.next_card_number` and is read-then-written
+     * inside its own `DB::transaction()`, with `lockForUpdate()` on the read.
+     * On MySQL that is a real row lock, which is what makes two placements
+     * committing at the same moment resolve to two different numbers rather
+     * than a lost update; `MAX(number) + 1` would not have that guarantee,
+     * because two transactions can read the same max before either commits.
+     */
+    protected static function booted(): void
+    {
+        parent::booted();
+
+        CardPlacement::created(function (CardPlacement $placement): void {
+            if (! $placement->is_origin) {
+                return;
+            }
+
+            $card = $placement->card ?? Card::query()->find($placement->card_id);
+
+            if ($card === null || $card->number !== null) {
+                return;
+            }
+
+            $boardId = BoardList::query()->whereKey($placement->board_list_id)->value('board_id');
+
+            if ($boardId === null) {
+                return;
+            }
+
+            $number = DB::transaction(function () use ($boardId): int {
+                // `whereKey()` is an Eloquent Builder method; `DB::table()` returns the
+                // base query builder, where an unrecognised `where*` name falls through
+                // to the dynamic-where magic method and silently queries a column
+                // called `key` that does not exist, matching nothing. `where('id', …)`
+                // is deliberate here, not a style choice.
+                $current = (int) (DB::table('boards')->where('id', $boardId)->lockForUpdate()->value('next_card_number') ?? 1);
+
+                DB::table('boards')->where('id', $boardId)->update(['next_card_number' => $current + 1]);
+
+                return $current;
+            });
+
+            $card->forceFill([
+                'number' => $number,
+                'slug' => Str::slug($card->title) ?: 'card-'.$card->id,
+            ])->save();
+        });
     }
 
     /**
@@ -149,10 +218,33 @@ class Card extends Model
     }
 
     /**
+     * The one method anything — a badge, the filter panel, Butler's due-date
+     * automation once it exists — should ask rather than reading
+     * `completed_at` for itself.
+     */
+    public function isComplete(): bool
+    {
+        return $this->completed_at !== null;
+    }
+
+    /**
      * How the due date reads on the front of the card.
      *
-     * 'overdue' and 'soon' are what the board colours by, and 'soon' means the
-     * next seven days — the same window the filter panel offers.
+     * Trello's full scale is five states: grey beyond 24 hours, yellow inside
+     * 24 hours, red at the moment it is due, pink once it has passed, green
+     * once complete. `due_on` is a date with no time of day, so "inside 24
+     * hours" is read at that same grain — tomorrow — rather than literally
+     * counting hours; a due date is either today, tomorrow, or later.
+     *
+     * 🔴 This widens what the method returns. Two other pages read it:
+     * `⚡boards.blade.php`'s filter panel treats `['overdue', 'soon']` as "due
+     * in the next week", which used to include a card due today because
+     * `'soon'` was the only non-overdue state short of a week out — it now
+     * needs `'due'` added to that list to keep meaning what its label says.
+     * Accounting's `⚡client-show.blade.php` colours `'overdue'` red and
+     * `'soon'` amber and everything else plain — a card due today moves from
+     * amber to plain there until it is updated to handle `'due'` as well.
+     * Neither file is this task's to change; both are reported back.
      */
     public function dueState(): ?string
     {
@@ -160,17 +252,38 @@ class Card extends Model
             return null;
         }
 
-        $today = now()->startOfDay();
-
-        if ($this->completed_at !== null) {
+        if ($this->isComplete()) {
             return 'done';
         }
+
+        $today = now()->startOfDay();
 
         if ($this->due_on->lt($today)) {
             return 'overdue';
         }
 
-        return $this->due_on->lte($today->copy()->addDays(7)) ? 'soon' : 'later';
+        if ($this->due_on->eq($today)) {
+            return 'due';
+        }
+
+        return $this->due_on->lte($today->copy()->addDay()) ? 'soon' : 'later';
+    }
+
+    /**
+     * The `Palette` key the due-date badge should render in, for whoever
+     * draws it — the card drawer here, and the board card front elsewhere.
+     * Centralised so both read the same mapping rather than re-deriving it.
+     */
+    public function dueBadgeColour(): ?string
+    {
+        return match ($this->dueState()) {
+            'done' => 'success',
+            'due' => 'destructive',
+            'overdue' => 'pink',
+            'soon' => 'warning',
+            'later' => 'neutral',
+            default => null,
+        };
     }
 
     /** Ticked and total across every checklist on the card. */
@@ -197,7 +310,7 @@ class Card extends Model
     public function getActivitylogOptions(): LogOptions
     {
         return LogOptions::defaults()
-            ->logOnly(['title', 'description', 'due_on', 'customer_id', 'company_id', 'archived_at', 'completed_at'])
+            ->logOnly(['title', 'description', 'start_on', 'due_on', 'customer_id', 'company_id', 'archived_at', 'completed_at'])
             ->logOnlyDirty()
             ->dontSubmitEmptyLogs()
             ->useLogName('card');

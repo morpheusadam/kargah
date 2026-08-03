@@ -33,9 +33,9 @@ use Modules\Project\Support\Position;
  *
  * **Anything that changes the front of the card dispatches `card-changed`.**
  * The board canvas is an island, and an island nobody redraws keeps whatever
- * the DOM already had. The description is the one field deliberately left out:
- * it is not drawn on the card face, so redrawing the canvas for it would send
- * every card back for nothing.
+ * the DOM already had. The description and the start date are the two fields
+ * deliberately left out: neither is drawn on the card face today, so
+ * redrawing the canvas for either would send every card back for nothing.
  *
  * **Labels come from the card's own board.** A label belongs to one board, so
  * the picker is `$card->list->board->labels` and never a global list — putting
@@ -62,10 +62,9 @@ class extends Component
 
     public string $description = '';
 
-    public string $dueDate = '';
+    public string $startDate = '';
 
-    /** The single assignee's user id, as a string, or '' for nobody. */
-    public string $assignee = '';
+    public string $dueDate = '';
 
     /** The list `moveCard()` will move to, as a string id. */
     public string $moveToList = '';
@@ -79,6 +78,10 @@ class extends Component
     public bool $editingDescription = false;
 
     public bool $labelPopoverOpen = false;
+
+    public bool $memberPopoverOpen = false;
+
+    public bool $startPopoverOpen = false;
 
     public bool $duePopoverOpen = false;
 
@@ -228,6 +231,7 @@ class extends Component
             'labels' => $card?->list?->board?->labels ?? collect(),
             'cardLabelIds' => $card?->labels->pluck('id')->all() ?? [],
             'members' => User::query()->orderBy('name')->get(),
+            'cardMemberIds' => $card?->members->pluck('id')->all() ?? [],
             'lists' => $this->listsOnThisBoard(),
             'placements' => $this->placements(),
             'mirrorBoards' => Board::query()->active()->orderBy('name')->get(),
@@ -257,8 +261,8 @@ class extends Component
         $this->cardId = $card->id;
         $this->title = $card->title;
         $this->description = (string) $card->description;
+        $this->startDate = $card->start_on?->toDateString() ?? '';
         $this->dueDate = $card->due_on?->toDateString() ?? '';
-        $this->assignee = (string) ($card->members->first()?->id ?? '');
 
         // Where the card *lives*, not wherever it happens to be shown. Moving
         // it moves the origin; a mirror is moved from the board it sits on.
@@ -267,6 +271,8 @@ class extends Component
         $this->editingTitle = false;
         $this->editingDescription = false;
         $this->labelPopoverOpen = false;
+        $this->memberPopoverOpen = false;
+        $this->startPopoverOpen = false;
         $this->duePopoverOpen = false;
         $this->movePopoverOpen = false;
         $this->mirrorPopoverOpen = false;
@@ -301,6 +307,8 @@ class extends Component
     {
         $this->open = false;
         $this->labelPopoverOpen = false;
+        $this->memberPopoverOpen = false;
+        $this->startPopoverOpen = false;
         $this->duePopoverOpen = false;
         $this->movePopoverOpen = false;
         $this->mirrorPopoverOpen = false;
@@ -383,14 +391,70 @@ class extends Component
         );
     }
 
-    /* Labels, due date, assignee ----------------------------------------- */
+    /* Labels, dates, members ----------------------------------------------- */
 
     public function toggleLabelPopover(): void
     {
         $this->labelPopoverOpen = ! $this->labelPopoverOpen;
+        $this->memberPopoverOpen = false;
+        $this->startPopoverOpen = false;
         $this->duePopoverOpen = false;
         $this->movePopoverOpen = false;
         $this->mirrorPopoverOpen = false;
+    }
+
+    /** Opening a picker is not worth announcing. */
+    public function toggleMemberPopover(): void
+    {
+        $this->memberPopoverOpen = ! $this->memberPopoverOpen;
+        $this->labelPopoverOpen = false;
+        $this->startPopoverOpen = false;
+        $this->duePopoverOpen = false;
+        $this->movePopoverOpen = false;
+        $this->mirrorPopoverOpen = false;
+    }
+
+    /**
+     * Add or remove one of this card's board's people.
+     *
+     * The pivot was always many-to-many — `card_members` carries
+     * `unique(card_id, user_id)` — so toggling one person on or off the card
+     * is the whole feature. The single-assignee `<select>` this replaced
+     * called `sync([$id])` on every change, which is what made it look like
+     * one assignee was all the schema allowed.
+     */
+    public function toggleMember(int $userId): void
+    {
+        $card = $this->card();
+
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        $user = User::query()->find($userId);
+
+        if ($user === null) {
+            $this->toastError('That person could not be found', 'Reload the page and try again.');
+
+            return;
+        }
+
+        $wasOn = $card->members->contains('id', $user->id);
+
+        $wasOn
+            ? $card->members()->detach($user->id)
+            : $card->members()->attach($user->id);
+
+        $this->cardChanged();
+
+        $this->toastSuccess(
+            $wasOn ? $user->name.' taken off the card' : $user->name.' added to the card',
+            $wasOn
+                ? 'They no longer carry '.$card->title.'.'
+                : 'They are now carrying '.$card->title.', alongside anyone else already on it.',
+        );
     }
 
     /** Add or remove one of the board's labels on this card. */
@@ -438,10 +502,91 @@ class extends Component
         );
     }
 
+    public function toggleStartPopover(): void
+    {
+        $this->startPopoverOpen = ! $this->startPopoverOpen;
+        $this->labelPopoverOpen = false;
+        $this->memberPopoverOpen = false;
+        $this->duePopoverOpen = false;
+        $this->movePopoverOpen = false;
+        $this->mirrorPopoverOpen = false;
+    }
+
+    /**
+     * Set the start date.
+     *
+     * A start after the due date is not silently ignored: `saveDueDate()`
+     * carries the same check the other way, so whichever end the card was
+     * edited from, the person doing it is told in words rather than watching
+     * the write appear to do nothing.
+     */
+    public function saveStartDate(): void
+    {
+        $card = $this->card();
+
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        $typed = trim($this->startDate);
+
+        if ($typed === '') {
+            $this->toastError('No date was picked', 'Choose a day, or use remove to clear the one already set.');
+
+            return;
+        }
+
+        try {
+            $start = Carbon::parse($typed)->startOfDay();
+        } catch (\Throwable) {
+            $this->toastError('That date could not be read', 'Use the picker rather than typing the day in.');
+
+            return;
+        }
+
+        if ($card->due_on !== null && $start->gt($card->due_on)) {
+            $this->toastError(
+                'The start date is after the due date',
+                'Move the due date out first, or pick an earlier start.',
+            );
+
+            return;
+        }
+
+        $card->update(['start_on' => $start->toDateString()]);
+
+        $this->startDate = $start->toDateString();
+        $this->startPopoverOpen = false;
+
+        $this->toastSuccess('Start date set', $card->title.' starts on '.$start->format('j M Y').'.');
+    }
+
+    public function clearStartDate(): void
+    {
+        $card = $this->card();
+
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        $card->update(['start_on' => null]);
+
+        $this->startDate = '';
+        $this->startPopoverOpen = false;
+
+        $this->toastSuccess('Start date removed', $card->title.' no longer has a start date.');
+    }
+
     public function toggleDuePopover(): void
     {
         $this->duePopoverOpen = ! $this->duePopoverOpen;
         $this->labelPopoverOpen = false;
+        $this->memberPopoverOpen = false;
+        $this->startPopoverOpen = false;
         $this->movePopoverOpen = false;
         $this->mirrorPopoverOpen = false;
     }
@@ -478,6 +623,15 @@ class extends Component
             return;
         }
 
+        if ($card->start_on !== null && $due->lt($card->start_on)) {
+            $this->toastError(
+                'The due date is before the start date',
+                'Move the start date back first, or pick a later due date.',
+            );
+
+            return;
+        }
+
         $card->update(['due_on' => $due->toDateString()]);
 
         $this->dueDate = $due->toDateString();
@@ -509,12 +663,13 @@ class extends Component
     }
 
     /**
-     * Fired when the assignee select changes; empty means unassigned.
+     * Tick the due date complete, or undo that.
      *
-     * The schema models members as a pivot, but the drawer offers one assignee,
-     * so setting it replaces whoever was on the card rather than adding to them.
+     * `Card::isComplete()` is the one thing anything else should ask —
+     * Butler's due-date automation, once it exists, suppresses itself by
+     * calling the same method rather than reading `completed_at` for itself.
      */
-    public function updatedAssignee(string $value): void
+    public function toggleCardComplete(): void
     {
         $card = $this->card();
 
@@ -524,33 +679,16 @@ class extends Component
             return;
         }
 
-        if (trim($value) === '') {
-            $card->members()->sync([]);
-
-            $this->cardChanged();
-
-            $this->toastSuccess('Card unassigned', 'Nobody is carrying '.$card->title.'.');
-
-            return;
-        }
-
-        $user = User::query()->find((int) $value);
-
-        if ($user === null) {
-            $this->assignee = (string) ($card->members->first()?->id ?? '');
-
-            $this->toastError('That person could not be found', 'Reload the page and try again.');
-
-            return;
-        }
-
-        $card->members()->sync([$user->id]);
-
-        $this->assignee = (string) $user->id;
+        $card->update(['completed_at' => $card->isComplete() ? null : now()]);
 
         $this->cardChanged();
 
-        $this->toastSuccess('Card assigned', $user->name.' is carrying '.$card->title.'.');
+        $this->toastSuccess(
+            $card->isComplete() ? 'Card marked complete' : 'Card marked incomplete',
+            $card->isComplete()
+                ? 'The due date shows green everywhere the card appears.'
+                : 'The due date is back to its usual colour.',
+        );
     }
 
     /* Checklist ----------------------------------------------------------- */
@@ -712,6 +850,8 @@ class extends Component
     {
         $this->movePopoverOpen = ! $this->movePopoverOpen;
         $this->labelPopoverOpen = false;
+        $this->memberPopoverOpen = false;
+        $this->startPopoverOpen = false;
         $this->duePopoverOpen = false;
         $this->mirrorPopoverOpen = false;
 
@@ -789,6 +929,8 @@ class extends Component
     {
         $this->mirrorPopoverOpen = ! $this->mirrorPopoverOpen;
         $this->labelPopoverOpen = false;
+        $this->memberPopoverOpen = false;
+        $this->startPopoverOpen = false;
         $this->duePopoverOpen = false;
         $this->movePopoverOpen = false;
 
@@ -1047,7 +1189,12 @@ class extends Component
                         <button wire:click="editTitle"
                                 class="text-start w-full rounded-md px-1 -mx-1 hover:bg-accent/60"
                                 title="Rename this card">
-                            <h2 class="text-lg font-semibold text-mono leading-snug">{{ $card->title }}</h2>
+                            <h2 class="text-lg font-semibold text-mono leading-snug">
+                                @if ($card->number)
+                                    <span class="text-muted-foreground font-normal">#{{ $card->number }}</span>
+                                @endif
+                                {{ $card->title }}
+                            </h2>
                         </button>
                         <p class="text-xs text-muted-foreground mt-1">
                             In list <span class="text-secondary-foreground">{{ $card->list?->name ?? '—' }}</span>
@@ -1069,7 +1216,7 @@ class extends Component
                     {{-- Main column --}}
                     <div class="flex flex-col gap-6 min-w-0">
 
-                        {{-- Labels, due date, assignee --}}
+                        {{-- Labels, dates, members --}}
                         <div class="flex flex-wrap items-start gap-6">
 
                             <div class="flex flex-col gap-2">
@@ -1124,49 +1271,110 @@ class extends Component
                             </div>
 
                             <div class="flex flex-col gap-2">
-                                <span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Due date</span>
+                                <span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Start date</span>
                                 <div class="relative">
-                                    <button wire:click="toggleDuePopover" class="kt-btn kt-btn-outline kt-btn-sm gap-2"
-                                            aria-expanded="{{ $duePopoverOpen ? 'true' : 'false' }}">
+                                    <button wire:click="toggleStartPopover" class="kt-btn kt-btn-outline kt-btn-sm gap-2"
+                                            aria-expanded="{{ $startPopoverOpen ? 'true' : 'false' }}">
                                         <i class="ki-filled ki-calendar text-sm"></i>
-                                        {{ $card->due_on ? $card->due_on->format('j M Y') : 'No due date' }}
+                                        {{ $card->start_on ? $card->start_on->format('j M Y') : 'No start date' }}
                                     </button>
 
-                                    <div class="kt-dropdown absolute z-20 mt-1 start-0 w-[240px] p-4 flex flex-col gap-3 {{ $duePopoverOpen ? 'open' : '' }}">
-                                        <label class="kt-form-label text-xs" for="card-due">Due on</label>
-                                        <input id="card-due" type="date" class="kt-input" wire:model="dueDate">
+                                    <div class="kt-dropdown absolute z-20 mt-1 start-0 w-[240px] p-4 flex flex-col gap-3 {{ $startPopoverOpen ? 'open' : '' }}">
+                                        <label class="kt-form-label text-xs" for="card-start">Starts on</label>
+                                        <input id="card-start" type="date" class="kt-input" wire:model="startDate">
                                         <div class="flex items-center gap-2">
-                                            <button wire:click="saveDueDate" wire:loading.attr="disabled" wire:target="saveDueDate"
+                                            <button wire:click="saveStartDate" wire:loading.attr="disabled" wire:target="saveStartDate"
                                                     class="kt-btn kt-btn-sm kt-btn-primary">
-                                                <span wire:loading.remove wire:target="saveDueDate">Save</span>
-                                                <span wire:loading wire:target="saveDueDate"><i class="ki-filled ki-loading animate-spin"></i></span>
+                                                <span wire:loading.remove wire:target="saveStartDate">Save</span>
+                                                <span wire:loading wire:target="saveStartDate"><i class="ki-filled ki-loading animate-spin"></i></span>
                                             </button>
-                                            <button wire:click="clearDueDate" class="kt-btn kt-btn-sm kt-btn-ghost">Remove</button>
+                                            <button wire:click="clearStartDate" class="kt-btn kt-btn-sm kt-btn-ghost">Remove</button>
                                         </div>
                                     </div>
                                 </div>
                             </div>
 
                             <div class="flex flex-col gap-2">
-                                <span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Assignee</span>
+                                <span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Due date</span>
                                 <div class="flex items-center gap-2">
-                                    @php($holder = $card->members->first())
-                                    @if ($holder)
-                                        <span class="size-7 rounded-full grid place-items-center text-[11px] font-semibold bg-primary/15 text-primary"
-                                              title="{{ $holder->name }}">
-                                            {{ $holder->initials() }}
-                                        </span>
-                                    @else
-                                        <span class="size-7 rounded-full grid place-items-center bg-muted text-muted-foreground">
-                                            <i class="ki-filled ki-user text-xs"></i>
-                                        </span>
+                                    <div class="relative">
+                                        @php($dueColour = $card->dueBadgeColour())
+                                        <button wire:click="toggleDuePopover"
+                                                class="kt-btn kt-btn-sm gap-2 {{ $dueColour ? \Modules\Project\Support\Palette::chip($dueColour) : 'kt-btn-outline' }}"
+                                                aria-expanded="{{ $duePopoverOpen ? 'true' : 'false' }}">
+                                            <i class="ki-filled ki-calendar text-sm"></i>
+                                            {{ $card->due_on ? $card->due_on->format('j M Y') : 'No due date' }}
+                                        </button>
+
+                                        <div class="kt-dropdown absolute z-20 mt-1 start-0 w-[240px] p-4 flex flex-col gap-3 {{ $duePopoverOpen ? 'open' : '' }}">
+                                            <label class="kt-form-label text-xs" for="card-due">Due on</label>
+                                            <input id="card-due" type="date" class="kt-input" wire:model="dueDate">
+                                            <div class="flex items-center gap-2">
+                                                <button wire:click="saveDueDate" wire:loading.attr="disabled" wire:target="saveDueDate"
+                                                        class="kt-btn kt-btn-sm kt-btn-primary">
+                                                    <span wire:loading.remove wire:target="saveDueDate">Save</span>
+                                                    <span wire:loading wire:target="saveDueDate"><i class="ki-filled ki-loading animate-spin"></i></span>
+                                                </button>
+                                                <button wire:click="clearDueDate" class="kt-btn kt-btn-sm kt-btn-ghost">Remove</button>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    @if ($card->due_on)
+                                        <button wire:click="toggleCardComplete" wire:loading.attr="disabled" wire:target="toggleCardComplete"
+                                                class="kt-btn kt-btn-icon kt-btn-outline size-7 {{ $card->isComplete() ? 'text-success border-success/40' : '' }}"
+                                                title="{{ $card->isComplete() ? 'Mark incomplete' : 'Mark complete' }}"
+                                                aria-label="{{ $card->isComplete() ? 'Mark incomplete' : 'Mark complete' }}"
+                                                aria-pressed="{{ $card->isComplete() ? 'true' : 'false' }}">
+                                            <i class="ki-filled ki-check text-sm"></i>
+                                        </button>
                                     @endif
-                                    <select class="kt-select max-w-[190px]" aria-label="Assignee" wire:model.live="assignee">
-                                        <option value="">Unassigned</option>
-                                        @foreach ($members as $member)
-                                            <option value="{{ $member->id }}">{{ $member->name }}</option>
-                                        @endforeach
-                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="flex flex-col gap-2">
+                                <span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Members</span>
+                                <div class="flex flex-wrap items-center gap-1.5">
+                                    @forelse ($card->members as $member)
+                                        <span class="size-7 rounded-full grid place-items-center text-[11px] font-semibold bg-primary/15 text-primary"
+                                              title="{{ $member->name }}">
+                                            {{ $member->initials() }}
+                                        </span>
+                                    @empty
+                                        <span class="text-sm text-muted-foreground">Unassigned</span>
+                                    @endforelse
+
+                                    <div class="relative">
+                                        <button wire:click="toggleMemberPopover" class="kt-btn kt-btn-icon kt-btn-outline size-7"
+                                                title="Edit members" aria-label="Edit members"
+                                                aria-expanded="{{ $memberPopoverOpen ? 'true' : 'false' }}">
+                                            <i class="ki-filled ki-plus text-xs"></i>
+                                        </button>
+
+                                        <div class="kt-dropdown absolute z-20 mt-1 start-0 w-[240px] {{ $memberPopoverOpen ? 'open' : '' }}">
+                                            <div class="flex items-center justify-between gap-2 px-4 py-3 border-b border-border">
+                                                <h4 class="text-sm font-semibold text-mono">Members</h4>
+                                                <button wire:click="toggleMemberPopover" class="kt-btn kt-btn-icon kt-btn-ghost size-6"
+                                                        title="Close members" aria-label="Close members">
+                                                    <i class="ki-filled ki-cross text-xs"></i>
+                                                </button>
+                                            </div>
+                                            <div class="p-2 flex flex-col gap-1">
+                                                @foreach ($members as $member)
+                                                    <button wire:click="toggleMember({{ $member->id }})" wire:key="member-{{ $member->id }}"
+                                                            class="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-start hover:bg-accent/60">
+                                                        <span class="size-6 rounded-full grid place-items-center text-[10px] font-semibold bg-primary/15 text-primary">
+                                                            {{ $member->initials() }}
+                                                        </span>
+                                                        <span class="grow text-secondary-foreground">{{ $member->name }}</span>
+                                                        @if (in_array($member->id, $cardMemberIds, true))
+                                                            <i class="ki-filled ki-check text-sm text-primary"></i>
+                                                        @endif
+                                                    </button>
+                                                @endforeach
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -1246,13 +1454,29 @@ class extends Component
                                 <button wire:click="editDescription"
                                         class="text-start rounded-lg border border-border bg-muted/30 px-4 py-3 hover:border-primary/40 transition-colors">
                                     @if (trim((string) $card->description) !== '')
-                                        <div class="text-sm text-secondary-foreground whitespace-pre-line leading-relaxed">{{ $card->description }}</div>
+                                        {{--
+                                            The one place in this file that echoes unescaped: markdown
+                                            rendered through `Support\Markdown`, which strips raw HTML
+                                            and refuses unsafe link schemes before this ever runs. A
+                                            description is user input; nothing else in this file uses
+                                            `{!! !!}` and it should stay that way.
+                                        --}}
+                                        <div class="text-sm text-secondary-foreground leading-relaxed [&_p]:mb-2 last:[&_p]:mb-0">{!! \Modules\Project\Support\Markdown::toHtml($card->description) !!}</div>
                                     @else
                                         <span class="text-sm text-muted-foreground">Add a more detailed description…</span>
                                     @endif
                                 </button>
                             @endif
                         </div>
+
+                        {{--
+                            Custom fields belong to the card's origin board — the
+                            same rule the labels above already follow — so a
+                            mirrored card shows the fields of the board it lives
+                            on, never the one it is merely mirrored onto. The
+                            component resolves that from the card id alone.
+                        --}}
+                        <livewire:project::card-custom-fields :card-id="$card->id" />
 
                         {{-- Checklist --}}
                         <div class="flex flex-col gap-3">
@@ -1344,9 +1568,10 @@ class extends Component
                                             <span class="text-sm font-medium text-mono">{{ $comment->author?->name ?? 'Someone no longer here' }}</span>
                                             <span class="text-xs text-muted-foreground">{{ $comment->created_at?->format('j M, H:i') }}</span>
                                         </div>
-                                        <p class="text-sm text-secondary-foreground mt-1 rounded-lg bg-muted/40 border border-border px-3 py-2 whitespace-pre-line">
-                                            {{ $comment->body }}
-                                        </p>
+                                        {{-- The same sanitising renderer as the description, for the same reason: a comment is user input too. --}}
+                                        <div class="text-sm text-secondary-foreground mt-1 rounded-lg bg-muted/40 border border-border px-3 py-2 [&_p]:mb-2 last:[&_p]:mb-0">
+                                            {!! \Modules\Project\Support\Markdown::toHtml($comment->body) !!}
+                                        </div>
                                     </div>
                                 </div>
                             @empty

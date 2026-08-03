@@ -52,6 +52,18 @@ final class Palette
             'dot' => 'bg-muted-foreground',
             'tone' => 'bg-accent/60 text-secondary-foreground',
         ],
+
+        // Added for the due-date badge scale: Trello's five states are grey,
+        // yellow, red, pink and green, and the first four already had a
+        // colour here. Pink is otherwise unused in this project, which is
+        // exactly why it reads unambiguously as "overdue" rather than
+        // colliding with a label colour somebody already picked.
+        'pink' => [
+            'name' => 'Pink',
+            'chip' => 'bg-pink-500/15 text-pink-600',
+            'dot' => 'bg-pink-500',
+            'tone' => 'bg-pink-500/15 text-pink-600',
+        ],
     ];
 
     /** @return list<string> */

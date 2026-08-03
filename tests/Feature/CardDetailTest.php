@@ -115,7 +115,7 @@ class CardDetailTest extends TestCase
             ->assertSet('cardId', $this->card->id)
             ->assertSet('title', 'Rewrite portfolio landing copy')
             ->assertSet('description', 'The current page reads like a CV.')
-            ->assertSet('assignee', (string) $this->colleague->id)
+            ->assertViewHas('cardMemberIds', [$this->colleague->id])
             ->assertSee('Rewrite portfolio landing copy')
             ->assertSee('Backlog')
             ->assertSee('Client Work')
@@ -208,6 +208,45 @@ class CardDetailTest extends TestCase
             ->assertNotDispatched('card-changed');
     }
 
+    /**
+     * The description is markdown rendered through `{!! !!}` now — the one
+     * unescaped echo on this page. Planting an actual attack and reading the
+     * actual response is what proves the sanitiser sits in front of it, rather
+     * than trusting that it does.
+     */
+    public function test_a_script_tag_planted_in_the_description_never_reaches_the_page(): void
+    {
+        $this->drawer()
+            ->set('description', "Ship it.\n\n<script>alert(1)</script>")
+            ->call('saveDescription');
+
+        $this->reopened()
+            ->assertSee('Ship it.')
+            ->assertDontSee('<script>alert(1)</script>', false)
+            ->assertDontSee('alert(1)', false);
+    }
+
+    public function test_a_javascript_link_planted_in_the_description_never_reaches_the_page(): void
+    {
+        $this->drawer()
+            ->set('description', 'Click [here](javascript:alert(1)) to continue.')
+            ->call('saveDescription');
+
+        $this->reopened()->assertDontSee('javascript:alert(1)', false);
+    }
+
+    public function test_a_script_tag_planted_in_a_comment_never_reaches_the_page(): void
+    {
+        $this->drawer()
+            ->set('newComment', "Reviewed.\n\n<script>alert(1)</script>")
+            ->call('addComment');
+
+        $this->reopened()
+            ->assertSee('Reviewed.')
+            ->assertDontSee('<script>alert(1)</script>', false)
+            ->assertDontSee('alert(1)', false);
+    }
+
     /* Labels ---------------------------------------------------------------- */
 
     public function test_a_label_is_attached_and_detached_on_the_pivot(): void
@@ -277,26 +316,38 @@ class CardDetailTest extends TestCase
         $this->assertNull(Card::query()->find($this->card->id)->due_on);
     }
 
-    /* Assignee --------------------------------------------------------------- */
+    /* Members ------------------------------------------------------------------ */
 
-    public function test_choosing_an_assignee_replaces_whoever_was_on_the_card(): void
+    public function test_toggling_a_member_on_adds_them_without_removing_anybody_else(): void
     {
         $this->drawer()
-            ->set('assignee', (string) $this->user->id)
+            ->call('toggleMember', $this->user->id)
             ->assertDispatched('card-changed');
 
-        $members = Card::query()->find($this->card->id)->members->pluck('id')->all();
+        $members = Card::query()->find($this->card->id)->members->pluck('id')->sort()->values()->all();
+        $expected = collect([$this->user->id, $this->colleague->id])->sort()->values()->all();
 
-        $this->assertSame([$this->user->id], $members);
-        $this->reopened()->assertSet('assignee', (string) $this->user->id);
+        $this->assertSame($expected, $members);
+        $this->reopened()->assertViewHas('cardMemberIds', fn (array $ids): bool => in_array($this->user->id, $ids, true)
+            && in_array($this->colleague->id, $ids, true));
     }
 
-    public function test_choosing_nobody_detaches_every_member(): void
+    public function test_toggling_a_member_off_removes_only_that_person(): void
     {
-        $this->drawer()->set('assignee', '');
+        $this->drawer()
+            ->call('toggleMember', $this->colleague->id)
+            ->assertDispatched('card-changed');
 
         $this->assertSame(0, Card::query()->find($this->card->id)->members()->count());
-        $this->reopened()->assertSet('assignee', '');
+    }
+
+    public function test_toggling_an_unknown_person_is_reported_rather_than_silently_ignored(): void
+    {
+        $this->drawer()
+            ->call('toggleMember', 999999)
+            ->assertDispatched('toast', fn (string $event, array $params): bool => $params[0]['type'] === 'error');
+
+        $this->assertSame([$this->colleague->id], Card::query()->find($this->card->id)->members->pluck('id')->all());
     }
 
     /* Checklist -------------------------------------------------------------- */
