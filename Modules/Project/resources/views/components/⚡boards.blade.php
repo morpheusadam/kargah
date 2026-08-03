@@ -12,6 +12,7 @@ use Modules\Project\Models\BoardList;
 use Modules\Project\Models\BoardListUserState;
 use Modules\Project\Models\Card;
 use Modules\Project\Models\CardPlacement;
+use Modules\Project\Services\BoardCopier;
 use Modules\Project\Services\CardService;
 use Modules\Project\Services\ListOperations;
 use Modules\Project\Services\PlacementConflict;
@@ -1082,6 +1083,37 @@ class extends Component
                 : $result['skipped'].' stayed put — '.($result['skipped'] === 1 ? 'it is' : 'they are').' already in '.$to->name.'.',
         );
     }
+
+    /**
+     * Duplicate a list, with everything in it, onto this board.
+     *
+     * What travels is `BoardCopier`'s decision rather than this method's,
+     * including the two the spec left open — mirrors, and custom fields. Its
+     * docblock is the one place that reasoning lives.
+     */
+    public function copyList(int $listId): void
+    {
+        $list = $this->listOnThisBoard($listId);
+
+        if ($list === null) {
+            $this->toastError('That list is not on this board', 'Reload the page and try again.');
+
+            return;
+        }
+
+        $result = app(BoardCopier::class)->copyList($list);
+
+        $this->closeOverlays();
+        $this->refreshBoard();
+
+        $this->toastSuccess(
+            $result['list']->name.' created',
+            $result['cards'] === 0
+                ? $list->name.' was empty, so the copy is too.'
+                : $result['cards'].' '.str('card')->plural($result['cards']).' came across with their'
+                    .' descriptions, checklists, attachments and comments. The activity trail did not.',
+        );
+    }
 };
 
 ?>
@@ -1492,6 +1524,9 @@ class extends Component
                                         </button>
                                         <button wire:click="toggleCollapse({{ $list->id }})" class="kt-btn kt-btn-ghost justify-start gap-2 w-full">
                                             <i class="ki-filled ki-double-left text-sm"></i> Collapse this list
+                                        </button>
+                                        <button wire:click="copyList({{ $list->id }})" class="kt-btn kt-btn-ghost justify-start gap-2 w-full">
+                                            <i class="ki-filled ki-copy text-sm"></i> Copy this list
                                         </button>
 
                                         <div class="border-t border-border my-1"></div>

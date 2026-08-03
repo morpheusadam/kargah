@@ -13,6 +13,7 @@ use Modules\Project\Models\Card;
 use Modules\Project\Models\CardPlacement;
 use Modules\Project\Models\CustomField;
 use Modules\Project\Models\Label;
+use Modules\Project\Services\BoardCopier;
 use Modules\Project\Services\CustomFields;
 use Modules\Project\Support\CustomFieldType;
 use Modules\Project\Support\Palette;
@@ -128,6 +129,16 @@ class extends Component
 
     public string $optionDraft = '';
 
+    /**
+     * What the copy of this board will be called.
+     *
+     * Not a `#[Validate]` property on purpose: `renameBoard()` calls the bare
+     * `$this->validate()`, which runs every rule on the component, and a rule
+     * here would make saving the board's name fail because of a box in a
+     * different card. Checked by hand in `copyBoard()` instead.
+     */
+    public string $copyName = '';
+
     public bool $confirmingDelete = false;
 
     public string $deleteConfirmation = '';
@@ -153,6 +164,10 @@ class extends Component
         $this->backgroundType = $record->background_type;
         $this->backgroundKey = $record->background_key;
         $this->backgroundTextTone = $record->background_text_tone;
+
+        // 32 characters plus " (copy)" is 39, inside the 40 the name rule
+        // allows — so the suggestion is never one the form would reject.
+        $this->copyName = (string) str($record->name)->limit(32, '').' (copy)';
     }
 
     /* Reading the board ------------------------------------------------------ */
@@ -1374,6 +1389,48 @@ class extends Component
         );
     }
 
+    /* Copy ---------------------------------------------------------------------- */
+
+    /**
+     * Duplicate this board and go and look at the copy.
+     *
+     * Everything about *what* travels is `BoardCopier`'s, including the two
+     * decisions the spec left open — see its docblock. This method's whole job
+     * is the name and the redirect.
+     */
+    public function copyBoard(): void
+    {
+        $board = $this->board();
+
+        if ($board === null) {
+            $this->toastError('There is no board at this address', 'Pick one from the boards page.');
+
+            return;
+        }
+
+        $name = trim($this->copyName);
+
+        if (mb_strlen($name) < 2 || mb_strlen($name) > 40) {
+            $this->toastError('That is not a board name', 'Between 2 and 40 characters.');
+
+            return;
+        }
+
+        $result = app(BoardCopier::class)->copyBoard($board, $name);
+
+        $lists = $result['lists'];
+        $cards = $result['cards'];
+
+        $this->flashToast(
+            'success',
+            $name.' created',
+            $lists.' '.str('list')->plural($lists).' and '.$cards.' '.str('card')->plural($cards)
+                .' came across. Comments, members and archived cards did not.',
+        );
+
+        $this->redirect(route('projects.boards', ['board' => $result['board']->slug]), navigate: true);
+    }
+
     /* Danger zone -------------------------------------------------------------- */
 
     public function archiveBoard(): void
@@ -2073,6 +2130,41 @@ class extends Component
                             to bring one back.
                         </p>
                     @endif
+                </div>
+            </div>
+
+            {{-- Copy --}}
+            <div class="kt-card xl:col-span-2">
+                <div class="kt-card-header">
+                    <h2 class="kt-card-title">Copy this board</h2>
+                </div>
+                <div class="kt-card-content flex flex-col gap-4 p-5">
+                    <p class="text-sm text-secondary-foreground">
+                        A new board with the same lists, labels, custom fields and cards. Card descriptions,
+                        dates, labels and custom field values come with them.
+                    </p>
+                    <p class="text-xs text-muted-foreground">
+                        Comments, checklists, attachments, card members, archived cards and the activity trail
+                        stay behind — the same things Trello leaves behind when it copies a board. Copying a
+                        single list keeps all of those; that one is in the list’s ⋯ menu on the board.
+                    </p>
+
+                    <div class="flex flex-wrap items-end gap-3">
+                        <div class="flex flex-col gap-1.5 grow max-w-[420px]">
+                            <label class="kt-form-label" for="copy-board-name">Name the copy</label>
+                            <input id="copy-board-name" type="text" class="kt-input"
+                                   wire:model="copyName" wire:keydown.enter.prevent="copyBoard">
+                        </div>
+                        <button wire:click="copyBoard" wire:loading.attr="disabled" wire:target="copyBoard"
+                                class="kt-btn kt-btn-outline gap-2">
+                            <span wire:loading.remove wire:target="copyBoard" class="inline-flex items-center gap-2">
+                                <i class="ki-filled ki-copy"></i> Copy board
+                            </span>
+                            <span wire:loading wire:target="copyBoard" class="inline-flex items-center gap-2">
+                                <i class="ki-filled ki-loading animate-spin"></i> Copying…
+                            </span>
+                        </button>
+                    </div>
                 </div>
             </div>
 
