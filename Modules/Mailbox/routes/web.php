@@ -11,7 +11,10 @@ use Modules\Mailbox\Http\Controllers\UnsubscribeController;
 
 Route::middleware('auth')->prefix('mail')->name('mail.')->group(function () {
     Route::livewire('/inbox', 'mailbox::inbox')->name('inbox');
-    Route::livewire('/compose', 'mailbox::compose')->name('compose');
+
+    // `mailbox::compose` has no route on purpose. It is a modal nested in the
+    // inbox and opened by an `open-compose` event, so a route would render a
+    // window nobody asked for on a page with nothing behind it.
 
     Route::livewire('/campaigns', 'mailbox::campaigns')->name('campaigns');
     Route::livewire('/campaigns/create', 'mailbox::campaign-edit')->name('campaign-create');

@@ -25,6 +25,7 @@ final readonly class OutboundMessage
 {
     /**
      * @param  array<string, string>  $headers
+     * @param  list<array{path: string, name: string, mime: string|null}>  $attachments  Files already on disk.
      */
     public function __construct(
         public string $toEmail,
@@ -37,6 +38,7 @@ final readonly class OutboundMessage
         public ?string $text,
         public string $messageId,
         public array $headers = [],
+        public array $attachments = [],
     ) {}
 
     /** The address as a mail client shows it, for a log line or a fake's record. */

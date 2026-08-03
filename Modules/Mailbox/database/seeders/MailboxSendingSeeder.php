@@ -3,6 +3,7 @@
 namespace Modules\Mailbox\Database\Seeders;
 
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Collection;
 use Modules\Mailbox\Models\Campaign;
 use Modules\Mailbox\Models\CampaignRecipient;
 use Modules\Mailbox\Models\Contact;
@@ -134,7 +135,7 @@ class MailboxSendingSeeder extends Seeder
      * somebody who is subscribed here and blocked globally, because that is the
      * state a hard bounce leaves behind and the one people find confusing.
      *
-     * @return \Illuminate\Support\Collection<int, Contact>
+     * @return Collection<int, Contact>
      */
     private function contacts()
     {
@@ -175,7 +176,7 @@ class MailboxSendingSeeder extends Seeder
      * nothing.
      *
      * @param  array<string, DeliveryProvider>  $providers
-     * @param  \Illuminate\Support\Collection<int, Contact>  $contacts
+     * @param  Collection<int, Contact>  $contacts
      */
     private function finishedCampaign(array $providers, $contacts): void
     {
@@ -234,7 +235,7 @@ class MailboxSendingSeeder extends Seeder
      * must never leave the scheduler holding work it did not ask for.
      *
      * @param  array<string, DeliveryProvider>  $providers
-     * @param  \Illuminate\Support\Collection<int, Contact>  $contacts
+     * @param  Collection<int, Contact>  $contacts
      */
     private function scheduledCampaign(array $providers, $contacts): void
     {

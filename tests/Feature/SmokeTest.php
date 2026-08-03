@@ -58,6 +58,7 @@ class SmokeTest extends TestCase
             'campaigns' => ['/mail/campaigns'],
             'campaign create' => ['/mail/campaigns/create'],
             'campaign report' => ['/mail/campaigns/1'],
+            'campaign edit' => ['/mail/campaigns/1/edit'],
             'contacts' => ['/mail/contacts'],
             'contact import' => ['/mail/contacts/import'],
             'suppression' => ['/mail/suppression'],

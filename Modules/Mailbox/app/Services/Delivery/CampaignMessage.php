@@ -73,6 +73,18 @@ class CampaignMessage extends Mailable
             $this->withSymfonyMessage(fn (Email $email) => $email->text($this->message->text));
         }
 
+        // Only a one-to-one message ever carries these. A campaign attachment
+        // is a way to multiply a mailbox's storage by the size of the list, and
+        // a link is both smaller and measurable.
+        foreach ($this->message->attachments as $file) {
+            if (is_file($file['path'])) {
+                $this->attach($file['path'], array_filter([
+                    'as' => $file['name'],
+                    'mime' => $file['mime'],
+                ]));
+            }
+        }
+
         return $this;
     }
 }
