@@ -1,6 +1,8 @@
 <?php
 
 use Illuminate\Support\Facades\Route;
+use Modules\Accounting\Models\Invoice;
+use Modules\Accounting\Services\InvoiceDocument;
 
 /*
 | Accounting module - invoices, expenses, clients, reports.
@@ -13,6 +15,17 @@ Route::middleware('auth')->prefix('accounting')->name('accounting.')->group(func
     Route::livewire('/invoices', 'accounting::invoices')->name('invoices');
     Route::livewire('/invoices/create', 'accounting::invoice-edit')->name('invoice-create');
     Route::livewire('/invoices/{invoice}/edit', 'accounting::invoice-edit')->name('invoice-edit');
+
+    // Not a Livewire page: the browser is being handed a file. Declared before
+    // the wildcard show route so /invoices/41/pdf is not swallowed by it.
+    Route::get('/invoices/{invoice}/pdf', function (Invoice $invoice, InvoiceDocument $document) {
+        return $document->stream($invoice);
+    })->name('invoice-pdf');
+
+    Route::get('/invoices/{invoice}/pdf/download', function (Invoice $invoice, InvoiceDocument $document) {
+        return $document->download($invoice);
+    })->name('invoice-download');
+
     Route::livewire('/invoices/{invoice}', 'accounting::invoice-show')->name('invoice-show');
 
     Route::livewire('/recurring', 'accounting::recurring')->name('recurring');

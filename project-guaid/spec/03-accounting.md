@@ -30,6 +30,26 @@ which keeps every amount comparable in raw SQL.
 
 `decimal(20,6)` holds up to 99,999,999,999,999.999999. That is enough.
 
+**On SQLite it does not hold that.** SQLite has no DECIMAL storage class: the column gets NUMERIC
+affinity and a non-integer is stored as an IEEE double, so the top of that range is silently
+rounded — the maximum quoted above comes back as the integer 100000000000000. Measured, not
+assumed; `NoFloatsInMoneyTest` pins both the safe range and the ceiling.
+
+This is accepted rather than worked around. Integer minor units or money in a `varchar` would be
+exact everywhere, and both cost `SUM()` and `ORDER BY` on every report to buy headroom no
+freelance invoice will use.
+
+The measured ceiling on SQLite is **fourteen significant digits**: 12,345,678.123456 round-trips
+unchanged, 123,456,789.123456 comes back as …789.123460. The limit is PHP's `precision` ini
+(14 by default) deciding how a float becomes a string, not the double, which holds nearly sixteen.
+So the safe range is about ±99,999,999.999999 — a hundred million, at six decimals. MySQL and
+MariaDB, the primary target, are exact throughout.
+
+The rule that follows: **never do money arithmetic in SQL.** No `SUM(amount)` feeding a figure a
+person reads. Totals are computed in PHP through `brick/money`, where the value is a decimal string
+and the database is only ever storage. Aggregate SQL is fine for sorting and for approximate
+dashboard figures, and must be labelled as such.
+
 ### Arithmetic
 
 All money arithmetic goes through **`brick/money`**. Never `+`, never `round()`, never a float

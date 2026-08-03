@@ -5,6 +5,7 @@ namespace Database\Seeders;
 use App\Models\User;
 use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
+use Modules\Accounting\Database\Seeders\AccountingDatabaseSeeder;
 use Modules\Core\Database\Seeders\CoreDatabaseSeeder;
 use Modules\Project\Database\Seeders\ProjectDatabaseSeeder;
 
@@ -30,6 +31,7 @@ class DatabaseSeeder extends Seeder
         $this->call([
             CoreDatabaseSeeder::class,
             ProjectDatabaseSeeder::class,
+            AccountingDatabaseSeeder::class,
         ]);
     }
 }
