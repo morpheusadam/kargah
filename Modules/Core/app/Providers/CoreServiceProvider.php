@@ -7,11 +7,13 @@ use Illuminate\Console\Scheduling\Schedule;
 use Modules\Core\Console\PruneNotifications;
 use Modules\Core\Contracts\CustomerReader as CustomerReaderContract;
 use Modules\Core\Contracts\Linker as LinkerContract;
+use Modules\Core\Contracts\NotificationPreferences as NotificationPreferencesContract;
 use Modules\Core\Contracts\Notifier as NotifierContract;
 use Modules\Core\Models\Company;
 use Modules\Core\Models\Customer;
 use Modules\Core\Services\CustomerReader;
 use Modules\Core\Services\Linker;
+use Modules\Core\Services\NotificationPreferences;
 use Modules\Core\Services\Notifier;
 use Modules\Core\Support\MorphMap;
 use Nwidart\Modules\Support\ModuleServiceProvider;
@@ -33,6 +35,7 @@ class CoreServiceProvider extends ModuleServiceProvider
 
         $this->app->bind(CustomerReaderContract::class, CustomerReader::class);
         $this->app->bind(LinkerContract::class, Linker::class);
+        $this->app->bind(NotificationPreferencesContract::class, NotificationPreferences::class);
         $this->app->bind(NotifierContract::class, Notifier::class);
     }
 

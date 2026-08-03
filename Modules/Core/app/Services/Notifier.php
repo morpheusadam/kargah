@@ -8,6 +8,7 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 use Modules\Core\Contracts\Notifier as NotifierContract;
+use Modules\Core\Contracts\NotificationPreferences as NotificationPreferencesContract;
 use Modules\Core\Models\Notification;
 
 /**
@@ -25,6 +26,18 @@ use Modules\Core\Models\Notification;
  * **`markRead()` only writes when `read_at` is null.** Anything else would move
  * the timestamp on every page render of a feed that marks rows read as you look
  * at them, and "first read at" would come to mean "last looked at".
+ *
+ * **Preferences decide whether a row is written at all, not whether it is
+ * hidden afterwards.** `user_notifications` is the in-app feed itself — there
+ * is no other consumer of it — so a person who has switched an event's
+ * "in app" toggle off gets no row rather than an invisible one nobody would
+ * ever read. This is a real change in behaviour from before preferences
+ * existed, and it is safe precisely because "absent preference" defaults to
+ * allowed: every call already in this codebase, and every existing test,
+ * notifies a user with no rows in `notification_preferences`, so nothing
+ * already written starts being skipped. `email` is not consulted here —
+ * nothing in Kargah sends a notification by email yet, and quiet hours,
+ * which only ever suppress email, never reach this class at all.
  */
 class Notifier implements NotifierContract
 {
@@ -41,9 +54,17 @@ class Notifier implements NotifierContract
 
     private const MAX_DEDUPE_KEY = 120;
 
+    public function __construct(private readonly NotificationPreferencesContract $preferences) {}
+
     public function notify(int $userId, string $event, string $title, array $options = []): array
     {
-        $row = $this->write($userId, $event, $title, $this->attributes($event, $title, $options));
+        $attributes = $this->attributes($event, $title, $options);
+
+        if (! $this->preferences->allows($userId, $event, 'in_app')) {
+            return $this->skipped($userId, $attributes);
+        }
+
+        $row = $this->write($userId, $event, $title, $attributes);
 
         return $this->toArray($row);
     }
@@ -52,11 +73,25 @@ class Notifier implements NotifierContract
     {
         $attributes = $this->attributes($event, $title, $options);
 
-        $written = 0;
-
         // Collapsed rather than rejected: "everyone watching this card" routinely
         // contains the same person twice once a watch on the list is folded in.
-        foreach (collect($userIds)->map(fn ($id): int => (int) $id)->unique()->values() as $userId) {
+        $ids = collect($userIds)->map(fn ($id): int => (int) $id)->unique()->values();
+
+        if ($ids->isEmpty()) {
+            return 0;
+        }
+
+        // One query for every recipient, not one per recipient — see the
+        // contract's docblock on `channelsForMany()`.
+        $channels = $this->preferences->channelsForMany($ids->all(), $event);
+
+        $written = 0;
+
+        foreach ($ids as $userId) {
+            if (! ($channels[$userId]['in_app'] ?? true)) {
+                continue;
+            }
+
             $before = $this->existing($userId, $attributes['dedupe_key']);
 
             $this->write($userId, $event, $title, $attributes);
@@ -278,6 +313,37 @@ class Notifier implements NotifierContract
             'read_at' => $row->read_at?->toIso8601String(),
             'created_at' => $row->created_at?->toIso8601String(),
             'dedupe_key' => $row->dedupe_key,
+        ];
+    }
+
+    /**
+     * What `notify()` returns when a preference refused the write.
+     *
+     * Same shape as `toArray()` so a caller destructuring the result does
+     * not need a special case, but `id` is `null` — there is no row, and
+     * `null` is the one value nothing already written could ever carry, so
+     * it cannot be confused with a real notification.
+     *
+     * @param  array<string, mixed>  $attributes
+     * @return array<string, mixed>
+     */
+    private function skipped(int $userId, array $attributes): array
+    {
+        return [
+            'id' => null,
+            'user_id' => $userId,
+            'event' => $attributes['event'],
+            'title' => $attributes['title'],
+            'body' => $attributes['body'],
+            'url' => $attributes['url'],
+            'subject_type' => $attributes['subject_type'],
+            'subject_id' => $attributes['subject_id'],
+            'actor_id' => $attributes['actor_id'],
+            'actor_name' => null,
+            'is_read' => false,
+            'read_at' => null,
+            'created_at' => null,
+            'dedupe_key' => $attributes['dedupe_key'],
         ];
     }
 }
