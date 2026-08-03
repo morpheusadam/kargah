@@ -22,7 +22,7 @@ use Illuminate\Support\Facades\Hash;
  * `project-guaid/DECISIONS.md` for the mutator idiom that looks identical to
  * this one and stores the column in clear text.
  */
-#[Fillable(['name', 'email', 'password', 'timezone', 'locale', 'date_format', 'bio'])]
+#[Fillable(['name', 'email', 'password', 'timezone', 'locale', 'date_format', 'bio', 'colour_blind_mode'])]
 #[Hidden(['password', 'remember_token', 'two_factor_secret_encrypted', 'two_factor_recovery_codes_encrypted'])]
 class User extends Authenticatable
 {
@@ -40,6 +40,10 @@ class User extends Authenticatable
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
             'two_factor_confirmed_at' => 'datetime',
+            // Whether label chips carry a pattern overlay as well as a colour —
+            // see `Modules\Project\Support\Palette::pattern()`. Global, not
+            // per-board: the same person is colour-blind on every board.
+            'colour_blind_mode' => 'boolean',
         ];
     }
 

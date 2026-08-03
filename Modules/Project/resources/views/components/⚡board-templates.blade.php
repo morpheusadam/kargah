@@ -155,13 +155,19 @@ class extends Component
     /**
      * The default label set on a new board.
      *
-     * One label per palette colour, named after the colour, because a board
-     * nobody has set up yet is more useful with six colours to reach for than
-     * with six guesses at what the work is called.
+     * One label per label colour, named after the colour, because a board
+     * nobody has set up yet is more useful with ten colours to reach for than
+     * with ten guesses at what the work is called.
+     *
+     * `labelColours()`, not `keys()`. The palette carries the semantic tokens
+     * the whole application uses — `success`, `destructive`, `info` — as well
+     * as Trello's ten label colours, and several of the two sets share a
+     * display name. Seeding from every key gave a fresh board sixteen labels,
+     * four of them visible duplicates: two called Blue, two called Green.
      */
     private function seedLabels(Board $board): void
     {
-        foreach (Palette::keys() as $position => $colour) {
+        foreach (Palette::labelColours() as $position => $colour) {
             Label::query()->create([
                 'board_id' => $board->id,
                 'name' => Palette::name($colour),

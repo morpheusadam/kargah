@@ -285,7 +285,12 @@ class extends Component
             'attachments' => $this->attachments(),
             'attachmentImageTypes' => self::COVER_IMAGE_TYPES,
             'cover' => $card?->coverPresentation(),
-            'coverColours' => Palette::keys(),
+            // The ten label colours, not every palette key. `keys()` also holds
+            // the application's semantic tokens — success, destructive, info —
+            // several of which share a display name with a label colour, so a
+            // picker built from it offers sixteen swatches with visible
+            // duplicates. A cover is a colour choice, not a semantic one.
+            'coverColours' => Palette::labelColours(),
             'formatting' => [
                 ['icon' => 'ki-text-bold', 'wrap' => '**', 'title' => 'Bold'],
                 ['icon' => 'ki-text-italic', 'wrap' => '_', 'title' => 'Italic'],

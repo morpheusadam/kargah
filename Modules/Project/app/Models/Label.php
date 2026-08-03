@@ -35,6 +35,16 @@ class Label extends Model
         return Palette::dot($this->colour);
     }
 
+    /**
+     * The colour-blind overlay for this label's chip, or an empty string when
+     * its colour is not one of Trello's ten (a leftover semantic key, or a
+     * label nobody has recoloured since the migration).
+     */
+    public function patternClass(): string
+    {
+        return Palette::pattern($this->colour);
+    }
+
     protected static function newFactory(): LabelFactory
     {
         return LabelFactory::new();

@@ -25,9 +25,12 @@ class LabelFactory extends Factory
                 'Design',
                 'Hosting',
             ]),
-            // A palette key, resolved to classes by `Palette`. Anything outside
-            // this set falls back to grey, which reads as a bug in the UI.
-            'colour' => $this->faker->randomElement(Palette::keys()),
+            // A palette key, resolved to classes by `Palette`. Drawn from
+            // Trello's own ten rather than the full key set — a freshly made
+            // label picks from what the board settings UI actually offers.
+            // Anything outside the whole palette falls back to grey, which
+            // reads as a bug in the UI.
+            'colour' => $this->faker->randomElement(Palette::labelColours()),
             'position' => $this->faker->numberBetween(0, 20),
         ];
     }

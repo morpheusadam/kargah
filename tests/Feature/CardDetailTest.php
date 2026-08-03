@@ -598,6 +598,16 @@ class CardDetailTest extends TestCase
         $this->assertSame(5, $board->cards()->count());
     }
 
+    /**
+     * Seeded from the ten label colours, not from every palette key.
+     *
+     * `Palette::keys()` also holds the application's semantic tokens —
+     * `success`, `destructive`, `info` — and several of those share a display
+     * name with a label colour. Seeding from all of them gave a fresh board
+     * sixteen labels, four of them visible duplicates: two called Blue, two
+     * called Green. The distinct-names assertion below is the one that would
+     * have caught it, so it stays whatever the palette grows into next.
+     */
     public function test_a_new_board_gets_a_default_label_set_from_the_palette(): void
     {
         Livewire::test('project::board-templates')
@@ -606,8 +616,16 @@ class CardDetailTest extends TestCase
 
         $board = Board::query()->where('slug', 'studio-operations')->firstOrFail();
 
-        $this->assertSame(Palette::keys(), $board->labels()->pluck('colour')->all());
-        $this->assertSame(count(Palette::keys()), $board->labels()->count());
+        $this->assertSame(Palette::labelColours(), $board->labels()->pluck('colour')->all());
+        $this->assertSame(count(Palette::labelColours()), $board->labels()->count());
+
+        $names = $board->labels()->pluck('name')->all();
+
+        $this->assertSame(
+            $names,
+            array_values(array_unique($names)),
+            'A fresh board seeded two labels with the same name.',
+        );
     }
 
     public function test_the_blank_template_creates_a_board_with_no_lists(): void
@@ -642,7 +660,7 @@ class CardDetailTest extends TestCase
         foreach ($boards as $board) {
             $this->assertSame(5, $board->lists()->count());
             $this->assertSame(3, $board->cards()->count());
-            $this->assertSame(count(Palette::keys()), $board->labels()->count());
+            $this->assertSame(count(Palette::labelColours()), $board->labels()->count());
         }
     }
 

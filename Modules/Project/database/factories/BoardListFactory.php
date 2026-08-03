@@ -32,11 +32,20 @@ class BoardListFactory extends Factory
                 BigDecimal::of(Position::STEP)->multipliedBy($this->faker->unique()->numberBetween(1, 512)),
             ),
             'created_by' => null,
+            // No header colour by default — the sensible default for a list
+            // nobody has coloured yet.
+            'colour' => null,
         ];
     }
 
     public function archived(): static
     {
         return $this->state(fn () => ['archived_at' => now()->subDays(7)]);
+    }
+
+    /** Pin the list to one palette key, for tests that assert on colour. */
+    public function colour(string $colour): static
+    {
+        return $this->state(fn () => ['colour' => $colour]);
     }
 }

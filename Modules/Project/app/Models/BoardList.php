@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Modules\Project\Database\Factories\BoardListFactory;
+use Modules\Project\Support\Palette;
 use Spatie\Activitylog\LogOptions;
 use Spatie\Activitylog\Traits\LogsActivity;
 
@@ -30,6 +31,7 @@ class BoardList extends Model
         'position',
         'archived_at',
         'created_by',
+        'colour',
     ];
 
     protected function casts(): array
@@ -73,6 +75,16 @@ class BoardList extends Model
     public function isArchived(): bool
     {
         return $this->archived_at !== null;
+    }
+
+    /**
+     * The header colour's whole class string, or `null` when the list has none
+     * — the default for every list, and the state nothing here forces a
+     * choice out of.
+     */
+    public function headerColourClass(): ?string
+    {
+        return $this->colour === null ? null : Palette::tone($this->colour);
     }
 
     /**

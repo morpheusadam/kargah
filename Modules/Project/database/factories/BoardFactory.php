@@ -36,11 +36,44 @@ class BoardFactory extends Factory
             'company_id' => null,
             'position' => $this->faker->numberBetween(0, 20),
             'created_by' => null,
+            // Fresh boards carry no background — see `Board::BACKGROUND_COLOUR`
+            // and the migration's docblock for why a null key, not a fourth
+            // type, is what "nothing chosen yet" means.
+            'background_type' => Board::BACKGROUND_COLOUR,
+            'background_key' => null,
+            'background_attachment_id' => null,
+            'background_text_tone' => 'light',
         ];
     }
 
     public function archived(): static
     {
         return $this->state(fn () => ['archived_at' => now()->subDays(21)]);
+    }
+
+    /** A solid-colour background from one of Trello's ten label colours. */
+    public function withColourBackground(?string $key = null): static
+    {
+        $key ??= $this->faker->randomElement(Palette::labelColours());
+
+        return $this->state(fn () => [
+            'background_type' => Board::BACKGROUND_COLOUR,
+            'background_key' => $key,
+            'background_attachment_id' => null,
+            'background_text_tone' => Palette::defaultTextToneForColour($key),
+        ]);
+    }
+
+    /** A fixed gradient background. */
+    public function withGradientBackground(?string $key = null): static
+    {
+        $key ??= $this->faker->randomElement(array_keys(Palette::gradients()));
+
+        return $this->state(fn () => [
+            'background_type' => Board::BACKGROUND_GRADIENT,
+            'background_key' => $key,
+            'background_attachment_id' => null,
+            'background_text_tone' => Palette::gradientTextTone($key),
+        ]);
     }
 }

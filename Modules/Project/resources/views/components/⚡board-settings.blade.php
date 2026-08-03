@@ -4,7 +4,9 @@ use Illuminate\Support\Collection;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Validate;
 use Livewire\Component;
+use Livewire\WithFileUploads;
 use Modules\Core\Concerns\InteractsWithToasts;
+use Modules\Data\Contracts\AttachmentService;
 use Modules\Project\Models\Board;
 use Modules\Project\Models\BoardList;
 use Modules\Project\Models\Card;
@@ -50,6 +52,7 @@ new
 class extends Component
 {
     use InteractsWithToasts;
+    use WithFileUploads;
 
     /** Board slug from the route. Read-only for the life of the page. */
     public string $board = '';
@@ -62,6 +65,29 @@ class extends Component
 
     /** A `Palette` key, never a class string. */
     public string $colour = 'primary';
+
+    /* Background --------------------------------------------------------------
+     *
+     * Mirrors of the board's own `background_*` columns, kept on the
+     * component so the swatches can highlight the current choice without a
+     * fresh query on every render.
+     */
+
+    public string $backgroundType = Board::BACKGROUND_COLOUR;
+
+    public ?string $backgroundKey = null;
+
+    public string $backgroundTextTone = 'light';
+
+    /** @var \Livewire\Features\SupportFileUploads\TemporaryUploadedFile|null */
+    public $backgroundUpload = null;
+
+    /**
+     * Whether label chips carry a colour-blind pattern as well as a colour.
+     * A per-user preference, not a per-board one — see `App\Models\User` and
+     * `project-guaid/DECISIONS.md` for why it lives on `users`.
+     */
+    public bool $colourBlindMode = false;
 
     /** Label being edited inline, by id. */
     public ?int $editingLabel = null;
@@ -113,6 +139,8 @@ class extends Component
     {
         $this->board = $board;
 
+        $this->colourBlindMode = (bool) auth()->user()?->colour_blind_mode;
+
         $record = $this->board();
 
         if ($record === null) {
@@ -122,6 +150,9 @@ class extends Component
         $this->name = $record->name;
         $this->description = (string) $record->description;
         $this->colour = Palette::has($record->colour) ? $record->colour : 'neutral';
+        $this->backgroundType = $record->background_type;
+        $this->backgroundKey = $record->background_key;
+        $this->backgroundTextTone = $record->background_text_tone;
     }
 
     /* Reading the board ------------------------------------------------------ */
@@ -186,6 +217,15 @@ class extends Component
         return [
             'record' => $board,
             'colours' => Palette::all(),
+            // The ten Trello swatches label pickers and the solid-colour
+            // background picker offer, in Trello's own order — `Palette::all()`
+            // also carries the semantic keys boards, lists and due-date badges
+            // still use, which is the wrong list to build either picker from.
+            'labelColours' => collect(Palette::labelColours())
+                ->mapWithKeys(fn (string $key): array => [$key => Palette::all()[$key]])
+                ->all(),
+            'gradients' => Palette::gradients(),
+            'backgroundPhoto' => $board?->backgroundPhoto(),
             'labels' => $this->labels(),
             'lists' => $lists,
             'archivedLists' => $board === null
@@ -291,6 +331,262 @@ class extends Component
         $this->toastSuccess(
             'Board colour saved',
             $board->name.' went from '.$was.' to '.Palette::name($key).'.',
+        );
+    }
+
+    /* Background ----------------------------------------------------------------
+     *
+     * Three kinds, one row on the board — see `Board::backgroundClass()` and
+     * the migration's docblock. Every setter here also updates the mirrored
+     * public properties so the swatches highlight the new choice without a
+     * fresh query.
+     */
+
+    /** A solid colour, from Trello's ten label colours — see `Palette::labelColours()`. */
+    public function selectBackgroundColour(string $key): void
+    {
+        $board = $this->board();
+
+        if ($board === null) {
+            $this->toastError('There is no board at this address', 'Pick one from the boards page.');
+
+            return;
+        }
+
+        if (! Palette::isLabelColour($key)) {
+            $this->toastError('That is not a background colour', 'Pick one of the swatches.');
+
+            return;
+        }
+
+        $tone = Palette::defaultTextToneForColour($key);
+
+        $board->forceFill([
+            'background_type' => Board::BACKGROUND_COLOUR,
+            'background_key' => $key,
+            'background_attachment_id' => null,
+            'background_text_tone' => $tone,
+        ])->save();
+
+        activity('board')
+            ->performedOn($board)
+            ->causedBy(auth()->user())
+            ->event('board.background-changed')
+            ->withProperties(['type' => 'colour', 'key' => $key])
+            ->log('background set to '.Palette::name($key));
+
+        $this->backgroundType = Board::BACKGROUND_COLOUR;
+        $this->backgroundKey = $key;
+        $this->backgroundTextTone = $tone;
+
+        $this->toastSuccess('Background saved', $board->name.' now uses '.Palette::name($key).' as its background.');
+    }
+
+    /** One of the six fixed gradients — see `Palette::gradients()`. */
+    public function selectBackgroundGradient(string $key): void
+    {
+        $board = $this->board();
+
+        if ($board === null) {
+            $this->toastError('There is no board at this address', 'Pick one from the boards page.');
+
+            return;
+        }
+
+        if (! Palette::hasGradient($key)) {
+            $this->toastError('That is not a gradient', 'Pick one of the swatches.');
+
+            return;
+        }
+
+        $tone = Palette::gradientTextTone($key);
+
+        $board->forceFill([
+            'background_type' => Board::BACKGROUND_GRADIENT,
+            'background_key' => $key,
+            'background_attachment_id' => null,
+            'background_text_tone' => $tone,
+        ])->save();
+
+        activity('board')
+            ->performedOn($board)
+            ->causedBy(auth()->user())
+            ->event('board.background-changed')
+            ->withProperties(['type' => 'gradient', 'key' => $key])
+            ->log('background set to the '.Palette::gradientName($key).' gradient');
+
+        $this->backgroundType = Board::BACKGROUND_GRADIENT;
+        $this->backgroundKey = $key;
+        $this->backgroundTextTone = $tone;
+
+        $this->toastSuccess('Background saved', $board->name.' now uses the '.Palette::gradientName($key).' gradient.');
+    }
+
+    /**
+     * Store the queued photo through `AttachmentService` and make it the
+     * background. A board carries one background photo, so an existing one is
+     * soft deleted rather than left behind as an attachment nothing points at.
+     */
+    public function uploadBackgroundPhoto(): void
+    {
+        $board = $this->board();
+
+        if ($board === null) {
+            $this->toastError('There is no board at this address', 'Pick one from the boards page.');
+
+            return;
+        }
+
+        if ($this->backgroundUpload === null) {
+            $this->toastWarning('Nothing to upload', 'Choose a photo first.');
+
+            return;
+        }
+
+        // Same ceiling as Livewire's own `temporary_file_upload.rules` and
+        // `CardAttachmentTest`'s 25 MB — the config used to cap uploads at a
+        // silent 12 MB default while every visible rule said something else.
+        $this->validate(['backgroundUpload' => 'image|max:25600']);
+
+        $service = app(AttachmentService::class);
+        $stored = $service->attach($board, $this->backgroundUpload, auth()->id());
+
+        if ($board->background_attachment_id !== null) {
+            $service->delete($board->background_attachment_id);
+        }
+
+        $board->forceFill([
+            'background_type' => Board::BACKGROUND_PHOTO,
+            'background_key' => null,
+            'background_attachment_id' => $stored['id'],
+            'background_text_tone' => 'light',
+        ])->save();
+
+        activity('board')
+            ->performedOn($board)
+            ->causedBy(auth()->user())
+            ->event('board.background-changed')
+            ->withProperties(['type' => 'photo', 'attachment_id' => $stored['id']])
+            ->log('background photo uploaded');
+
+        $this->backgroundType = Board::BACKGROUND_PHOTO;
+        $this->backgroundKey = null;
+        $this->backgroundTextTone = 'light';
+        $this->backgroundUpload = null;
+
+        $this->toastSuccess('Background photo saved', $stored['name'].' is now behind every list on '.$board->name.'.');
+    }
+
+    /**
+     * Remove the background photo. Falls back to a plain, keyless colour
+     * background rather than an empty photo state, so the board stays
+     * renderable the instant the photo is gone rather than pointing at an
+     * attachment id that no longer resolves to anything.
+     */
+    public function removeBackgroundPhoto(): void
+    {
+        $board = $this->board();
+
+        if ($board === null) {
+            $this->toastError('There is no board at this address', 'Pick one from the boards page.');
+
+            return;
+        }
+
+        if ($board->background_attachment_id === null) {
+            $this->toastSuccess('Nothing to remove', $board->name.' has no background photo.');
+
+            return;
+        }
+
+        app(AttachmentService::class)->delete($board->background_attachment_id);
+
+        $board->forceFill([
+            'background_type' => Board::BACKGROUND_COLOUR,
+            'background_key' => null,
+            'background_attachment_id' => null,
+            'background_text_tone' => 'light',
+        ])->save();
+
+        activity('board')
+            ->performedOn($board)
+            ->causedBy(auth()->user())
+            ->event('board.background-changed')
+            ->withProperties(['type' => 'colour', 'key' => null])
+            ->log('background photo removed');
+
+        $this->backgroundType = Board::BACKGROUND_COLOUR;
+        $this->backgroundKey = null;
+        $this->backgroundTextTone = 'light';
+
+        $this->toastSuccess('Background photo removed', $board->name.' is back to a plain background.');
+    }
+
+    /** The light/dark toggle every background kind stores, never guesses. */
+    public function setBackgroundTextTone(string $tone): void
+    {
+        $board = $this->board();
+
+        if ($board === null) {
+            $this->toastError('There is no board at this address', 'Pick one from the boards page.');
+
+            return;
+        }
+
+        if (! in_array($tone, ['light', 'dark'], true)) {
+            $this->toastError('That is not a text tone', 'Pick light or dark.');
+
+            return;
+        }
+
+        if ($board->background_text_tone === $tone) {
+            $this->backgroundTextTone = $tone;
+
+            $this->toastSuccess('Nothing to save', $board->name.' already shows '.$tone.' text.');
+
+            return;
+        }
+
+        $board->forceFill(['background_text_tone' => $tone])->save();
+
+        activity('board')
+            ->performedOn($board)
+            ->causedBy(auth()->user())
+            ->event('board.background-text-tone-changed')
+            ->withProperties(['tone' => $tone])
+            ->log('background text tone set to '.$tone);
+
+        $this->backgroundTextTone = $tone;
+
+        $this->toastSuccess(
+            'Text tone saved',
+            $board->name.' now shows '.$tone.' card text over its background.',
+        );
+    }
+
+    /* Colour-blind mode ----------------------------------------------------------
+     *
+     * A per-user preference — see `App\Models\User::casts()` and
+     * `project-guaid/DECISIONS.md` for why it lives on `users` rather than a
+     * new table or a board column.
+     */
+
+    public function toggleColourBlindMode(): void
+    {
+        $user = auth()->user();
+
+        if ($user === null) {
+            return;
+        }
+
+        $user->forceFill(['colour_blind_mode' => ! $user->colour_blind_mode])->save();
+        $this->colourBlindMode = (bool) $user->colour_blind_mode;
+
+        $this->toastSuccess(
+            $this->colourBlindMode ? 'Colour-blind patterns on' : 'Colour-blind patterns off',
+            $this->colourBlindMode
+                ? 'Every label chip now carries a pattern as well as a colour, everywhere in Kargah.'
+                : 'Label chips are back to colour alone.',
         );
     }
 
@@ -891,6 +1187,46 @@ class extends Component
         $this->toastSuccess('List renamed', $was.' is now '.$name.' on the board.');
     }
 
+    /** The list's header colour, from the existing `Palette` — semantic keys included, per 06's own wording. */
+    public function selectListColour(int $listId, string $colour): void
+    {
+        $list = $this->listOnThisBoard($listId);
+
+        if ($list === null) {
+            $this->toastError('That list is not on this board', 'Reload the page and try again.');
+
+            return;
+        }
+
+        $key = $colour === 'none' ? null : $colour;
+
+        if ($key !== null && ! Palette::has($key)) {
+            $this->toastError('That is not a list colour', 'Pick one of the swatches.');
+
+            return;
+        }
+
+        if ($list->colour === $key) {
+            $this->toastSuccess($list->name.' is already that colour', 'Nothing changed.');
+
+            return;
+        }
+
+        $list->forceFill(['colour' => $key])->save();
+
+        activity('list')
+            ->performedOn($list)
+            ->causedBy(auth()->user())
+            ->event('list.recoloured')
+            ->withProperties(['colour' => $key])
+            ->log($key === null ? 'colour cleared' : 'colour set to '.$key);
+
+        $this->toastSuccess(
+            $key === null ? $list->name.' colour cleared' : $list->name.' recoloured',
+            $key === null ? 'Its header is back to plain.' : 'Its header is now '.Palette::name($key).'.',
+        );
+    }
+
     public function moveListUp(int $listId): void
     {
         $this->moveList($listId, -1);
@@ -1276,13 +1612,149 @@ class extends Component
                 </div>
             </div>
 
+            {{-- Background --}}
+            <div class="kt-card xl:col-span-2">
+                <div class="kt-card-header">
+                    <h2 class="kt-card-title">Background</h2>
+                    <span class="text-xs text-muted-foreground">What sits behind the lists on the board canvas</span>
+                </div>
+                <div class="kt-card-content flex flex-col gap-5 p-5">
+
+                    {{-- Preview --}}
+                    <div class="rounded-lg overflow-hidden border border-border">
+                        <div class="h-24 flex items-end p-3 {{ $record->backgroundClass() }} {{ $record->backgroundClass() === '' ? 'bg-muted' : '' }}"
+                             @if ($record->backgroundStyle()) style="{{ $record->backgroundStyle() }}" @endif>
+                            <span class="text-xs font-medium px-2 py-1 rounded bg-black/10 {{ $record->textToneClass() }}">
+                                {{ $record->name }}
+                            </span>
+                        </div>
+                    </div>
+
+                    {{-- Kind --}}
+                    <div class="flex items-center gap-2">
+                        <span class="kt-badge kt-badge-sm {{ $backgroundType === 'colour' ? 'kt-badge-primary' : 'kt-badge-outline' }}">
+                            <i class="ki-filled ki-color-swatch text-xs"></i> Colour
+                        </span>
+                        <span class="kt-badge kt-badge-sm {{ $backgroundType === 'gradient' ? 'kt-badge-primary' : 'kt-badge-outline' }}">
+                            <i class="ki-filled ki-brush text-xs"></i> Gradient
+                        </span>
+                        <span class="kt-badge kt-badge-sm {{ $backgroundType === 'photo' ? 'kt-badge-primary' : 'kt-badge-outline' }}">
+                            <i class="ki-filled ki-picture text-xs"></i> Photo
+                        </span>
+                        <span class="text-xs text-muted-foreground ms-auto">Pick a swatch, a gradient or upload a photo below — whichever you use last wins.</span>
+                    </div>
+
+                    {{-- Solid colour, from Trello's ten label colours --}}
+                    <div class="flex flex-col gap-2">
+                        <span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Solid colour</span>
+                        <div class="grid grid-cols-5 sm:grid-cols-10 gap-3">
+                            @foreach ($labelColours as $key => $option)
+                                <button wire:click="selectBackgroundColour('{{ $key }}')" wire:key="bg-colour-{{ $key }}"
+                                        wire:loading.attr="disabled" wire:target="selectBackgroundColour"
+                                        class="flex flex-col items-center gap-1.5 group"
+                                        aria-pressed="{{ $backgroundType === 'colour' && $backgroundKey === $key ? 'true' : 'false' }}"
+                                        title="{{ $option['name'] }}">
+                                    <span class="w-full h-10 rounded-lg {{ $option['dot'] }} border-2 transition-colors
+                                                 {{ $backgroundType === 'colour' && $backgroundKey === $key ? 'border-mono' : 'border-transparent group-hover:border-border' }}"></span>
+                                    <span class="text-[11px] {{ $backgroundType === 'colour' && $backgroundKey === $key ? 'text-mono' : 'text-muted-foreground' }}">{{ $option['name'] }}</span>
+                                </button>
+                            @endforeach
+                        </div>
+                    </div>
+
+                    {{-- Gradient --}}
+                    <div class="flex flex-col gap-2">
+                        <span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Gradient</span>
+                        <div class="grid grid-cols-3 sm:grid-cols-6 gap-3">
+                            @foreach ($gradients as $key => $option)
+                                <button wire:click="selectBackgroundGradient('{{ $key }}')" wire:key="bg-gradient-{{ $key }}"
+                                        wire:loading.attr="disabled" wire:target="selectBackgroundGradient"
+                                        class="flex flex-col items-center gap-1.5 group"
+                                        aria-pressed="{{ $backgroundType === 'gradient' && $backgroundKey === $key ? 'true' : 'false' }}"
+                                        title="{{ $option['name'] }}">
+                                    <span class="w-full h-10 rounded-lg {{ $option['class'] }} border-2 transition-colors
+                                                 {{ $backgroundType === 'gradient' && $backgroundKey === $key ? 'border-mono' : 'border-transparent group-hover:border-border' }}"></span>
+                                    <span class="text-[11px] {{ $backgroundType === 'gradient' && $backgroundKey === $key ? 'text-mono' : 'text-muted-foreground' }}">{{ $option['name'] }}</span>
+                                </button>
+                            @endforeach
+                        </div>
+                    </div>
+
+                    {{-- Photo, through AttachmentService --}}
+                    <div class="flex flex-col gap-2 pt-2 border-t border-border">
+                        <span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Photo</span>
+
+                        @if ($backgroundPhoto)
+                            <div class="flex items-center gap-3">
+                                <span class="text-sm text-mono truncate">{{ $backgroundPhoto['name'] }}</span>
+                                <button wire:click="removeBackgroundPhoto" wire:loading.attr="disabled" wire:target="removeBackgroundPhoto"
+                                        class="kt-btn kt-btn-sm kt-btn-ghost text-destructive gap-1">
+                                    <i class="ki-filled ki-trash text-sm"></i> Remove
+                                </button>
+                            </div>
+                        @endif
+
+                        <label class="rounded-lg border border-dashed border-border bg-accent/60 px-5 py-4 flex items-center gap-3 cursor-pointer">
+                            <i class="ki-filled ki-file-up text-xl text-muted-foreground"></i>
+                            <span class="text-sm text-secondary-foreground">Choose a photo, up to 25 MB</span>
+                            <input type="file" accept="image/*" class="hidden" wire:model="backgroundUpload">
+                        </label>
+
+                        <div wire:loading wire:target="backgroundUpload" class="text-xs text-secondary-foreground">
+                            <i class="ki-filled ki-loading animate-spin"></i> Receiving…
+                        </div>
+                        @error('backgroundUpload')<span class="text-xs text-destructive">{{ $message }}</span>@enderror
+
+                        @if ($backgroundUpload)
+                            <button wire:click="uploadBackgroundPhoto" wire:loading.attr="disabled" wire:target="uploadBackgroundPhoto"
+                                    class="kt-btn kt-btn-outline gap-2 self-start">
+                                <span wire:loading.remove wire:target="uploadBackgroundPhoto" class="inline-flex items-center gap-2">
+                                    <i class="ki-filled ki-file-up"></i> Use this photo
+                                </span>
+                                <span wire:loading wire:target="uploadBackgroundPhoto" class="inline-flex items-center gap-2">
+                                    <i class="ki-filled ki-loading animate-spin"></i> Storing…
+                                </span>
+                            </button>
+                        @endif
+                    </div>
+
+                    {{-- Text tone --}}
+                    <div class="flex items-center gap-3 pt-2 border-t border-border">
+                        <span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Card text</span>
+                        <div class="flex items-center gap-1 p-1 rounded-lg bg-muted">
+                            <button wire:click="setBackgroundTextTone('light')" wire:loading.attr="disabled" wire:target="setBackgroundTextTone"
+                                    class="kt-btn kt-btn-sm {{ $backgroundTextTone === 'light' ? 'kt-btn-primary' : 'kt-btn-ghost' }}">
+                                Light
+                            </button>
+                            <button wire:click="setBackgroundTextTone('dark')" wire:loading.attr="disabled" wire:target="setBackgroundTextTone"
+                                    class="kt-btn kt-btn-sm {{ $backgroundTextTone === 'dark' ? 'kt-btn-primary' : 'kt-btn-ghost' }}">
+                                Dark
+                            </button>
+                        </div>
+                        <span class="text-xs text-muted-foreground">
+                            A dark photo needs light text; a pale one needs dark. Pick whichever reads on yours.
+                        </span>
+                    </div>
+                </div>
+            </div>
+
             {{-- Labels --}}
             <div class="kt-card xl:col-span-2">
                 <div class="kt-card-header">
                     <h2 class="kt-card-title">Labels</h2>
-                    <span class="text-xs text-muted-foreground">
-                        {{ $labels->count() }} {{ $labels->count() === 1 ? 'label' : 'labels' }} on this board
-                    </span>
+                    <div class="flex items-center gap-4">
+                        <label class="flex items-center gap-2 cursor-pointer" title="Add a pattern to every label chip, not just a colour">
+                            <input type="checkbox" class="kt-switch kt-switch-sm"
+                                   wire:click="toggleColourBlindMode"
+                                   wire:loading.attr="disabled" wire:target="toggleColourBlindMode"
+                                   @checked($colourBlindMode)
+                                   aria-label="Colour-blind friendly patterns">
+                            <span class="text-xs text-muted-foreground">Colour-blind patterns</span>
+                        </label>
+                        <span class="text-xs text-muted-foreground">
+                            {{ $labels->count() }} {{ $labels->count() === 1 ? 'label' : 'labels' }} on this board
+                        </span>
+                    </div>
                 </div>
                 <div class="kt-card-content flex flex-col gap-3 p-5">
 
@@ -1295,7 +1767,7 @@ class extends Component
                                            wire:keydown.enter.prevent="saveLabel({{ $label->id }})">
 
                                     <div class="flex items-center gap-1.5">
-                                        @foreach ($colours as $colourKey => $option)
+                                        @foreach ($labelColours as $colourKey => $option)
                                             <button wire:click="$set('labelColourDraft', '{{ $colourKey }}')"
                                                     wire:key="draft-{{ $label->id }}-{{ $colourKey }}"
                                                     class="size-6 rounded-md {{ $option['dot'] }} border-2 {{ $labelColourDraft === $colourKey ? 'border-mono' : 'border-transparent' }}"
@@ -1314,7 +1786,7 @@ class extends Component
                                 </div>
                             @else
                                 <div class="flex flex-wrap items-center gap-3">
-                                    <span class="text-xs font-medium px-2 py-1 rounded {{ $label->chipClass() }}">{{ $label->name }}</span>
+                                    <span class="text-xs font-medium px-2 py-1 rounded {{ $label->chipClass() }} {{ $colourBlindMode ? $label->patternClass() : '' }}">{{ $label->name }}</span>
                                     <span class="text-xs text-muted-foreground">
                                         on {{ $label->cards_count }} {{ $label->cards_count === 1 ? 'card' : 'cards' }}
                                     </span>
@@ -1342,7 +1814,7 @@ class extends Component
                                aria-label="New label name" wire:model="newLabelName"
                                wire:keydown.enter.prevent="createLabel">
                         <div class="flex items-center gap-1.5">
-                            @foreach ($colours as $colourKey => $option)
+                            @foreach ($labelColours as $colourKey => $option)
                                 <button wire:click="$set('newLabelColour', '{{ $colourKey }}')"
                                         wire:key="new-{{ $colourKey }}"
                                         class="size-6 rounded-md {{ $option['dot'] }} border-2 {{ $newLabelColour === $colourKey ? 'border-mono' : 'border-transparent' }}"
@@ -1540,10 +2012,21 @@ class extends Component
                             @else
                                 <div class="flex flex-wrap items-center gap-3">
                                     <span class="text-xs text-muted-foreground w-5 text-center">{{ $index + 1 }}</span>
+                                    @if ($list->colour !== null)
+                                        <span class="size-2.5 rounded-full {{ \Modules\Project\Support\Palette::dot($list->colour) }}" title="{{ \Modules\Project\Support\Palette::name($list->colour) }} header"></span>
+                                    @endif
                                     <span class="text-sm font-medium text-mono">{{ $list->name }}</span>
                                     <span class="kt-badge kt-badge-sm kt-badge-outline">
                                         {{ $list->cards_count }} {{ $list->cards_count === 1 ? 'card' : 'cards' }}
                                     </span>
+
+                                    <select class="kt-select max-w-[140px]" aria-label="Header colour for {{ $list->name }}"
+                                            wire:change="selectListColour({{ $list->id }}, $event.target.value)">
+                                        <option value="none" @selected($list->colour === null)>No colour</option>
+                                        @foreach ($colours as $colourKey => $option)
+                                            <option value="{{ $colourKey }}" @selected($list->colour === $colourKey)>{{ $option['name'] }}</option>
+                                        @endforeach
+                                    </select>
 
                                     <div class="flex items-center gap-1 ms-auto">
                                         <button wire:click="moveListUp({{ $list->id }})"
