@@ -853,6 +853,107 @@ class extends Component
             );
     }
 
+    /* The keyboard layer -------------------------------------------------------
+     *
+     * Trello is keyboard-driven and this board was not. Selection, movement and
+     * the help sheet are all **client-side** — `j`/`k` must not cost a round
+     * trip, and which card is selected is not something the server has any use
+     * for. What reaches here is only the three shortcuts that change data, each
+     * taking a card id read off the selected element.
+     *
+     * Every one re-reads the card through `cardOnThisBoard()` rather than
+     * trusting the id: the browser is choosing which card to act on, and a
+     * keystroke is no more trustworthy than a click.
+     */
+
+    /**
+     * A card the open board actually draws — origin or mirror.
+     *
+     * The check is on the placement, not on the card, because that is what
+     * being "on this board" means once a card can be mirrored: the card itself
+     * may live on somebody else's board entirely.
+     */
+    private function cardOnThisBoard(int $cardId): ?Card
+    {
+        $board = $this->board();
+
+        if ($board === null) {
+            return null;
+        }
+
+        return Card::query()
+            ->whereIn(
+                'id',
+                CardPlacement::query()
+                    ->select('card_id')
+                    ->whereIn('board_list_id', BoardList::query()->where('board_id', $board->id)->active()->select('id')),
+            )
+            ->find($cardId);
+    }
+
+    /** `space` — put yourself on the card, or take yourself off it. */
+    public function quickAssignSelf(int $cardId): void
+    {
+        $user = auth()->user();
+        $card = $this->cardOnThisBoard($cardId);
+
+        if ($user === null || $card === null) {
+            return;
+        }
+
+        $card->members()->toggle([$user->id]);
+
+        $this->refreshBoard();
+
+        $this->toastSuccess(
+            $card->members()->whereKey($user->id)->exists() ? 'Added you to the card' : 'Took you off the card',
+            $card->title,
+        );
+    }
+
+    /** `c` — archive the selected card. */
+    public function quickArchive(int $cardId): void
+    {
+        $card = $this->cardOnThisBoard($cardId);
+
+        if ($card === null || $card->isArchived()) {
+            return;
+        }
+
+        $card->forceFill(['archived_at' => now()])->save();
+
+        $this->refreshBoard();
+
+        $this->toastSuccess('Card archived', $card->title.' is in the archive, and can be restored.');
+    }
+
+    /**
+     * `1`–`9` and `0` — toggle a label by its place in the board's own label
+     * list, which is the order the filter panel and the card back both draw.
+     *
+     * Trello calls these "toggle a label by colour"; on a board whose labels
+     * are ordered, position and colour are the same handle, and position is the
+     * one that survives somebody recolouring a label.
+     */
+    public function quickToggleLabel(int $cardId, int $index): void
+    {
+        $card = $this->cardOnThisBoard($cardId);
+        $label = $this->labels()->values()->get($index);
+
+        if ($card === null || $label === null) {
+            return;
+        }
+
+        $card->labels()->toggle([$label->id]);
+
+        $this->refreshBoard();
+
+        $this->toastSuccess(
+            $card->labels()->whereKey($label->id)->exists() ? 'Label added' : 'Label removed',
+            $label->name.' — '.$card->title,
+        );
+    }
+
     /* List operations --------------------------------------------------------- */
 
     /**
@@ -1595,6 +1696,51 @@ class extends Component
     </div>
     @endisland
 
+    {{--
+        The keyboard help sheet, opened with `?`.
+
+        Deliberately **outside** the island and driven entirely by JS rather
+        than by component state: an overlay listing the shortcuts is not
+        something the server has an opinion about, and keeping it out here
+        means opening it costs no request and cannot be swallowed by a
+        `mode: skip` fragment.
+    --}}
+    <div id="kargah-shortcuts" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/50 p-4"
+         role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+        <div class="kt-card bg-background w-full max-w-[560px] max-h-[80vh] overflow-y-auto kt-scrollable-y">
+            <div class="flex items-center justify-between px-5 py-4 border-b border-border">
+                <h2 class="text-sm font-semibold text-mono">Keyboard shortcuts</h2>
+                <button type="button" data-shortcuts-close class="kt-btn kt-btn-icon kt-btn-ghost size-7" aria-label="Close">
+                    <i class="ki-filled ki-cross text-sm"></i>
+                </button>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 px-5 py-4 text-sm">
+                @foreach ([
+                    '?' => 'This list',
+                    'j / ↓' => 'Next card',
+                    'k / ↑' => 'Previous card',
+                    'Enter' => 'Open the selected card',
+                    'n' => 'Add a card to that list',
+                    'space' => 'Put yourself on the card',
+                    'c' => 'Archive the card',
+                    '1 – 0' => 'Toggle that label',
+                    'f' => 'Filter',
+                    'x' => 'Clear the filters',
+                    'b' => 'Switch board',
+                    'Esc' => 'Close whatever is open',
+                ] as $keys => $does)
+                    <div class="flex items-center justify-between gap-3 py-1">
+                        <span class="text-secondary-foreground">{{ $does }}</span>
+                        <kbd class="kt-badge kt-badge-sm kt-badge-outline font-mono">{{ $keys }}</kbd>
+                    </div>
+                @endforeach
+            </div>
+            <p class="px-5 pb-4 text-xs text-muted-foreground">
+                Shortcuts are off while you are typing in a box.
+            </p>
+        </div>
+    </div>
+
     {{-- Nested components --}}
     <livewire:project::card-detail />
     <livewire:project::board-templates />
@@ -1670,7 +1816,143 @@ class extends Component
             });
         }
 
-        Livewire.hook('morphed', mount);
+        // ---------------------------------------------------------------
+        // The keyboard layer.
+        //
+        // Selection lives here and nowhere else. `j`/`k` must not cost a
+        // request, and which card is highlighted is not state the server has
+        // any use for — so it is a placement id in a closure variable, and
+        // three shortcuts out of twelve are the only ones that call $wire.
+        //
+        // The highlight is an **inline outline**, not a Tailwind class:
+        // Tailwind's scanner cannot see a class that only exists inside a
+        // string in a script block, so a `ring-2` here would simply be absent
+        // from the compiled sheet. See docs/frontend-conventions.md.
+        // ---------------------------------------------------------------
+
+        // One registry on `window`, holding the *current* $wire.
+        //
+        // The listener below is registered once for the life of the tab, but
+        // this closure is re-entered on every `wire:navigate` — so a $wire
+        // captured directly would be the one belonging to a component that has
+        // since been torn down, and every shortcut would silently talk to a
+        // dead instance. The same reasoning as the drag guard above, and the
+        // same reason neither flag can be a data-* attribute: the morph strips
+        // any attribute the incoming HTML does not carry.
+        const keys = window.kargahBoardKeys ||= { wire: null, selected: null, bound: false };
+        keys.wire = $wire;
+
+        function cards() {
+            const root = keys.wire && keys.wire.$el;
+            return root && root.isConnected
+                ? Array.from(root.querySelectorAll('#kargah-board [data-placement-id]'))
+                : [];
+        }
+
+        function paint() {
+            cards().forEach(function (el) {
+                const on = el.dataset.placementId === keys.selected;
+                // Inline, not a Tailwind class: the scanner reads source text
+                // and cannot see a class that only exists inside this string.
+                el.style.outline = on ? '2px solid currentColor' : '';
+                el.style.outlineOffset = on ? '2px' : '';
+                if (on) el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            });
+        }
+
+        function select(step) {
+            const all = cards();
+            if (! all.length) return;
+
+            const at = all.findIndex(el => el.dataset.placementId === keys.selected);
+            keys.selected = all[
+                at === -1
+                    ? (step > 0 ? 0 : all.length - 1)
+                    : Math.min(all.length - 1, Math.max(0, at + step))
+            ].dataset.placementId;
+
+            paint();
+        }
+
+        function selectedEl() {
+            return cards().find(el => el.dataset.placementId === keys.selected) || null;
+        }
+
+        const sheet = () => document.getElementById('kargah-shortcuts');
+        const sheetOpen = () => { const el = sheet(); return !! el && ! el.classList.contains('hidden'); };
+
+        function showSheet(on) {
+            const el = sheet();
+            if (! el) return;
+            el.classList.toggle('hidden', ! on);
+            el.classList.toggle('flex', on);
+        }
+
+        // Typing in a box is typing, not a shortcut.
+        function isTyping(target) {
+            if (! target) return false;
+            const tag = (target.tagName || '').toLowerCase();
+            return tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable;
+        }
+
+        if (! keys.bound) {
+            keys.bound = true;
+
+            document.addEventListener('click', function (event) {
+                if (event.target.closest('[data-shortcuts-close]') || event.target.id === 'kargah-shortcuts') {
+                    showSheet(false);
+                }
+            });
+
+            document.addEventListener('keydown', function (event) {
+                if (event.metaKey || event.ctrlKey || event.altKey) return;
+
+                if (event.key === 'Escape') {
+                    if (sheetOpen()) { showSheet(false); event.preventDefault(); }
+                    return;
+                }
+
+                if (isTyping(event.target)) return;
+
+                if (event.key === '?') { showSheet(! sheetOpen()); event.preventDefault(); return; }
+                if (sheetOpen()) return;
+
+                // Only act on a board that is actually on screen — this
+                // listener outlives any one page.
+                const wire = keys.wire;
+                if (! wire || ! document.getElementById('kargah-board')) return;
+
+                const el = selectedEl();
+                const cardId = el ? parseInt(el.dataset.cardId, 10) : null;
+
+                switch (event.key) {
+                    case 'j': case 'ArrowDown': select(1); break;
+                    case 'k': case 'ArrowUp': select(-1); break;
+                    case 'Enter': if (el) el.click(); break;
+                    case 'n': {
+                        const column = el && el.closest('[data-list-id]');
+                        if (column) wire.startAddCard(parseInt(column.dataset.listId, 10));
+                        break;
+                    }
+                    case ' ': if (cardId) wire.quickAssignSelf(cardId); break;
+                    case 'c': if (cardId) wire.quickArchive(cardId); break;
+                    case 'f': wire.toggleFilterPanel(); break;
+                    case 'x': wire.clearFilters(); break;
+                    case 'b': wire.toggleBoardPicker(); break;
+                    default:
+                        // '1'–'9' are the first nine labels; '0' is the tenth.
+                        if (/^[0-9]$/.test(event.key) && cardId) {
+                            wire.quickToggleLabel(cardId, event.key === '0' ? 9 : parseInt(event.key, 10) - 1);
+                            break;
+                        }
+                        return;
+                }
+
+                event.preventDefault();
+            });
+        }
+
+        Livewire.hook('morphed', function () { mount(); paint(); });
         mount();
     })();
 </script>
