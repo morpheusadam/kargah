@@ -7,7 +7,10 @@ use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
 use Modules\Accounting\Database\Seeders\AccountingDatabaseSeeder;
 use Modules\Core\Database\Seeders\CoreDatabaseSeeder;
+use Modules\Data\Database\Seeders\DataDatabaseSeeder;
+use Modules\Mailbox\Database\Seeders\MailboxDatabaseSeeder;
 use Modules\Project\Database\Seeders\ProjectDatabaseSeeder;
+use Modules\Social\Database\Seeders\SocialDatabaseSeeder;
 
 /**
  * Core first, then every feature module.
@@ -32,6 +35,9 @@ class DatabaseSeeder extends Seeder
             CoreDatabaseSeeder::class,
             ProjectDatabaseSeeder::class,
             AccountingDatabaseSeeder::class,
+            MailboxDatabaseSeeder::class,
+            DataDatabaseSeeder::class,
+            SocialDatabaseSeeder::class,
         ]);
     }
 }

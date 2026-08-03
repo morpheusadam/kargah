@@ -2,16 +2,32 @@
 
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
-use Livewire\Attributes\Validate;
 use Livewire\Component;
 use Modules\Core\Concerns\InteractsWithToasts;
+use Modules\Social\Models\SocialAccount;
+use Modules\Social\Services\Publishers\PublishFailed;
+use Modules\Social\Services\Publishing;
+use Modules\Social\Support\Networks;
 
 /**
  * Connect a network.
  *
- * Two shapes of credential live here: Telegram wants a bot token you paste in,
- * everything else wants an OAuth round trip. Both list exactly what Kargah ends
- * up being allowed to do before you hand anything over.
+ * Every network here is a token you paste rather than an OAuth round trip, and
+ * that is a deliberate choice rather than an unfinished one: an OAuth callback
+ * needs a registered redirect URI per install, and Kargah's whole point is that
+ * it runs on shared hosting somebody set up in an afternoon. Mastodon, Bluesky
+ * and Telegram all issue a scoped, revocable credential from their own settings
+ * screen. LinkedIn does not, which is why its field asks for a member token and
+ * the page says it expires after sixty days.
+ *
+ * **Checking is a real call.** `verify()` asks the network who the credentials
+ * belong to and echoes the answer back, so 'connected' means Kargah reached
+ * that account rather than merely reached that network. It does not post
+ * anything — a test post is something the person then has to go and delete.
+ *
+ * The secret is written once, encrypted, and never read back into this form.
+ * Reopening the page to replace a credential shows an empty field, because a
+ * field prefilled with a decrypted secret is the secret in the page source.
  */
 new
 #[Title('Connect an account — Kargah')]
@@ -22,138 +38,266 @@ class extends Component
     #[Url]
     public string $network = '';
 
-    #[Validate('exclude_unless:network,telegram|required|min:40')]
-    public string $botToken = '';
+    public string $handle = '';
 
-    #[Validate('exclude_unless:network,telegram|required')]
-    public string $chatId = '';
+    /** @var array<string, string> Credential values as typed, keyed by field name. */
+    public array $fields = [];
 
-    public bool $showToken = false;
+    /** @var array<string, bool> Which secret fields are currently shown in the clear. */
+    public array $revealed = [];
 
-    public string $testResult = '';
+    /** What the last check said, so the answer survives the re-render. */
+    public string $checkResult = '';
 
-    /** @return array<string, array<string, mixed>> */
-    public function catalogue(): array
+    public bool $checkFailed = false;
+
+    public function mount(): void
     {
-        return [
-            'telegram' => [
-                'label' => 'Telegram',
-                'icon' => 'ki-paper-plane',
-                'method' => 'token',
-                'summary' => 'Post to a channel or group through a bot you own.',
-                'requirement' => 'Create a bot with @BotFather, add it to the channel as an administrator, then paste its token here.',
-                'permissions' => [
-                    ['allowed' => true,  'text' => 'Send messages, photos and documents to the chat you name'],
-                    ['allowed' => true,  'text' => 'Read delivery receipts for messages it sent'],
-                    ['allowed' => false, 'text' => 'Read your personal Telegram account or its chats'],
-                ],
-            ],
-            'linkedin' => [
-                'label' => 'LinkedIn',
-                'icon' => 'ki-abstract-41',
-                'method' => 'oauth',
-                'summary' => 'Publish to your personal feed and read the engagement back.',
-                'requirement' => 'Authorising opens LinkedIn in a new tab. Nothing is stored until you come back.',
-                'scopes' => [
-                    ['scope' => 'openid',           'text' => 'Confirm which account authorised the connection'],
-                    ['scope' => 'profile',          'text' => 'Read your name, headline and profile photo for previews'],
-                    ['scope' => 'email',            'text' => 'Read the address on the account, used to label it here'],
-                    ['scope' => 'w_member_social',  'text' => 'Create posts on your behalf and read their engagement'],
-                ],
-                'permissions' => [
-                    ['allowed' => true,  'text' => 'Create posts when you press publish or when a scheduled post fires'],
-                    ['allowed' => true,  'text' => 'Read impressions, reactions and comments on posts Kargah created'],
-                    ['allowed' => false, 'text' => 'Read your connections, messages or feed'],
-                ],
-            ],
-            'x' => [
-                'label' => 'X',
-                'icon' => 'ki-abstract-39',
-                'method' => 'oauth',
-                'summary' => 'Publish posts and read their metrics.',
-                'requirement' => 'Uses OAuth 2.0 with PKCE. The refresh token is stored encrypted so scheduled posts keep working.',
-                'scopes' => [
-                    ['scope' => 'tweet.read',     'text' => 'Read posts, including the ones Kargah published'],
-                    ['scope' => 'tweet.write',    'text' => 'Create and delete posts on your behalf'],
-                    ['scope' => 'users.read',     'text' => 'Read your handle and profile photo for previews'],
-                    ['scope' => 'offline.access', 'text' => 'Keep the connection alive so scheduled posts do not need you present'],
-                ],
-                'permissions' => [
-                    ['allowed' => true,  'text' => 'Post at the time you scheduled, without you being logged in'],
-                    ['allowed' => true,  'text' => 'Read impressions and reposts on posts Kargah created'],
-                    ['allowed' => false, 'text' => 'Follow, unfollow, like or send direct messages'],
-                ],
-            ],
-            'instagram' => [
-                'label' => 'Instagram',
-                'icon' => 'ki-instagram',
-                'method' => 'oauth',
-                'summary' => 'Publish to a professional account through the Graph API.',
-                'requirement' => 'Needs a professional account linked to a Facebook page. Personal accounts cannot publish through the API.',
-                'scopes' => [
-                    ['scope' => 'instagram_basic',            'text' => 'Read the account handle, photo and existing media'],
-                    ['scope' => 'instagram_content_publish',  'text' => 'Publish images and captions on your behalf'],
-                    ['scope' => 'pages_show_list',            'text' => 'List the pages you manage so you can pick the right one'],
-                    ['scope' => 'business_management',        'text' => 'Confirm the account is professional and eligible to publish'],
-                ],
-                'permissions' => [
-                    ['allowed' => true,  'text' => 'Publish an image with a caption when you press publish'],
-                    ['allowed' => true,  'text' => 'Read reach, likes and saves on posts Kargah created'],
-                    ['allowed' => false, 'text' => 'Read or reply to direct messages, or post stories'],
-                ],
-            ],
-        ];
+        $this->choose($this->network);
+    }
+
+    /** @return array<string, mixed>|null */
+    private function chosen(): ?array
+    {
+        return Networks::get($this->network);
+    }
+
+    /** The row this form would write to, if one already exists. */
+    private function existing(): ?SocialAccount
+    {
+        $handle = trim($this->handle);
+
+        if ($this->network === '' || $handle === '') {
+            return null;
+        }
+
+        return SocialAccount::query()
+            ->onNetwork($this->network)
+            ->where('handle', $handle)
+            ->first();
     }
 
     public function with(): array
     {
-        $catalogue = $this->catalogue();
-
         return [
-            'catalogue' => $catalogue,
-            'chosen' => $catalogue[$this->network] ?? null,
+            'catalogue' => Networks::all(),
+            'chosen' => $this->chosen(),
+            'existing' => $this->existing(),
+            'connectedNetworks' => SocialAccount::query()->pluck('network')->unique()->all(),
         ];
     }
 
     public function choose(string $network): void
     {
-        $this->network = array_key_exists($network, $this->catalogue()) ? $network : '';
-        $this->testResult = '';
+        $this->network = Networks::has($network) ? $network : '';
+
+        $this->fields = [];
+        $this->revealed = [];
+        $this->checkResult = '';
+        $this->checkFailed = false;
         $this->resetValidation();
+
+        foreach (Networks::credentialFields($this->network) as $field) {
+            $this->fields[$field] = '';
+        }
+
+        if ($this->network === '') {
+            return;
+        }
+
+        // A row for this network already exists on almost every install,
+        // because the seeder creates one per network with no credential. Its
+        // handle is the useful default; its secret is not read back.
+        $this->handle = SocialAccount::query()->onNetwork($this->network)->value('handle') ?? '';
     }
 
     public function back(): void
     {
         $this->network = '';
-        $this->testResult = '';
+        $this->handle = '';
+        $this->fields = [];
+        $this->revealed = [];
+        $this->checkResult = '';
+        $this->checkFailed = false;
         $this->resetValidation();
     }
 
-    public function testConnection(): void
+    public function toggleReveal(string $field): void
     {
-        $this->validate();
-
-        // Sends a "Kargah is connected" message through the Bot API. Backend work.
-
-        $this->toastInfo('No test message was sent', 'The Bot API call arrives with the backend.');
+        $this->revealed[$field] = ! ($this->revealed[$field] ?? false);
     }
 
-    public function authorise(string $network): void
+    /**
+     * Everything typed, trimmed, with empty fields dropped.
+     *
+     * @return array<string, string>
+     */
+    private function credentials(): array
     {
-        // Redirects to the provider's consent screen and stores the token on return.
+        $credentials = [];
 
-        $label = $this->catalogue()[$network]['label'] ?? $network;
+        foreach (Networks::credentialFields($this->network) as $field) {
+            $value = trim((string) ($this->fields[$field] ?? ''));
 
-        $this->toastInfo('Authorising is not wired up yet', $label.' was not opened and nothing was stored.');
+            if ($value !== '') {
+                $credentials[$field] = $value;
+            }
+        }
+
+        return $credentials;
     }
 
+    /** @return list<string> The labels of the fields still empty. */
+    private function missingLabels(): array
+    {
+        $chosen = $this->chosen();
+        $credentials = $this->credentials();
+
+        $missing = [];
+
+        foreach ($chosen['credentials'] ?? [] as $field => $meta) {
+            if (! array_key_exists($field, $credentials)) {
+                $missing[] = $meta['label'];
+            }
+        }
+
+        return $missing;
+    }
+
+    /**
+     * An unsaved account carrying what was typed.
+     *
+     * Unsaved on purpose: checking a credential must not store it, or a typo
+     * would leave a broken connection behind every time somebody tried.
+     */
+    private function draftAccount(): SocialAccount
+    {
+        $account = $this->existing() ?? new SocialAccount([
+            'network' => $this->network,
+            'handle' => trim($this->handle),
+        ]);
+
+        $account->network = $this->network;
+        $account->credentials = $this->credentials();
+        $account->is_active = true;
+
+        return $account;
+    }
+
+    public function check(): void
+    {
+        $chosen = $this->chosen();
+
+        if ($chosen === null) {
+            $this->toastError('Pick a network first', 'Nothing was checked.');
+
+            return;
+        }
+
+        if ($missing = $this->missingLabels()) {
+            $this->checkFailed = true;
+            $this->checkResult = 'Nothing was checked — '.implode(' and ', $missing).' still empty.';
+
+            $this->toastWarning(
+                $chosen['label'].' credentials are not configured',
+                implode(' and ', $missing).' '.(count($missing) === 1 ? 'is' : 'are').' still empty, so nothing was sent.',
+            );
+
+            return;
+        }
+
+        $driver = app(Publishing::class)->driverFor($this->network);
+
+        if ($driver === null) {
+            $this->toastError('Kargah has no driver for '.$chosen['label'], 'Nothing was checked.');
+
+            return;
+        }
+
+        try {
+            $who = $driver->verify($this->draftAccount());
+        } catch (PublishFailed $e) {
+            $this->checkFailed = true;
+            $this->checkResult = $e->getMessage();
+
+            $this->toastError($chosen['label'].' refused the credentials', $e->getMessage());
+
+            return;
+        }
+
+        $this->checkFailed = false;
+        $this->checkResult = $chosen['label'].' answered as '.$who.'. Nothing was posted.';
+
+        $this->toastSuccess(
+            $chosen['label'].' answered as '.$who,
+            'The credentials work. Save the connection to start publishing to it.',
+        );
+    }
+
+    /**
+     * Write the credential, encrypted, against the account it belongs to.
+     *
+     * `updateOrCreate` on (network, handle) because that pair is what the
+     * database is unique on — replacing an expired token is the same gesture as
+     * connecting for the first time, and it must not make a second row.
+     */
     public function save(): void
     {
-        $this->validate();
+        $chosen = $this->chosen();
 
-        // Persists the credential, encrypted. Backend work.
+        if ($chosen === null) {
+            $this->toastError('Pick a network first', 'Nothing was saved.');
 
-        $this->toastInfo('Nothing was saved', 'Storing credentials arrives with the backend.');
+            return;
+        }
+
+        $handle = trim($this->handle);
+
+        if ($handle === '') {
+            $this->toastError('The account needs a handle', 'It is how the queue and the feed name this connection.');
+
+            return;
+        }
+
+        if ($missing = $this->missingLabels()) {
+            $this->toastError(
+                $chosen['label'].' credentials are not configured',
+                implode(' and ', $missing).' '.(count($missing) === 1 ? 'is' : 'are').' still empty, so nothing was saved.',
+            );
+
+            return;
+        }
+
+        $existing = $this->existing();
+
+        $account = SocialAccount::query()->updateOrCreate(
+            ['network' => $this->network, 'handle' => $handle],
+            [
+                'credentials' => $this->credentials(),
+                'display_name' => $existing?->display_name ?? auth()->user()?->name,
+                'is_active' => true,
+                'connected_at' => now(),
+                'last_error' => null,
+                'created_by' => $existing?->created_by ?? auth()->id(),
+            ],
+        );
+
+        $queued = $account->targets()->where('status', 'pending')->count();
+
+        $this->fields = array_map(fn (): string => '', $this->fields);
+        $this->revealed = [];
+        $this->checkResult = '';
+        $this->checkFailed = false;
+
+        $this->flashToast(
+            'success',
+            $chosen['label'].' connected as '.$handle,
+            $queued === 0
+                ? 'The credential is stored encrypted. Anything scheduled for it from now on will go out.'
+                : $queued.' queued '.($queued === 1 ? 'post' : 'posts').' can now go to it.',
+        );
+
+        $this->redirectRoute('social.accounts', navigate: true);
     }
 };
 
@@ -180,16 +324,15 @@ class extends Component
         <span class="grow h-px bg-border max-w-[80px]"></span>
         <span class="inline-flex items-center gap-2 {{ $chosen ? 'text-mono font-medium' : 'text-muted-foreground' }}">
             <span class="inline-flex items-center justify-center size-6 rounded-full text-xs {{ $chosen ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground' }}">2</span>
-            Grant access
+            Hand over the credential
         </span>
     </div>
 
     @if (! $chosen)
 
-        {{-- Step 1: chooser --}}
         <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5">
             @foreach ($catalogue as $key => $n)
-                <button wire:click="choose('{{ $key }}')"
+                <button wire:click="choose('{{ $key }}')" wire:key="pick-{{ $key }}"
                         class="kt-card text-start hover:border-primary/40 transition-colors">
                     <div class="kt-card-content p-5 flex flex-col gap-3">
                         <span class="inline-flex items-center justify-center size-11 rounded-lg bg-primary/10 text-primary">
@@ -199,9 +342,19 @@ class extends Component
                             <div class="font-semibold text-mono">{{ $n['label'] }}</div>
                             <p class="text-sm text-secondary-foreground mt-1">{{ $n['summary'] }}</p>
                         </div>
-                        <span class="kt-badge kt-badge-sm kt-badge-outline self-start">
-                            {{ $n['method'] === 'token' ? 'Bot token' : 'OAuth' }}
-                        </span>
+                        <div class="flex flex-wrap items-center gap-1.5">
+                            <span class="kt-badge kt-badge-sm kt-badge-outline">
+                                {{ number_format($n['limit']) }} characters
+                            </span>
+                            @if ($n['ingests'])
+                                <span class="kt-badge kt-badge-sm kt-badge-info">Reads notifications</span>
+                            @else
+                                <span class="kt-badge kt-badge-sm kt-badge-outline">Publishing only</span>
+                            @endif
+                            @if (in_array($key, $connectedNetworks, true))
+                                <span class="kt-badge kt-badge-sm kt-badge-success">Already set up</span>
+                            @endif
+                        </div>
                     </div>
                 </button>
             @endforeach
@@ -211,7 +364,6 @@ class extends Component
 
         <div class="grid grid-cols-12 gap-5 items-start">
 
-            {{-- Step 2: credentials --}}
             <div class="col-span-12 lg:col-span-7">
                 <div class="kt-card">
                     <div class="kt-card-header">
@@ -234,87 +386,76 @@ class extends Component
                             <p class="text-sm text-secondary-foreground">{{ $chosen['requirement'] }}</p>
                         </div>
 
-                        @if ($chosen['method'] === 'token')
+                        <div class="flex flex-col gap-1.5">
+                            <label class="kt-form-label" for="account-handle">Handle</label>
+                            <input id="account-handle" type="text" class="kt-input"
+                                   placeholder="How this account is named in Kargah"
+                                   wire:model="handle">
+                            <span class="text-xs text-muted-foreground">
+                                @if ($existing)
+                                    An account with this handle already exists; saving replaces its credential rather than adding a second row.
+                                @else
+                                    Used on the queue, the calendar and the notification feed. One handle per network.
+                                @endif
+                            </span>
+                        </div>
 
-                            <div class="flex flex-col gap-1.5">
-                                <label class="kt-form-label" for="bot-token">Bot token</label>
-                                <div class="flex items-center gap-2">
-                                    <input id="bot-token"
-                                           type="{{ $showToken ? 'text' : 'password' }}"
-                                           class="kt-input grow @error('botToken') border-destructive @enderror"
-                                           placeholder="7104932188:AAF…"
-                                           wire:model="botToken">
-                                    <button wire:click="$toggle('showToken')"
-                                            class="kt-btn kt-btn-icon kt-btn-outline shrink-0"
-                                            title="{{ $showToken ? 'Hide token' : 'Show token' }}"
-                                            aria-label="{{ $showToken ? 'Hide token' : 'Show token' }}">
-                                        <i class="ki-filled {{ $showToken ? 'ki-eye-slash' : 'ki-eye' }}"></i>
-                                    </button>
-                                </div>
-                                <span class="text-xs text-muted-foreground">Stored encrypted. It is never rendered back into this page once saved.</span>
-                                @error('botToken')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
+                        @foreach ($chosen['credentials'] as $field => $meta)
+                            @php $shown = $revealed[$field] ?? false; @endphp
+                            <div class="flex flex-col gap-1.5" wire:key="field-{{ $network }}-{{ $field }}">
+                                <label class="kt-form-label" for="cred-{{ $field }}">{{ $meta['label'] }}</label>
+                                @if ($meta['secret'])
+                                    <div class="flex items-center gap-2">
+                                        <input id="cred-{{ $field }}"
+                                               type="{{ $shown ? 'text' : 'password' }}"
+                                               class="kt-input grow"
+                                               placeholder="{{ $meta['placeholder'] }}"
+                                               autocomplete="off"
+                                               wire:model="fields.{{ $field }}">
+                                        <button wire:click="toggleReveal('{{ $field }}')"
+                                                class="kt-btn kt-btn-icon kt-btn-outline shrink-0"
+                                                title="{{ $shown ? 'Hide' : 'Show' }} {{ $meta['label'] }}"
+                                                aria-label="{{ $shown ? 'Hide' : 'Show' }} {{ $meta['label'] }}">
+                                            <i class="ki-filled {{ $shown ? 'ki-eye-slash' : 'ki-eye' }}"></i>
+                                        </button>
+                                    </div>
+                                @else
+                                    <input id="cred-{{ $field }}" type="text" class="kt-input"
+                                           placeholder="{{ $meta['placeholder'] }}"
+                                           wire:model="fields.{{ $field }}">
+                                @endif
+                                <span class="text-xs text-muted-foreground">{{ $meta['hint'] }}</span>
                             </div>
+                        @endforeach
 
-                            <div class="flex flex-col gap-1.5">
-                                <label class="kt-form-label" for="chat-id">Chat ID</label>
-                                <input id="chat-id" type="text"
-                                       class="kt-input @error('chatId') border-destructive @enderror"
-                                       placeholder="@kargah_buildlog or -1001234567890"
-                                       wire:model="chatId">
-                                <span class="text-xs text-muted-foreground">A public channel username, or the numeric ID for a private channel or group.</span>
-                                @error('chatId')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
-                            </div>
-
-                            <div class="flex flex-wrap items-center gap-2 border-t border-border pt-4">
-                                <button wire:click="testConnection" wire:loading.attr="disabled"
-                                        class="kt-btn kt-btn-outline gap-2">
-                                    <span wire:loading.remove wire:target="testConnection" class="inline-flex items-center gap-2">
-                                        <i class="ki-filled ki-paper-plane"></i> Send a test message
-                                    </span>
-                                    <span wire:loading wire:target="testConnection" class="inline-flex items-center gap-2">
-                                        <i class="ki-filled ki-loading animate-spin"></i> Testing…
-                                    </span>
-                                </button>
-                                <button wire:click="save" wire:loading.attr="disabled" class="kt-btn kt-btn-primary gap-2">
+                        <div class="flex flex-wrap items-center gap-2 border-t border-border pt-4">
+                            <button wire:click="check" wire:loading.attr="disabled" class="kt-btn kt-btn-outline gap-2">
+                                <span wire:loading.remove wire:target="check" class="inline-flex items-center gap-2">
+                                    <i class="ki-filled ki-shield-tick"></i> Check the credentials
+                                </span>
+                                <span wire:loading wire:target="check" class="inline-flex items-center gap-2">
+                                    <i class="ki-filled ki-loading animate-spin"></i> Asking {{ $chosen['label'] }}…
+                                </span>
+                            </button>
+                            <button wire:click="save" wire:loading.attr="disabled" class="kt-btn kt-btn-primary gap-2">
+                                <span wire:loading.remove wire:target="save" class="inline-flex items-center gap-2">
                                     <i class="ki-filled ki-check-circle"></i> Save connection
-                                </button>
+                                </span>
+                                <span wire:loading wire:target="save" class="inline-flex items-center gap-2">
+                                    <i class="ki-filled ki-loading animate-spin"></i> Saving…
+                                </span>
+                            </button>
+                        </div>
+
+                        @if ($checkResult !== '')
+                            <div class="flex items-start gap-2.5 rounded-lg px-3.5 py-3 {{ $checkFailed ? 'border border-destructive/30 bg-destructive/5' : 'border border-success/30 bg-success/10' }}">
+                                <i class="ki-filled {{ $checkFailed ? 'ki-cross-circle text-destructive' : 'ki-check-circle text-success' }} text-base mt-0.5 shrink-0"></i>
+                                <p class="text-sm text-secondary-foreground">{{ $checkResult }}</p>
                             </div>
-
-                            @if ($testResult !== '')
-                                <p class="text-sm text-secondary-foreground">{{ $testResult }}</p>
-                            @else
-                                <p class="text-xs text-muted-foreground">
-                                    The test posts one message to the chat so you can confirm the bot is actually an administrator.
-                                </p>
-                            @endif
-
                         @else
-
-                            <div class="flex flex-col gap-2">
-                                <span class="text-sm font-medium text-mono">Scopes this will request</span>
-                                <div class="flex flex-col divide-y divide-border rounded-lg border border-border">
-                                    @foreach ($chosen['scopes'] as $s)
-                                        <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-3.5 py-2.5">
-                                            <code class="text-xs font-medium text-primary bg-primary/10 rounded px-1.5 py-0.5">{{ $s['scope'] }}</code>
-                                            <span class="text-sm text-secondary-foreground grow min-w-0">{{ $s['text'] }}</span>
-                                        </div>
-                                    @endforeach
-                                </div>
-                            </div>
-
-                            <div class="flex flex-wrap items-center gap-2 border-t border-border pt-4">
-                                <button wire:click="authorise('{{ $network }}')" wire:loading.attr="disabled"
-                                        class="kt-btn kt-btn-primary gap-2">
-                                    <span wire:loading.remove wire:target="authorise" class="inline-flex items-center gap-2">
-                                        <i class="ki-filled {{ $chosen['icon'] }}"></i> Authorise on {{ $chosen['label'] }}
-                                    </span>
-                                    <span wire:loading wire:target="authorise" class="inline-flex items-center gap-2">
-                                        <i class="ki-filled ki-loading animate-spin"></i> Opening {{ $chosen['label'] }}…
-                                    </span>
-                                </button>
-                                <span class="text-xs text-muted-foreground">Opens in a new tab. You can revoke it from {{ $chosen['label'] }} at any time.</span>
-                            </div>
-
+                            <p class="text-xs text-muted-foreground">
+                                The check asks {{ $chosen['label'] }} who the credential belongs to and posts nothing.
+                            </p>
                         @endif
 
                     </div>
@@ -323,7 +464,6 @@ class extends Component
 
             <div class="col-span-12 lg:col-span-5 flex flex-col gap-5">
 
-                {{-- Permissions summary --}}
                 <div class="kt-card">
                     <div class="kt-card-header">
                         <h3 class="kt-card-title">What Kargah will be able to do</h3>
@@ -336,12 +476,12 @@ class extends Component
                             </div>
                         @endforeach
                         <p class="text-xs text-muted-foreground border-t border-border pt-3 mt-1">
-                            Credentials are encrypted at rest and used only by the queue worker that sends your posts.
+                            The credential is encrypted with the application key, kept out of every page this application
+                            renders, and read only by the job that sends your posts.
                         </p>
                     </div>
                 </div>
 
-                {{-- Disconnect warning --}}
                 <div class="kt-card border-warning/30">
                     <div class="kt-card-header">
                         <h3 class="kt-card-title text-warning">Before you disconnect later</h3>
@@ -350,14 +490,15 @@ class extends Component
                         <div class="flex items-start gap-2.5">
                             <i class="ki-filled ki-information-2 text-warning text-base mt-0.5 shrink-0"></i>
                             <span class="text-sm text-secondary-foreground">
-                                Disconnecting {{ $chosen['label'] }} cancels every queued post that targets it. Posts already
-                                published stay up on the network.
+                                Disconnecting {{ $chosen['label'] }} deletes the stored credential and stops anything queued
+                                from reaching it. Posts already published stay up on the network.
                             </span>
                         </div>
                         <div class="flex items-start gap-2.5">
                             <i class="ki-filled ki-information-2 text-warning text-base mt-0.5 shrink-0"></i>
                             <span class="text-sm text-secondary-foreground">
-                                Analytics collected so far are kept, but stop updating the moment the token is revoked.
+                                Revoking the credential on {{ $chosen['label'] }} itself is the stronger move, and it works
+                                whether or not Kargah is still running.
                             </span>
                         </div>
                     </div>

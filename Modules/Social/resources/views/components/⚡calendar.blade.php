@@ -1,16 +1,29 @@
 <?php
 
-use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
 use Modules\Core\Concerns\InteractsWithToasts;
+use Modules\Social\Models\Post;
+use Modules\Social\Models\PostTarget;
+use Modules\Social\Support\Networks;
 
 /**
  * Publishing calendar.
  *
- * A month at a glance so you can see where the gaps are before adding another
+ * A month at a glance, so you can see where the gaps are before adding another
  * Tuesday-morning post to a Tuesday that already has three.
+ *
+ * **One entry per target, not per post.** A post going to three networks is
+ * three things on the calendar, because filtering by network is the reason
+ * anybody opens this page and a single entry could not answer it. The colour is
+ * the network's own.
+ *
+ * FullCalendar is 277 KB and the layout does not load it. It is pulled in from
+ * `@script` on this page alone, and there is a plain list underneath that is
+ * hidden only once the bundle has actually rendered — so a page served without
+ * it still shows what is scheduled instead of an empty box.
  */
 new
 #[Title('Calendar — Kargah')]
@@ -18,75 +31,136 @@ class extends Component
 {
     use InteractsWithToasts;
 
+    /** A network key, or 'all'. */
     #[Url]
     public string $network = 'all';
 
-    /** @return array<string, array{label: string, icon: string, tone: string, colour: string}> */
-    public function networks(): array
+    /** Per-request memo; see the note on ⚡boards about why these are private. */
+    private ?Collection $resolvedTargets = null;
+
+    /**
+     * Every target with a time, newest month first.
+     *
+     * Bounded rather than the whole history: the calendar draws one month and
+     * the sidebar draws what is next, so a five-year archive would be loaded to
+     * be thrown away.
+     *
+     * @return Collection<int, PostTarget>
+     */
+    private function targets(): Collection
     {
-        return [
-            'telegram'  => ['label' => 'Telegram',  'icon' => 'ki-paper-plane',         'tone' => 'bg-info',        'colour' => '#0088cc'],
-            'linkedin'  => ['label' => 'LinkedIn',  'icon' => 'ki-abstract-41',  'tone' => 'bg-primary',     'colour' => '#0a66c2'],
-            'x'         => ['label' => 'X',         'icon' => 'ki-abstract-39',  'tone' => 'bg-foreground',  'colour' => '#3f4254'],
-            'instagram' => ['label' => 'Instagram', 'icon' => 'ki-instagram',    'tone' => 'bg-destructive', 'colour' => '#e1306c'],
-        ];
+        return $this->resolvedTargets ??= PostTarget::query()
+            ->with(['post', 'account'])
+            ->whereHas('post', fn ($query) => $query
+                ->whereIn('status', [Post::SCHEDULED, Post::PUBLISHING, Post::PUBLISHED, Post::PARTLY_FAILED])
+                ->whereNotNull('scheduled_for')
+                ->where('scheduled_for', '>=', now()->subMonths(3)))
+            ->get()
+            ->filter(fn (PostTarget $target): bool => $target->post !== null && $target->account !== null)
+            ->values();
+    }
+
+    /** @return Collection<int, PostTarget> */
+    private function visible(): Collection
+    {
+        return $this->targets()
+            ->filter(fn (PostTarget $t): bool => $this->network === 'all' || $t->account->network === $this->network)
+            ->values();
+    }
+
+    /** When a target sits on the calendar: the moment it went out, or the moment it is due. */
+    private function momentOf(PostTarget $target): \Illuminate\Support\Carbon
+    {
+        return $target->published_at ?? $target->post->scheduled_for;
     }
 
     public function with(): array
     {
-        $today = Carbon::today();
+        $visible = $this->visible();
 
-        $posts = [
-            ['id' => 1, 'title' => 'Drag-and-drop board write-up', 'network' => 'linkedin',  'status' => 'scheduled', 'at' => $today->copy()->addDay()->setTime(9, 30)],
-            ['id' => 2, 'title' => 'Ordering persists after refresh', 'network' => 'x',        'status' => 'scheduled', 'at' => $today->copy()->addDay()->setTime(9, 30)],
-            ['id' => 3, 'title' => 'Build log: invoice PDF templates', 'network' => 'telegram', 'status' => 'scheduled', 'at' => $today->copy()->addDays(2)->setTime(18, 0)],
-            ['id' => 4, 'title' => 'Desk setup for the new contract', 'network' => 'instagram','status' => 'scheduled', 'at' => $today->copy()->addDays(4)->setTime(12, 15)],
-            ['id' => 5, 'title' => 'Why I stopped using an SPA', 'network' => 'linkedin',  'status' => 'scheduled', 'at' => $today->copy()->addDays(6)->setTime(9, 0)],
-            ['id' => 6, 'title' => 'Shared hosting benchmark numbers', 'network' => 'x',        'status' => 'published', 'at' => $today->copy()->subDays(2)->setTime(10, 5)],
-            ['id' => 7, 'title' => 'Client onboarding checklist', 'network' => 'linkedin',  'status' => 'published', 'at' => $today->copy()->subDays(5)->setTime(9, 40)],
-            ['id' => 8, 'title' => 'Kargah changelog for July', 'network' => 'telegram', 'status' => 'published', 'at' => $today->copy()->subDays(9)->setTime(17, 20)],
-            ['id' => 9, 'title' => 'Time-tracking screenshot', 'network' => 'instagram','status' => 'published', 'at' => $today->copy()->subDays(12)->setTime(13, 0)],
-        ];
-
-        $networks = $this->networks();
-
-        $visible = array_values(array_filter(
-            $posts,
-            fn (array $p): bool => $this->network === 'all' || $p['network'] === $this->network,
-        ));
-
-        $queued = array_values(array_filter($visible, fn (array $p): bool => $p['status'] === 'scheduled'));
-        usort($queued, fn (array $a, array $b): int => $a['at'] <=> $b['at']);
-
-        $events = array_map(fn (array $p): array => [
-            'id' => (string) $p['id'],
-            'title' => $p['title'],
-            'start' => $p['at']->toIso8601String(),
-            'url' => route('social.post-show', $p['id']),
-            'backgroundColor' => $networks[$p['network']]['colour'],
-            'borderColor' => $networks[$p['network']]['colour'],
-            'classNames' => $p['status'] === 'published' ? ['is-published'] : ['is-scheduled'],
-        ], $visible);
+        $queued = $visible
+            ->filter(fn (PostTarget $t): bool => ! $t->isPublished())
+            ->sortBy(fn (PostTarget $t): string => $this->momentOf($t)->toDateTimeString())
+            ->values();
 
         return [
-            'networks' => $networks,
-            'events' => $events,
+            'catalogue' => Networks::all(),
+            // Only networks with something on the calendar; a filter that can
+            // only ever return nothing is not a filter.
+            'filters' => $this->targets()->pluck('account.network')->unique()->values(),
             'queued' => $queued,
-            'published' => count(array_filter($visible, fn (array $p): bool => $p['status'] === 'published')),
-            'bestTimes' => [
-                ['network' => 'linkedin',  'window' => 'Tue–Thu, 08:45–10:00', 'note' => 'Highest reply rate on posts about the build'],
-                ['network' => 'x',         'window' => 'Weekdays, 13:00–14:30', 'note' => 'Reposts cluster around lunch'],
-                ['network' => 'telegram',  'window' => 'Weekdays, 18:00–19:30', 'note' => 'Channel opens peak after work'],
-                ['network' => 'instagram', 'window' => 'Sat–Sun, 11:00–12:30', 'note' => 'Weekend saves run ahead of weekdays'],
-            ],
+            'published' => $visible->filter(fn (PostTarget $t): bool => $t->isPublished())->count(),
+            'events' => $visible->map(fn (PostTarget $t): array => [
+                'id' => (string) $t->id,
+                'title' => $t->account->label().' · '.$t->post->excerpt(60),
+                'start' => $this->momentOf($t)->toIso8601String(),
+                'url' => route('social.post-show', $t->post_id),
+                'backgroundColor' => Networks::colour($t->account->network),
+                'borderColor' => Networks::colour($t->account->network),
+                'classNames' => [$t->isPublished() ? 'is-published' : 'is-scheduled'],
+            ])->values()->all(),
+            'listRows' => $visible
+                ->sortByDesc(fn (PostTarget $t): string => $this->momentOf($t)->toDateTimeString())
+                ->values(),
         ];
     }
 
-    public function reschedule(int $post, string $at): void
+    public function setNetwork(string $network): void
     {
-        // Moving an entry on the calendar rewrites the queued job. Backend work.
+        $this->network = $network === 'all' || Networks::has($network) ? $network : 'all';
 
-        $this->toastInfo('Rescheduling is not wired up yet', 'The post is still queued for its original time.');
+        $this->resolvedTargets = null;
+    }
+
+    /**
+     * Move a scheduled post to a new time.
+     *
+     * The whole post moves, not one target: `scheduled_for` lives on the post,
+     * and a per-network time would need a column the schema does not have. A
+     * post that has already gone out to one network is refused rather than
+     * silently moving only the rest.
+     */
+    public function reschedule(int $postId, string $at): void
+    {
+        $post = Post::query()->with('targets')->find($postId);
+
+        if ($post === null) {
+            $this->toastError('That post is no longer here', 'Reload the page and try again.');
+
+            return;
+        }
+
+        if ($post->targets->contains(fn (PostTarget $t): bool => $t->isPublished())) {
+            $this->toastError(
+                'That post has already gone out',
+                'Moving it would not unsend what is already published. Write a new one instead.',
+            );
+
+            return;
+        }
+
+        try {
+            $when = \Illuminate\Support\Carbon::parse($at);
+        } catch (\Throwable) {
+            $this->toastError('That is not a date Kargah can read', 'The post was not moved.');
+
+            return;
+        }
+
+        if ($when->isPast()) {
+            $this->toastError('That time has already passed', 'Pick a time in the future, or publish it now.');
+
+            return;
+        }
+
+        $post->forceFill(['status' => Post::SCHEDULED, 'scheduled_for' => $when])->save();
+
+        $this->resolvedTargets = null;
+
+        $this->toastSuccess(
+            'Moved to '.$when->format('D j M, H:i'),
+            'The scheduler checks every minute, so it goes out within a minute of that time.',
+        );
     }
 };
 
@@ -105,14 +179,15 @@ class extends Component
     </div>
 
     <div class="flex flex-wrap items-center gap-2">
-        <button wire:click="$set('network', 'all')"
+        <button wire:click="setNetwork('all')"
                 class="kt-btn kt-btn-sm gap-2 {{ $network === 'all' ? 'kt-btn-primary' : 'kt-btn-outline' }}">
             <i class="ki-filled ki-element-11 text-sm"></i> All networks
         </button>
-        @foreach ($networks as $key => $n)
-            <button wire:click="$set('network', '{{ $key }}')"
+        @foreach ($filters as $key)
+            <button wire:click="setNetwork('{{ $key }}')" wire:key="cal-filter-{{ $key }}"
                     class="kt-btn kt-btn-sm gap-2 {{ $network === $key ? 'kt-btn-primary' : 'kt-btn-outline' }}">
-                <span class="size-2 rounded-full {{ $n['tone'] }}"></span> {{ $n['label'] }}
+                <span class="size-2 rounded-full {{ $catalogue[$key]['dot'] ?? 'bg-muted' }}"></span>
+                {{ $catalogue[$key]['label'] ?? $key }}
             </button>
         @endforeach
     </div>
@@ -136,12 +211,16 @@ class extends Component
 
                     {{-- Shown until the calendar bundle takes over, and if it never loads --}}
                     <div data-social-calendar-fallback class="flex flex-col divide-y divide-border">
-                        @forelse ($events as $e)
-                            <div class="flex items-center gap-3 py-2.5">
-                                <span class="size-2 rounded-full shrink-0" style="background-color: {{ $e['backgroundColor'] }}"></span>
-                                <span class="text-sm text-mono grow min-w-0 truncate">{{ $e['title'] }}</span>
+                        @forelse ($listRows as $target)
+                            <div class="flex items-center gap-3 py-2.5" wire:key="row-{{ $target->id }}">
+                                <span class="size-2 rounded-full shrink-0"
+                                      style="background-color: {{ $catalogue[$target->account->network]['colour'] ?? '#78829d' }}"></span>
+                                <a href="{{ route('social.post-show', $target->post_id) }}" wire:navigate
+                                   class="text-sm text-mono grow min-w-0 truncate hover:text-primary">
+                                    {{ $target->account->label() }} · {{ $target->post->excerpt(60) }}
+                                </a>
                                 <span class="text-xs text-muted-foreground shrink-0">
-                                    {{ \Illuminate\Support\Carbon::parse($e['start'])->format('D j M, H:i') }}
+                                    {{ ($target->published_at ?? $target->post->scheduled_for)?->format('D j M, H:i') }}
                                 </span>
                             </div>
                         @empty
@@ -164,19 +243,23 @@ class extends Component
                     <a href="{{ route('social.posts') }}" wire:navigate class="kt-btn kt-btn-sm kt-btn-ghost">Queue</a>
                 </div>
                 <div class="kt-card-content p-0 divide-y divide-border">
-                    @forelse ($queued as $q)
-                        <a href="{{ route('social.post-show', $q['id']) }}" wire:navigate
+                    @forelse ($queued as $target)
+                        @php $when = $target->published_at ?? $target->post->scheduled_for; @endphp
+                        <a href="{{ route('social.post-show', $target->post_id) }}" wire:navigate
+                           wire:key="next-{{ $target->id }}"
                            class="flex items-start gap-3 px-4 py-3 hover:bg-accent/30 transition-colors">
                             <span class="inline-flex items-center justify-center size-9 rounded-lg bg-muted shrink-0">
-                                <i class="ki-filled {{ $networks[$q['network']]['icon'] }} text-base text-muted-foreground"></i>
+                                <i class="ki-filled {{ $target->account->icon() }} text-base text-muted-foreground"></i>
                             </span>
                             <div class="min-w-0 grow">
-                                <div class="text-sm font-medium text-mono truncate">{{ $q['title'] }}</div>
+                                <div class="text-sm font-medium text-mono truncate">{{ $target->post->excerpt(60) }}</div>
                                 <div class="text-xs text-muted-foreground">
-                                    {{ $networks[$q['network']]['label'] }} · {{ $q['at']->format('D j M, H:i') }}
+                                    {{ $target->account->label() }} · {{ $when?->format('D j M, H:i') }}
                                 </div>
                             </div>
-                            <span class="text-xs text-muted-foreground shrink-0">{{ $q['at']->diffForHumans(['short' => true]) }}</span>
+                            <span class="text-xs text-muted-foreground shrink-0">
+                                {{ $when?->diffForHumans(['short' => true]) }}
+                            </span>
                         </a>
                     @empty
                         <div class="flex flex-col items-center py-12 text-center">
@@ -188,28 +271,29 @@ class extends Component
                 </div>
             </div>
 
-            {{-- Best time to post --}}
+            {{-- What the schedule actually promises --}}
             <div class="kt-card">
                 <div class="kt-card-header">
-                    <h3 class="kt-card-title">Best time to post</h3>
+                    <h3 class="kt-card-title">How the timing works</h3>
                 </div>
                 <div class="kt-card-content p-4 flex flex-col gap-3">
                     <p class="text-xs text-muted-foreground">
-                        Windows are worked out from engagement on your own posts over the last 90 days, not from a
-                        published industry average.
+                        There is no daemon behind this. Cron runs the scheduler every minute, the scheduler hands each
+                        due post to a small job, and a worker sends it — so a post goes out within a minute of its time
+                        rather than exactly on it.
                     </p>
-                    @foreach ($bestTimes as $b)
-                        <div class="flex items-start gap-3 rounded-lg border border-border p-3">
-                            <span class="size-2 rounded-full mt-1.5 shrink-0 {{ $networks[$b['network']]['tone'] }}"></span>
-                            <div class="min-w-0">
-                                <div class="text-sm font-medium text-mono">
-                                    {{ $networks[$b['network']]['label'] }}
-                                    <span class="text-secondary-foreground font-normal">· {{ $b['window'] }}</span>
-                                </div>
-                                <div class="text-xs text-muted-foreground mt-0.5">{{ $b['note'] }}</div>
-                            </div>
-                        </div>
-                    @endforeach
+                    <div class="flex items-start gap-2.5 rounded-lg border border-border p-3">
+                        <i class="ki-filled ki-check-circle text-success text-base mt-0.5 shrink-0"></i>
+                        <span class="text-sm text-secondary-foreground">
+                            A network that fails does not hold up the others, and retrying sends only what did not go.
+                        </span>
+                    </div>
+                    <div class="flex items-start gap-2.5 rounded-lg border border-border p-3">
+                        <i class="ki-filled ki-information-2 text-warning text-base mt-0.5 shrink-0"></i>
+                        <span class="text-sm text-secondary-foreground">
+                            An account whose credentials are not configured records that on the post rather than sending it.
+                        </span>
+                    </div>
                 </div>
             </div>
 
@@ -226,22 +310,24 @@ class extends Component
 <script>
 (function () {
     function mount() {
-        var el = document.querySelector('[data-social-calendar]');
+        // A closure left behind by a wire:navigate must not touch the page that
+        // replaced it.
+        if (! $wire.$el || ! $wire.$el.isConnected) return;
 
-        if (! el) {
-            return;
-        }
+        var el = $wire.$el.querySelector('[data-social-calendar]');
 
-        var fallback = document.querySelector('[data-social-calendar-fallback]');
+        if (! el) return;
 
-        // No bundle, no calendar — leave the plain list in place rather than an empty box.
-        if (typeof FullCalendar === 'undefined' || typeof FullCalendar.Calendar !== 'function') {
-            return;
-        }
+        // No bundle, no calendar — leave the plain list in place rather than an
+        // empty box.
+        if (typeof FullCalendar === 'undefined' || typeof FullCalendar.Calendar !== 'function') return;
 
-        // Livewire re-renders the container; tear the old instance down before rebuilding.
-        if (el.dataset.calendarMounted === '1' && el._socialCalendar) {
+        // Ask the library, never a data-* flag: Livewire's morph removes any
+        // attribute the incoming HTML does not carry, so a flag would clear
+        // itself on every render and leave a second instance on the same node.
+        if (el._socialCalendar) {
             el._socialCalendar.destroy();
+            el._socialCalendar = null;
         }
 
         var events = [];
@@ -267,15 +353,16 @@ class extends Component
         calendar.render();
 
         el._socialCalendar = calendar;
-        el.dataset.calendarMounted = '1';
 
-        if (fallback) {
-            fallback.classList.add('hidden');
-        }
+        var fallback = $wire.$el.querySelector('[data-social-calendar-fallback]');
+
+        // Hidden only now, once the calendar has genuinely drawn.
+        if (fallback) fallback.classList.add('hidden');
     }
 
-    document.addEventListener('DOMContentLoaded', mount);
-    if (window.Livewire) Livewire.hook('morph.updated', mount);
+    // Once per component, not once per DOM node touched.
+    Livewire.hook('morphed', mount);
+
     mount();
 })();
 </script>

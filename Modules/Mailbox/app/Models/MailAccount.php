@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Facades\Crypt;
 use Modules\Mailbox\Database\Factories\MailAccountFactory;
 
 /**
@@ -81,15 +82,24 @@ class MailAccount extends Model
     /**
      * The password as everything else spells it.
      *
-     * Reading gives plaintext because the cast decrypts; writing hands the
-     * value to the cast, which encrypts. Callers never touch `Crypt` and never
-     * name the column.
+     * Reading gives plaintext because the `encrypted` cast decrypts on the way
+     * out. Writing encrypts here rather than leaving it to the same cast, and
+     * that asymmetry is not an oversight: whatever a mutator *returns* is
+     * merged into the raw attribute array untouched, so the obvious
+     * `return ['imap_password_encrypted' => $value]` skips the cast and stores
+     * the IMAP password in clear. It did, until
+     * `MailboxModelTest::test_the_password_is_ciphertext_on_disk` said so.
+     *
+     * The cast still earns its place: it covers a direct write to the column,
+     * and it is what makes `$hidden` load-bearing rather than decorative.
      */
     protected function password(): Attribute
     {
         return Attribute::make(
             get: fn (): ?string => $this->imap_password_encrypted,
-            set: fn (?string $value): array => ['imap_password_encrypted' => $value],
+            set: fn (?string $value): array => [
+                'imap_password_encrypted' => $value === null ? null : Crypt::encryptString($value),
+            ],
         );
     }
 

@@ -35,9 +35,16 @@ return new class extends Migration
 
             $table->string('default_folder', 120)->default('INBOX');
 
-            // Where the sync got to. `uid_next` is IMAP's own high-water mark;
-            // storing it means the next run asks only for what arrived since.
+            // Where the sync got to: the highest UID *completed*, which is not
+            // the same number as the server's UIDNEXT. UIDNEXT is read live
+            // from EXAMINE on every tick and never stored; the cursor is what
+            // the next run starts after.
             $table->unsignedBigInteger('sync_cursor')->nullable();
+
+            // UIDVALIDITY is per folder, not per account. One column is correct
+            // only while one folder per account is synced (`default_folder`).
+            // Syncing Sent or Archive as well needs a row per folder, or a
+            // change in one folder's UIDVALIDITY resets the other's cursor.
             $table->unsignedBigInteger('uid_validity')->nullable();
             $table->timestamp('last_synced_at')->nullable();
             $table->text('last_error')->nullable();

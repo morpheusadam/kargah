@@ -265,6 +265,22 @@ content id, part number — which is what the inbox needs to draw a paperclip an
 claiming to hold the file. It carries a nullable `attachment_id` for phase 6 to fill in when
 `AttachmentService` actually stores the bytes. Nothing in Mailbox writes to a disk.
 
+**The documented Eloquent mutator idiom stores an encrypted column in clear text.**
+This is the most dangerous thing found in the whole build, because it fails silently and looks
+right. `Attribute::make(set: fn ($v) => ['imap_password_encrypted' => $v])` is the form Laravel's
+own documentation shows — and a mutator's return value is merged straight into the raw attribute
+array, so **casts never run on it**. The `encrypted` cast is skipped and the password goes into the
+column verbatim. The first seeder run wrote a plaintext password to disk.
+
+A second attempt, calling `$this->setAttribute()` inside the closure, silently did nothing:
+`setAttributeMarkedMutatedAttributeValue` evaluates `array_merge($this->attributes, …)` left to
+right, so the snapshot taken before the callback wins.
+
+The working form encrypts inside the setter with `Crypt::encryptString()` and leaves the cast to
+handle reads and direct column writes. Any model in this project holding a secret must be written
+that way and must have a test asserting the stored bytes are not the plaintext — `MailAccount`,
+`DeliveryProvider`, `SocialAccount` and `Credential` all do.
+
 **Resumability rests on the unique index, not on the cursor.**
 `mail_accounts.sync_cursor` is an optimisation: it stops the job re-reading a mailbox from the
 start every five minutes. The *correctness* is `emails.message_id` being unique, because a cursor

@@ -1,6 +1,8 @@
 <?php
 
 use Illuminate\Support\Facades\Route;
+use Modules\Data\Http\Controllers\AttachmentController;
+use Modules\Data\Http\Controllers\BackupController;
 
 /*
 | Data module - files, credentials, links/bots, GitHub repos, backups.
@@ -9,15 +11,40 @@ use Illuminate\Support\Facades\Route;
 Route::middleware('auth')->prefix('data')->name('data.')->group(function () {
     Route::livewire('/files', 'data::files')->name('files');
 
+    // A plain HTTP response with its own headers, which a Livewire round trip
+    // cannot produce. The service does the streaming; this is only the route.
+    Route::get('/files/{attachment}/download', [AttachmentController::class, 'download'])
+        ->whereNumber('attachment')
+        ->name('file-download');
+
     Route::livewire('/passwords', 'data::passwords')->name('passwords');
-    Route::livewire('/passwords/create', 'data::credential-edit')->name('credential-create');
+    Route::livewire('/passwords/create', 'data::credential-create')->name('credential-create');
 
     Route::livewire('/links', 'data::links')->name('links');
-    Route::livewire('/links/create', 'data::link-edit')->name('link-create');
+    Route::livewire('/links/create', 'data::link-create')->name('link-create');
 
     Route::livewire('/repos', 'data::repos')->name('repos');
     Route::livewire('/repos/{repo}', 'data::repo-show')->name('repo-show');
 
     Route::livewire('/backups', 'data::backups')->name('backups');
+
+    // Before the `{backup}` page route, or `download` would be read as an id.
+    Route::get('/backups/{backup}/download', [BackupController::class, 'download'])
+        ->whereNumber('backup')
+        ->name('backup-download');
+
     Route::livewire('/backups/{backup}', 'data::backup-show')->name('backup-show');
 });
+
+/*
+ * Shared files.
+ *
+ * Outside the auth group on purpose: the signature is the authorisation, and it
+ * carries an expiry. The alternative — making the storage disk public — would
+ * grant permanent access to every file on it, including the ones nobody meant
+ * to share.
+ */
+Route::get('data/share/{attachment}', [AttachmentController::class, 'share'])
+    ->middleware('signed')
+    ->whereNumber('attachment')
+    ->name('data.file-share');

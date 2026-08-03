@@ -1,15 +1,26 @@
 <?php
 
+use Illuminate\Support\Collection;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
 use Modules\Core\Concerns\InteractsWithToasts;
+use Modules\Social\Models\Post;
+use Modules\Social\Models\PostTarget;
+use Modules\Social\Services\PostPublisher;
 
 /**
  * Queue and history.
  *
- * One post can land on four networks and fail on one of them, so delivery is
- * tracked per network rather than as a single status on the post.
+ * One post can land on four networks and fail on one of them, so every column
+ * that says anything about delivery reads `post_targets` rather than the post.
+ * The post's own status is only used to decide which tab it belongs in.
+ *
+ * **Retry claims only what is outstanding.** It hands the post to the same
+ * `PostPublisher` the cron job uses, which cannot claim a target that is
+ * already `published` — so pressing retry on a post that reached two networks
+ * out of three sends exactly one thing. The toast then says how many, because
+ * 'retried' on its own would leave the reader wondering what it retried.
  */
 new
 #[Title('Posts — Kargah')]
@@ -20,142 +31,113 @@ class extends Component
     #[Url]
     public string $tab = 'queued';
 
+    #[Url]
     public string $search = '';
 
+    /** The post whose error detail is open, if any. */
     public ?int $expanded = null;
 
-    /** @return array<string, array{label: string, icon: string}> */
-    public function networks(): array
+    /** Per-request memo; see the note on ⚡boards about why these are private. */
+    private ?Collection $resolvedPosts = null;
+
+    /**
+     * The post statuses each tab collects.
+     *
+     * A map rather than a computed name, because the tab keys are what live in
+     * the address bar and the statuses are what live in the database, and
+     * letting one become the other would tie a URL to a column value.
+     *
+     * @return array<string, array{label: string, icon: string, statuses: list<string>}>
+     */
+    private function tabs(): array
     {
         return [
-            'telegram'  => ['label' => 'Telegram',  'icon' => 'ki-paper-plane'],
-            'linkedin'  => ['label' => 'LinkedIn',  'icon' => 'ki-abstract-41'],
-            'x'         => ['label' => 'X',         'icon' => 'ki-abstract-39'],
-            'instagram' => ['label' => 'Instagram', 'icon' => 'ki-instagram'],
+            'queued' => [
+                'label' => 'Queued',
+                'icon' => 'ki-time',
+                'statuses' => [Post::SCHEDULED, Post::PUBLISHING],
+            ],
+            'published' => [
+                'label' => 'Published',
+                'icon' => 'ki-check-circle',
+                'statuses' => [Post::PUBLISHED],
+            ],
+            'failed' => [
+                'label' => 'Failed',
+                'icon' => 'ki-cross-circle',
+                'statuses' => [Post::FAILED, Post::PARTLY_FAILED],
+            ],
+            'drafts' => [
+                'label' => 'Drafts',
+                'icon' => 'ki-notepad-edit',
+                'statuses' => [Post::DRAFT],
+            ],
         ];
     }
 
-    /** @return array<int, array<string, mixed>> */
-    public function posts(): array
+    private function activeTab(): string
     {
-        return [
-            [
-                'id' => 1,
-                'tab' => 'queued',
-                'excerpt' => 'Shipped the drag-and-drop board in Kargah this week. Cards keep their order after a refresh, which sounds trivial until you try it without a full page reload.',
-                'time' => 'Tomorrow, 09:30',
-                'timeLabel' => 'Scheduled',
-                'delivery' => [
-                    ['network' => 'linkedin', 'state' => 'pending', 'detail' => 'Queued'],
-                    ['network' => 'x',        'state' => 'pending', 'detail' => 'Queued, trimmed to 280'],
-                ],
-            ],
-            [
-                'id' => 2,
-                'tab' => 'queued',
-                'excerpt' => 'Build log: invoice PDF templates now render right-to-left without the layout collapsing. Two evenings and one very stubborn font.',
-                'time' => 'Thu, 18:00',
-                'timeLabel' => 'Scheduled',
-                'delivery' => [
-                    ['network' => 'telegram', 'state' => 'pending', 'detail' => 'Queued'],
-                ],
-            ],
-            [
-                'id' => 3,
-                'tab' => 'published',
-                'excerpt' => 'Benchmarked the whole app on a small shared host. Median page render 84ms with no cache warm-up. No SPA needed.',
-                'time' => '2 days ago, 10:05',
-                'timeLabel' => 'Published',
-                'delivery' => [
-                    ['network' => 'x',        'state' => 'sent', 'detail' => 'Delivered · 1,240 impressions'],
-                    ['network' => 'linkedin', 'state' => 'sent', 'detail' => 'Delivered · 3,180 impressions'],
-                ],
-            ],
-            [
-                'id' => 4,
-                'tab' => 'published',
-                'excerpt' => 'Client onboarding checklist I use before writing a line of code. Saves at least one awkward call per project.',
-                'time' => '5 days ago, 09:40',
-                'timeLabel' => 'Published',
-                'delivery' => [
-                    ['network' => 'linkedin', 'state' => 'sent', 'detail' => 'Delivered · 4,620 impressions'],
-                    ['network' => 'telegram', 'state' => 'sent', 'detail' => 'Delivered · 512 views'],
-                ],
-            ],
-            [
-                'id' => 5,
-                'tab' => 'failed',
-                'excerpt' => 'Desk setup for the new contract. Two monitors, one of them permanently on the logs.',
-                'time' => 'Yesterday, 12:15',
-                'timeLabel' => 'Attempted',
-                'delivery' => [
-                    ['network' => 'telegram',  'state' => 'sent',   'detail' => 'Delivered · 498 views'],
-                    ['network' => 'instagram', 'state' => 'failed', 'detail' => 'Rejected by the Graph API'],
-                ],
-                'error' => 'Instagram Graph API returned 190 — the access token expired on 24 July. Reconnect the account and the queued job will replay.',
-                'attempts' => 3,
-            ],
-            [
-                'id' => 6,
-                'tab' => 'failed',
-                'excerpt' => 'Why I stopped reaching for an SPA on small client projects, and what I reach for instead.',
-                'time' => '3 days ago, 09:00',
-                'timeLabel' => 'Attempted',
-                'delivery' => [
-                    ['network' => 'x', 'state' => 'failed', 'detail' => 'Rate limited'],
-                ],
-                'error' => 'X API returned 429 after 3 attempts. The app-level write limit resets hourly; retry any time after 10:00.',
-                'attempts' => 3,
-            ],
-            [
-                'id' => 7,
-                'tab' => 'drafts',
-                'excerpt' => 'Half-written thread about keeping a freelance invoice ledger in SQLite and never regretting it.',
-                'time' => 'Edited 4 hours ago',
-                'timeLabel' => 'Draft',
-                'delivery' => [
-                    ['network' => 'x',        'state' => 'draft', 'detail' => 'Not scheduled'],
-                    ['network' => 'linkedin', 'state' => 'draft', 'detail' => 'Not scheduled'],
-                ],
-            ],
-        ];
+        return array_key_exists($this->tab, $this->tabs()) ? $this->tab : 'queued';
+    }
+
+    /**
+     * Every post, with its targets and their accounts.
+     *
+     * Loaded once and filtered in memory rather than queried per tab: the tab
+     * counts need all of them anyway, and a freelance install has posts in the
+     * hundreds rather than the millions.
+     *
+     * @return Collection<int, Post>
+     */
+    private function posts(): Collection
+    {
+        return $this->resolvedPosts ??= Post::query()
+            ->with(['targets' => fn ($query) => $query->with('account')->orderBy('id')])
+            ->orderByDesc('scheduled_for')
+            ->orderByDesc('id')
+            ->get();
+    }
+
+    private function forget(): void
+    {
+        $this->resolvedPosts = null;
     }
 
     public function with(): array
     {
-        $posts = $this->posts();
-        $search = trim(mb_strtolower($this->search));
-
-        $rows = array_values(array_filter($posts, function (array $p) use ($search): bool {
-            if ($p['tab'] !== $this->tab) {
-                return false;
-            }
-
-            return $search === '' || str_contains(mb_strtolower($p['excerpt']), $search);
-        }));
+        $tabs = $this->tabs();
+        $active = $this->activeTab();
+        $term = trim(mb_strtolower($this->search));
 
         $counts = [];
-        foreach (['queued', 'published', 'failed', 'drafts'] as $tab) {
-            $counts[$tab] = count(array_filter($posts, fn (array $p): bool => $p['tab'] === $tab));
+
+        foreach ($tabs as $key => $tab) {
+            $counts[$key] = $this->posts()->whereIn('status', $tab['statuses'])->count();
         }
 
+        $rows = $this->posts()
+            ->whereIn('status', $tabs[$active]['statuses'])
+            ->filter(fn (Post $post): bool => $term === '' || str_contains(mb_strtolower($post->body), $term))
+            ->values();
+
         return [
-            'networks' => $this->networks(),
-            'rows' => $rows,
+            'tabs' => $tabs,
+            'active' => $active,
             'counts' => $counts,
-            'tabs' => [
-                'queued' => ['label' => 'Queued', 'icon' => 'ki-time'],
-                'published' => ['label' => 'Published', 'icon' => 'ki-check-circle'],
-                'failed' => ['label' => 'Failed', 'icon' => 'ki-cross-circle'],
-                'drafts' => ['label' => 'Drafts', 'icon' => 'ki-notepad-edit'],
-            ],
+            'rows' => $rows,
             'states' => [
-                'sent'    => ['label' => 'Delivered', 'badge' => 'kt-badge-success', 'icon' => 'ki-check-circle'],
-                'pending' => ['label' => 'Queued',    'badge' => 'kt-badge-warning', 'icon' => 'ki-time'],
-                'failed'  => ['label' => 'Failed',    'badge' => 'kt-badge-destructive', 'icon' => 'ki-cross-circle'],
-                'draft'   => ['label' => 'Draft',     'badge' => 'kt-badge-outline', 'icon' => 'ki-notepad-edit'],
+                PostTarget::PUBLISHED => ['label' => 'Delivered', 'badge' => 'kt-badge-success'],
+                PostTarget::PENDING => ['label' => 'Queued', 'badge' => 'kt-badge-warning'],
+                PostTarget::PUBLISHING => ['label' => 'Sending', 'badge' => 'kt-badge-info'],
+                PostTarget::FAILED => ['label' => 'Failed', 'badge' => 'kt-badge-destructive'],
+                PostTarget::SKIPPED => ['label' => 'Skipped', 'badge' => 'kt-badge-outline'],
             ],
         ];
+    }
+
+    private function post(int $id): ?Post
+    {
+        return $this->posts()->firstWhere('id', $id);
     }
 
     public function toggleError(int $id): void
@@ -163,20 +145,82 @@ class extends Component
         $this->expanded = $this->expanded === $id ? null : $id;
     }
 
-    public function retry(int $post, ?string $network = null): void
+    /**
+     * Send whatever is still outstanding on a post.
+     *
+     * `$accountId` narrows it to one network; without it every target that is
+     * not already published is attempted. Either way a published target is left
+     * alone, because the claim is what decides and it is a database condition
+     * rather than a decision made here.
+     */
+    public function retry(int $id, ?int $accountId = null): void
     {
-        // Re-queues the delivery job for one network, or all failed ones. Backend work.
+        $post = $this->post($id);
 
-        $this->toastInfo('Retry is not wired up yet', $network === null
-            ? 'Nothing was re-queued for this post.'
-            : 'Nothing was re-queued for '.($this->networks()[$network]['label'] ?? $network).'.');
+        if ($post === null) {
+            $this->toastError('That post is no longer here', 'Reload the page and try again.');
+
+            return;
+        }
+
+        $report = app(PostPublisher::class)->publishPost($post, $accountId);
+
+        $this->forget();
+        $this->expanded = null;
+
+        if (! $report->didAnything()) {
+            $this->toastSuccess('Nothing needed sending', $report->summary());
+
+            return;
+        }
+
+        if ($report->failed === 0) {
+            $this->toastSuccess('Retried', $report->summary());
+
+            return;
+        }
+
+        $report->published > 0
+            ? $this->toastWarning('Some of it went out', $report->firstError())
+            : $this->toastError('It failed again', $report->firstError());
     }
 
-    public function cancel(int $post): void
+    /**
+     * Take a scheduled post out of the queue.
+     *
+     * It becomes a draft rather than being deleted: the text is usually worth
+     * keeping and the targets already record which networks it was meant for.
+     * Anything already published to stays published — cancelling cannot unsend.
+     */
+    public function cancel(int $id): void
     {
-        // Removes the queued job before it fires. Backend work.
+        $post = $this->post($id);
 
-        $this->toastInfo('Cancelling is not wired up yet', 'The post is still in the queue.');
+        if ($post === null) {
+            $this->toastError('That post is no longer here', 'Reload the page and try again.');
+
+            return;
+        }
+
+        if (! in_array($post->status, [Post::SCHEDULED, Post::PUBLISHING], true)) {
+            $this->toastError('That post is not queued', 'Only a scheduled post can be taken out of the queue.');
+
+            return;
+        }
+
+        $alreadyOut = $post->targets->where('status', PostTarget::PUBLISHED)->count();
+
+        $post->forceFill(['status' => Post::DRAFT, 'scheduled_for' => null])->save();
+
+        $this->forget();
+
+        $this->toastSuccess(
+            'Taken out of the queue',
+            $alreadyOut === 0
+                ? 'It is a draft again and nothing was sent. Schedule it from the composer when you are ready.'
+                : 'It is a draft again. The '.$alreadyOut.' '.($alreadyOut === 1 ? 'network' : 'networks')
+                    .' it already reached keep the post.',
+        );
     }
 };
 
@@ -202,11 +246,11 @@ class extends Component
     <div class="flex flex-wrap items-center justify-between gap-3">
         <div class="flex flex-wrap items-center gap-2">
             @foreach ($tabs as $key => $t)
-                <button wire:click="$set('tab', '{{ $key }}')"
-                        class="kt-btn kt-btn-sm gap-2 {{ $tab === $key ? 'kt-btn-primary' : 'kt-btn-outline' }}">
+                <button wire:click="$set('tab', '{{ $key }}')" wire:key="tab-{{ $key }}"
+                        class="kt-btn kt-btn-sm gap-2 {{ $active === $key ? 'kt-btn-primary' : 'kt-btn-outline' }}">
                     <i class="ki-filled {{ $t['icon'] }} text-sm"></i>
                     {{ $t['label'] }}
-                    <span class="kt-badge kt-badge-sm {{ $tab === $key ? 'kt-badge-outline' : '' }}">{{ $counts[$key] }}</span>
+                    <span class="kt-badge kt-badge-sm {{ $active === $key ? 'kt-badge-outline' : '' }}">{{ $counts[$key] }}</span>
                 </button>
             @endforeach
         </div>
@@ -224,71 +268,93 @@ class extends Component
                         <tr>
                             <th class="min-w-[280px]">Post</th>
                             <th class="w-[140px]">Networks</th>
-                            <th class="w-[180px]">{{ $tab === 'published' ? 'Published' : ($tab === 'drafts' ? 'Last edited' : 'Scheduled') }}</th>
-                            <th class="w-[260px]">Delivery</th>
+                            <th class="w-[190px]">
+                                {{ $active === 'published' ? 'Published' : ($active === 'drafts' ? 'Last edited' : 'Scheduled') }}
+                            </th>
+                            <th class="w-[280px]">Delivery</th>
                             <th class="w-[120px] text-end">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
-                        @forelse ($rows as $row)
-                            <tr wire:key="post-{{ $row['id'] }}">
+                        @forelse ($rows as $post)
+                            @php
+                                $when = match ($active) {
+                                    'published' => $post->published_at,
+                                    'drafts' => $post->updated_at,
+                                    default => $post->scheduled_for,
+                                };
+                                $failedTargets = $post->targets->where('status', 'failed');
+                            @endphp
+                            <tr wire:key="post-{{ $post->id }}">
                                 <td>
-                                    <a href="{{ route('social.post-show', $row['id']) }}" wire:navigate
+                                    <a href="{{ route('social.post-show', $post->id) }}" wire:navigate
                                        class="text-sm text-mono hover:text-primary line-clamp-2 max-w-[420px]">
-                                        {{ $row['excerpt'] }}
+                                        {{ $post->excerpt() }}
                                     </a>
-                                    @if ($tab === 'failed')
-                                        <button wire:click="toggleError({{ $row['id'] }})"
+                                    @if ($failedTargets->isNotEmpty())
+                                        <button wire:click="toggleError({{ $post->id }})"
                                                 class="text-xs text-destructive inline-flex items-center gap-1 mt-1">
                                             <i class="ki-filled ki-information-2 text-xs"></i>
-                                            {{ $expanded === $row['id'] ? 'Hide error' : 'Show error' }}
+                                            {{ $expanded === $post->id ? 'Hide error' : 'Show error' }}
                                         </button>
                                     @endif
                                 </td>
                                 <td>
                                     <div class="flex items-center gap-1.5">
-                                        @foreach ($row['delivery'] as $d)
+                                        @foreach ($post->targets as $target)
                                             <span class="inline-flex items-center justify-center size-7 rounded-md bg-muted"
-                                                  title="{{ $networks[$d['network']]['label'] }} — {{ $states[$d['state']]['label'] }}">
-                                                <i class="ki-filled {{ $networks[$d['network']]['icon'] }} text-sm text-secondary-foreground"></i>
+                                                  title="{{ $target->account?->label() }} — {{ $states[$target->status]['label'] ?? $target->status }}">
+                                                <i class="ki-filled {{ $target->account?->icon() ?? 'ki-abstract-26' }} text-sm text-secondary-foreground"></i>
                                             </span>
                                         @endforeach
                                     </div>
                                 </td>
                                 <td>
-                                    <div class="text-sm text-mono">{{ $row['time'] }}</div>
-                                    <div class="text-xs text-muted-foreground">{{ $row['timeLabel'] }}</div>
+                                    <div class="text-sm text-mono">{{ $when?->format('D j M, H:i') ?? '—' }}</div>
+                                    <div class="text-xs text-muted-foreground">
+                                        {{ $when?->diffForHumans(['short' => true]) ?? 'Not scheduled' }}
+                                    </div>
                                 </td>
                                 <td>
                                     <div class="flex flex-col gap-1">
-                                        @foreach ($row['delivery'] as $d)
+                                        @foreach ($post->targets as $target)
                                             <div class="flex items-center gap-2">
-                                                <span class="kt-badge kt-badge-sm {{ $states[$d['state']]['badge'] }} shrink-0">
-                                                    {{ $networks[$d['network']]['label'] }}
+                                                <span class="kt-badge kt-badge-sm {{ $states[$target->status]['badge'] ?? 'kt-badge-outline' }} shrink-0">
+                                                    {{ $target->account?->label() ?? 'Unknown' }}
                                                 </span>
-                                                <span class="text-xs text-muted-foreground truncate">{{ $d['detail'] }}</span>
+                                                <span class="text-xs text-muted-foreground truncate max-w-[170px]"
+                                                      title="{{ $target->error ?? $target->remote_url }}">
+                                                    @if ($target->isPublished())
+                                                        {{ $target->published_at?->format('j M, H:i') ?? 'Delivered' }}
+                                                    @elseif ($target->error)
+                                                        {{ $target->error }}
+                                                    @else
+                                                        {{ $states[$target->status]['label'] ?? $target->status }}
+                                                    @endif
+                                                </span>
                                             </div>
                                         @endforeach
                                     </div>
                                 </td>
                                 <td class="text-end">
                                     <div class="flex items-center justify-end gap-1">
-                                        @if ($tab === 'failed')
-                                            <button wire:click="retry({{ $row['id'] }})" wire:loading.attr="disabled"
+                                        @if ($failedTargets->isNotEmpty())
+                                            <button wire:click="retry({{ $post->id }})" wire:loading.attr="disabled"
                                                     class="kt-btn kt-btn-sm kt-btn-outline gap-1.5">
-                                                <span wire:loading.remove wire:target="retry({{ $row['id'] }})">Retry</span>
-                                                <span wire:loading wire:target="retry({{ $row['id'] }})" class="inline-flex items-center gap-1.5">
+                                                <span wire:loading.remove wire:target="retry({{ $post->id }})">Retry</span>
+                                                <span wire:loading wire:target="retry({{ $post->id }})" class="inline-flex items-center gap-1.5">
                                                     <i class="ki-filled ki-loading animate-spin"></i> Retrying…
                                                 </span>
                                             </button>
-                                        @elseif ($tab === 'queued')
-                                            <button wire:click="cancel({{ $row['id'] }})"
+                                        @elseif ($active === 'queued')
+                                            <button wire:click="cancel({{ $post->id }})"
                                                     class="kt-btn kt-btn-icon kt-btn-sm kt-btn-ghost text-destructive"
-                                                    title="Cancel this post" aria-label="Cancel this post">
+                                                    title="Take this post out of the queue"
+                                                    aria-label="Take this post out of the queue">
                                                 <i class="ki-filled ki-cross-circle"></i>
                                             </button>
                                         @endif
-                                        <a href="{{ route('social.post-show', $row['id']) }}" wire:navigate
+                                        <a href="{{ route('social.post-show', $post->id) }}" wire:navigate
                                            class="kt-btn kt-btn-icon kt-btn-sm kt-btn-ghost"
                                            title="Open post" aria-label="Open post">
                                             <i class="ki-filled ki-eye"></i>
@@ -297,28 +363,33 @@ class extends Component
                                 </td>
                             </tr>
 
-                            @if ($tab === 'failed' && $expanded === $row['id'])
-                                <tr wire:key="error-{{ $row['id'] }}">
+                            @if ($expanded === $post->id && $failedTargets->isNotEmpty())
+                                <tr wire:key="error-{{ $post->id }}">
                                     <td colspan="5" class="bg-destructive/5">
-                                        <div class="flex flex-wrap items-start gap-3 py-1">
-                                            <i class="ki-filled ki-information-2 text-destructive text-base mt-0.5 shrink-0"></i>
-                                            <div class="min-w-0 grow">
-                                                <p class="text-sm text-mono">{{ $row['error'] }}</p>
-                                                <p class="text-xs text-muted-foreground mt-1">
-                                                    {{ $row['attempts'] }} attempts · next automatic retry —
-                                                </p>
-                                            </div>
-                                            <div class="flex items-center gap-2 shrink-0">
-                                                @foreach ($row['delivery'] as $d)
-                                                    @if ($d['state'] === 'failed')
-                                                        <button wire:click="retry({{ $row['id'] }}, '{{ $d['network'] }}')"
+                                        <div class="flex flex-col gap-2 py-1">
+                                            @foreach ($failedTargets as $target)
+                                                <div class="flex flex-wrap items-start gap-3">
+                                                    <i class="ki-filled ki-information-2 text-destructive text-base mt-0.5 shrink-0"></i>
+                                                    <div class="min-w-0 grow">
+                                                        <p class="text-sm text-mono">{{ $target->error }}</p>
+                                                        <p class="text-xs text-muted-foreground mt-1">
+                                                            {{ $target->attempts }} {{ $target->attempts === 1 ? 'attempt' : 'attempts' }} ·
+                                                            last tried {{ $target->last_attempt_at?->diffForHumans() ?? 'never' }}
+                                                        </p>
+                                                    </div>
+                                                    <div class="flex items-center gap-2 shrink-0">
+                                                        @unless ($target->account?->isConnected())
+                                                            <a href="{{ route('social.account-connect') }}?network={{ $target->account?->network }}"
+                                                               wire:navigate class="kt-btn kt-btn-sm kt-btn-outline">Connect</a>
+                                                        @endunless
+                                                        <button wire:click="retry({{ $post->id }}, {{ $target->social_account_id }})"
                                                                 class="kt-btn kt-btn-sm kt-btn-outline gap-1.5">
-                                                            <i class="ki-filled {{ $networks[$d['network']]['icon'] }} text-sm"></i>
-                                                            Retry {{ $networks[$d['network']]['label'] }}
+                                                            <i class="ki-filled {{ $target->account?->icon() ?? 'ki-abstract-26' }} text-sm"></i>
+                                                            Retry {{ $target->account?->label() }}
                                                         </button>
-                                                    @endif
-                                                @endforeach
-                                            </div>
+                                                    </div>
+                                                </div>
+                                            @endforeach
                                         </div>
                                     </td>
                                 </tr>
@@ -327,9 +398,11 @@ class extends Component
                             <tr>
                                 <td colspan="5">
                                     <div class="flex flex-col items-center py-14 text-center">
-                                        <i class="ki-filled {{ $tabs[$tab]['icon'] }} text-4xl text-muted-foreground mb-3"></i>
+                                        <i class="ki-filled {{ $tabs[$active]['icon'] }} text-4xl text-muted-foreground mb-3"></i>
                                         <p class="text-sm text-secondary-foreground">
-                                            {{ $search !== '' ? 'No posts match that search.' : 'Nothing in ' . strtolower($tabs[$tab]['label']) . '.' }}
+                                            {{ trim($search) !== ''
+                                                ? 'No posts match that search.'
+                                                : 'Nothing in ' . strtolower($tabs[$active]['label']) . '.' }}
                                         </p>
                                         <a href="{{ route('social.publish') }}" wire:navigate class="kt-btn kt-btn-sm kt-btn-primary mt-3 gap-2">
                                             <i class="ki-filled ki-plus"></i> New post

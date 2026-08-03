@@ -159,9 +159,20 @@ class Email extends Model
         return $this->from_name ?: (string) $this->from_email;
     }
 
+    /**
+     * `tap($this)->…->save()` returns the boolean from `save()`, not the model.
+     * `tap()` only hands the value back when the work happens inside its
+     * callback — chaining off it evaluates the chain instead. Declared
+     * `: static`, the earlier form threw a TypeError on every call.
+     */
     public function markRead(bool $read = true): static
     {
-        return tap($this)->forceFill(['is_read' => $read])->save();
+        return tap($this, fn (self $email) => $email->forceFill(['is_read' => $read])->save());
+    }
+
+    public function markStarred(bool $starred = true): static
+    {
+        return tap($this, fn (self $email) => $email->forceFill(['is_starred' => $starred])->save());
     }
 
     protected static function newFactory(): EmailFactory

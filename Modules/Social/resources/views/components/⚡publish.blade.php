@@ -1,16 +1,32 @@
 <?php
 
+use Illuminate\Support\Collection;
 use Livewire\Attributes\Title;
 use Livewire\Component;
 use Modules\Core\Concerns\InteractsWithToasts;
+use Modules\Social\Models\Post;
+use Modules\Social\Models\PostTarget;
+use Modules\Social\Models\SocialAccount;
+use Modules\Social\Services\PostPublisher;
+use Modules\Social\Support\Networks;
 
 /**
  * Cross-network composer.
  *
- * Write once, pick targets, publish or schedule. The shared text feeds every
- * network unless a network has been given its own copy, and each target renders
- * a live preview so the limit is something you see rather than something you
- * are told about after the fact.
+ * Write once, pick accounts, publish or schedule. The shared text feeds every
+ * account unless one has been given its own copy, and each target renders a
+ * live preview so the limit is something you see rather than something you are
+ * told about after the fact.
+ *
+ * **Publishing here is the same code path the scheduler uses.** `submit()`
+ * writes the post and its targets and then hands them to `PostPublisher`, which
+ * claims each target exactly as the cron job would. Pressing publish twice
+ * cannot send twice, and an account with no credentials records the reason on
+ * its own target while the others go out.
+ *
+ * The toast says what actually happened, per network. 'Published' is not a
+ * truthful summary of a post that reached two networks out of three, and the
+ * person's next action depends on which.
  */
 new
 #[Title('Publish — Kargah')]
@@ -18,161 +34,286 @@ class extends Component
 {
     use InteractsWithToasts;
 
-    public string $body = "Shipped the drag-and-drop board in Kargah this week. Cards keep their order after a refresh, which sounds trivial until you try it without a full page reload.\n\nIt is Livewire 4 single-file components plus a thin Sortable wrapper — no SPA, no build step to babysit. Runs on a small shared host and still feels instant.\n\nWriting up how the ordering works next. Happy to share the code if anyone wants a look.";
+    public string $body = '';
 
-    public array $targets = ['telegram', 'linkedin', 'x'];
+    /** @var array<int, int|string> Account ids this post is going to. */
+    public array $targets = [];
 
-    /** Per-network copy. A key exists only while that network is overridden. */
+    /** Per-account copy. A key exists only while that account is overridden. */
     public array $overrides = [];
 
+    /** One of 'now', 'later', 'draft'. */
     public string $schedule = 'now';
 
     public string $scheduledAt = '';
 
-    /** @var array<int, array{name: string, thumb: string, kind: string, size: string}> */
-    public array $media = [
-        ['name' => 'board-drag-drop.png', 'thumb' => '/assets/media/images/600x400/8.jpg',  'kind' => 'Image', 'size' => '412 KB'],
-        ['name' => 'order-persist.png',   'thumb' => '/assets/media/images/600x400/11.jpg', 'kind' => 'Image', 'size' => '268 KB'],
-    ];
+    /** Per-request memo; see the note on ⚡boards about why these are private. */
+    private ?Collection $resolvedAccounts = null;
+
+    /**
+     * Start with every account that could actually receive a post ticked.
+     *
+     * An unconnected account is left unticked rather than hidden: it is still
+     * something you can aim at, and doing so records that its credentials are
+     * missing, which is more useful than the account quietly not being there.
+     */
+    public function mount(): void
+    {
+        $this->targets = $this->accounts()
+            ->filter(fn (SocialAccount $a): bool => $a->isConnected())
+            ->pluck('id')
+            ->all();
+    }
+
+    /** @return Collection<int, SocialAccount> */
+    private function accounts(): Collection
+    {
+        return $this->resolvedAccounts ??= SocialAccount::query()->inReadingOrder()->get();
+    }
+
+    /** `#[Url]`-shaped arrays and form input arrive as strings. Compare ids as ids. */
+    private function targetIds(): array
+    {
+        return array_map('intval', $this->targets);
+    }
+
+    /** @return Collection<int, SocialAccount> */
+    private function selected(): Collection
+    {
+        $ids = $this->targetIds();
+
+        return $this->accounts()->filter(fn (SocialAccount $a): bool => in_array($a->id, $ids, true))->values();
+    }
 
     public function with(): array
     {
-        $networks = $this->networks();
+        $selected = $this->selected();
 
         return [
-            'networks' => $networks,
-            'selected' => array_values(array_filter(
-                $networks,
-                fn (array $n): bool => in_array($n['key'], $this->targets, true),
-            )),
+            'accounts' => $this->accounts(),
+            'selected' => $selected,
+            'catalogue' => Networks::all(),
+            'connectedCount' => $selected->filter(fn (SocialAccount $a): bool => $a->isConnected())->count(),
         ];
     }
 
-    /** @return array<int, array{key: string, label: string, icon: string, limit: int, connected: bool}> */
-    public function networks(): array
+    /** The copy a given account will actually receive. */
+    public function textFor(int $accountId): string
     {
-        return [
-            ['key' => 'telegram',  'label' => 'Telegram',  'icon' => 'ki-paper-plane',        'limit' => 4096, 'connected' => true],
-            ['key' => 'linkedin',  'label' => 'LinkedIn',  'icon' => 'ki-abstract-41', 'limit' => 3000, 'connected' => true],
-            ['key' => 'x',         'label' => 'X',         'icon' => 'ki-abstract-39', 'limit' => 280,  'connected' => true],
-            ['key' => 'instagram', 'label' => 'Instagram', 'icon' => 'ki-instagram',   'limit' => 2200, 'connected' => false],
-        ];
+        return $this->overrides[$accountId] ?? $this->body;
     }
 
-    /** The copy a given network will actually receive. */
-    public function textFor(string $key): string
+    public function isOverridden(int $accountId): bool
     {
-        return $this->overrides[$key] ?? $this->body;
+        return array_key_exists($accountId, $this->overrides);
     }
 
-    public function isOverridden(string $key): bool
+    private function account(int $id): ?SocialAccount
     {
-        return array_key_exists($key, $this->overrides);
+        return $this->accounts()->firstWhere('id', $id);
     }
 
-    /** Display name for a network key, for anything the user reads. */
-    protected function labelFor(string $key): string
+    public function toggleTarget(int $accountId): void
     {
-        $network = collect($this->networks())->firstWhere('key', $key);
+        $account = $this->account($accountId);
 
-        return $network['label'] ?? $key;
-    }
-
-    public function toggleTarget(string $key): void
-    {
-        $network = collect($this->networks())->firstWhere('key', $key);
-        $label = $network['label'] ?? $key;
-
-        $this->targets = in_array($key, $this->targets, true)
-            ? array_values(array_diff($this->targets, [$key]))
-            : [...$this->targets, $key];
-
-        if ($network && ! $network['connected']) {
-            $this->toastWarning($label.' is not connected', 'Connect the account before publishing to it.');
+        if ($account === null) {
+            $this->toastError('That account is no longer here', 'Reload the page and try again.');
 
             return;
         }
 
-        in_array($key, $this->targets, true)
-            ? $this->toastSuccess($label.' added', 'It is now a target for this post.')
-            : $this->toastSuccess($label.' removed', 'It is no longer a target for this post.');
-    }
+        $current = $this->targetIds();
 
-    /** Fork this network's copy off the shared text, or fold it back in. */
-    public function toggleOverride(string $key): void
-    {
-        $label = $this->labelFor($key);
+        $this->targets = in_array($accountId, $current, true)
+            ? array_values(array_diff($current, [$accountId]))
+            : [...$current, $accountId];
 
-        if ($this->isOverridden($key)) {
-            unset($this->overrides[$key]);
+        if (! in_array($accountId, $this->targetIds(), true)) {
+            unset($this->overrides[$accountId]);
 
-            $this->toastSuccess($label.' follows the shared text again', 'Its own copy was discarded.');
+            $this->toastSuccess($account->label().' removed', 'It is no longer a target for this post.');
 
             return;
         }
 
-        $this->overrides[$key] = $this->body;
+        $account->isConnected()
+            ? $this->toastSuccess($account->label().' added', 'It is now a target for this post.')
+            : $this->toastWarning(
+                $account->label().' credentials are not configured',
+                'It will be recorded as a failed target rather than published to.',
+            );
+    }
 
-        $this->toastSuccess($label.' now has its own copy', 'Editing it leaves the other networks alone.');
+    /** Fork this account's copy off the shared text, or fold it back in. */
+    public function toggleOverride(int $accountId): void
+    {
+        $account = $this->account($accountId);
+
+        if ($account === null) {
+            return;
+        }
+
+        if ($this->isOverridden($accountId)) {
+            unset($this->overrides[$accountId]);
+
+            $this->toastSuccess($account->label().' follows the shared text again', 'Its own copy was discarded.');
+
+            return;
+        }
+
+        $this->overrides[$accountId] = $this->body;
+
+        $this->toastSuccess($account->label().' now has its own copy', 'Editing it leaves the other networks alone.');
     }
 
     /** Cut the overridden copy down to whatever this network allows. */
-    public function trimToLimit(string $key): void
+    public function trimToLimit(int $accountId): void
     {
-        $network = collect($this->networks())->firstWhere('key', $key);
+        $account = $this->account($accountId);
 
-        if (! $network) {
+        if ($account === null) {
             return;
         }
 
-        $before = mb_strlen($this->textFor($key));
+        $limit = $account->characterLimit();
+        $before = mb_strlen($this->textFor($accountId));
 
-        $this->overrides[$key] = rtrim(mb_substr($this->textFor($key), 0, $network['limit']));
+        $this->overrides[$accountId] = rtrim(mb_substr($this->textFor($accountId), 0, $limit));
 
-        $cut = $before - mb_strlen($this->overrides[$key]);
+        $cut = $before - mb_strlen($this->overrides[$accountId]);
 
         if ($cut < 1) {
-            $this->toastInfo($network['label'].' copy already fits', 'Nothing needed trimming.');
+            $this->toastSuccess($account->label().' copy already fits', 'Nothing needed trimming.');
 
             return;
         }
 
         $this->toastSuccess(
             'Trimmed '.number_format($cut).' '.($cut === 1 ? 'character' : 'characters'),
-            $network['label'].' copy now fits its '.number_format($network['limit']).'-character limit.',
+            $account->label().' copy now fits its '.number_format($limit).'-character limit.',
         );
     }
 
-    public function removeMedia(int $index): void
+    /**
+     * Write the post and its targets, then do what the composer was asked to.
+     *
+     * The write is one post plus one target per account, and it happens for all
+     * three modes — a draft is a real row with real targets, which is why
+     * scheduling it later is an edit rather than a fresh composition.
+     */
+    public function submit(): void
     {
-        $name = $this->media[$index]['name'] ?? null;
+        $body = trim($this->body);
 
-        unset($this->media[$index]);
-        $this->media = array_values($this->media);
+        if ($body === '') {
+            $this->toastError('The post has nothing in it', 'Write something before publishing or scheduling.');
 
-        if ($name === null) {
             return;
         }
 
-        $left = count($this->media);
+        $accounts = $this->selected();
 
-        $this->toastSuccess('Removed '.$name, $left === 0
-            ? 'No attachments left on this post.'
-            : $left.' '.($left === 1 ? 'attachment' : 'attachments').' left on this post.');
+        if ($accounts->isEmpty()) {
+            $this->toastError('Pick at least one account', 'Nothing was written.');
+
+            return;
+        }
+
+        $when = $this->scheduledFor();
+
+        if ($this->schedule === 'later' && $when === null) {
+            $this->toastError('That is not a date Kargah can read', 'Pick the day and time this should go out.');
+
+            return;
+        }
+
+        if ($this->schedule === 'later' && $when->isPast()) {
+            $this->toastError('That time has already passed', 'Pick a time in the future, or publish it now.');
+
+            return;
+        }
+
+        $post = Post::query()->create([
+            'body' => $body,
+            'media' => null,
+            'status' => match ($this->schedule) {
+                'later' => Post::SCHEDULED,
+                default => Post::DRAFT,
+            },
+            'scheduled_for' => $when,
+            'created_by' => auth()->id(),
+        ]);
+
+        foreach ($accounts as $account) {
+            PostTarget::query()->create([
+                'post_id' => $post->id,
+                'social_account_id' => $account->id,
+                // Stored only when it genuinely differs, so a target with no
+                // override keeps following the post if the post is edited.
+                'body_override' => $this->isOverridden($account->id) && trim($this->textFor($account->id)) !== $body
+                    ? trim($this->textFor($account->id))
+                    : null,
+                'status' => PostTarget::PENDING,
+            ]);
+        }
+
+        if ($this->schedule === 'draft') {
+            $this->flashToast(
+                'success',
+                'Saved as a draft',
+                'It is aimed at '.$accounts->count().' '.($accounts->count() === 1 ? 'account' : 'accounts')
+                .' and will not go out until you schedule or publish it.',
+            );
+
+            $this->redirectRoute('social.posts', navigate: true);
+
+            return;
+        }
+
+        if ($this->schedule === 'later') {
+            $this->flashToast(
+                'success',
+                'Scheduled for '.$when->format('j M Y, H:i'),
+                'The scheduler checks every minute, so it goes out within a minute of that time.',
+            );
+
+            $this->redirectRoute('social.calendar', navigate: true);
+
+            return;
+        }
+
+        // Publish now, through the same claim-and-send path cron uses.
+        $report = app(PostPublisher::class)->publishPost($post->refresh());
+
+        if ($report->failed === 0) {
+            $this->flashToast('success', 'Published', $report->summary());
+        } elseif ($report->published > 0) {
+            $this->flashToast('warning', 'Published to some networks and not others', $report->firstError());
+        } else {
+            $this->flashToast('error', 'Nothing was published', $report->firstError());
+        }
+
+        $this->redirectRoute('social.post-show', ['post' => $post->id], navigate: true);
     }
 
-    public function attachMedia(): void
+    /**
+     * The scheduled moment, or null when there is not one to read.
+     *
+     * `datetime-local` gives 'Y-m-d\TH:i' when a browser fills it and anything
+     * at all when a person types into it, so this refuses rather than guesses.
+     */
+    private function scheduledFor(): ?\Illuminate\Support\Carbon
     {
-        // Upload handling lands with the backend; the picker writes into $media.
+        if ($this->schedule !== 'later' || trim($this->scheduledAt) === '') {
+            return null;
+        }
 
-        $this->toastInfo('The media picker is not wired up yet', 'Uploads arrive with the backend.');
-    }
-
-    public function submit(): void
-    {
-        // Queues one job per target network. Backend work.
-
-        $this->toastInfo('Nothing was sent', 'Publishing and scheduling arrive with the backend.');
+        try {
+            return \Illuminate\Support\Carbon::parse($this->scheduledAt);
+        } catch (\Throwable) {
+            return null;
+        }
     }
 };
 
@@ -183,7 +324,7 @@ class extends Component
     <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
             <h1 class="text-xl font-semibold text-mono">Publish</h1>
-            <p class="text-sm text-secondary-foreground mt-1">One post, every network you pick.</p>
+            <p class="text-sm text-secondary-foreground mt-1">One post, every account you pick.</p>
         </div>
         <div class="flex items-center gap-2">
             <a href="{{ route('social.calendar') }}" wire:navigate class="kt-btn kt-btn-outline gap-2">
@@ -205,40 +346,14 @@ class extends Component
 
                     <textarea class="kt-textarea min-h-[220px] text-sm"
                               placeholder="What are you shipping today?"
+                              aria-label="Post text"
                               wire:model.live.debounce.300ms="body"></textarea>
 
-                    {{-- Attachments --}}
-                    <div class="flex flex-col gap-2">
-                        <div class="flex items-center justify-between">
-                            <span class="text-xs font-medium text-secondary-foreground">Attachments</span>
-                            <span class="text-xs text-muted-foreground">{{ mb_strlen($body) }} characters</span>
-                        </div>
-
-                        <div class="flex flex-wrap items-center gap-2">
-                            @forelse ($media as $i => $m)
-                                <div class="relative group w-24 shrink-0" wire:key="media-{{ $i }}-{{ $m['name'] }}">
-                                    <img src="{{ $m['thumb'] }}" alt="{{ $m['name'] }}"
-                                         class="w-24 h-16 object-cover rounded-lg border border-border">
-                                    <button wire:click="removeMedia({{ $i }})"
-                                            wire:loading.attr="disabled"
-                                            class="kt-btn kt-btn-icon kt-btn-sm absolute -top-2 -end-2 size-6 rounded-full bg-background border border-border text-destructive"
-                                            title="Remove {{ $m['name'] }}" aria-label="Remove {{ $m['name'] }}">
-                                        <i class="ki-filled ki-cross text-xs"></i>
-                                    </button>
-                                    <div class="text-[11px] text-muted-foreground truncate mt-1" title="{{ $m['name'] }}">{{ $m['name'] }}</div>
-                                    <div class="text-[10px] text-muted-foreground">{{ $m['size'] }}</div>
-                                </div>
-                            @empty
-                                <p class="text-xs text-muted-foreground">No attachments. Instagram needs at least one image.</p>
-                            @endforelse
-
-                            <button wire:click="attachMedia" wire:loading.attr="disabled"
-                                    class="w-24 h-16 shrink-0 rounded-lg border border-dashed border-border flex flex-col items-center justify-center gap-1 text-muted-foreground hover:bg-accent/40 transition-colors"
-                                    title="Add media" aria-label="Add media">
-                                <i class="ki-filled ki-picture text-base"></i>
-                                <span class="text-[11px]">Add</span>
-                            </button>
-                        </div>
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs text-muted-foreground">{{ mb_strlen($body) }} characters</span>
+                        <span class="text-xs text-muted-foreground">
+                            {{ $connectedCount }} of {{ $selected->count() }} selected accounts can publish
+                        </span>
                     </div>
 
                     <div class="border-t border-border pt-4 flex flex-wrap items-end justify-between gap-3">
@@ -275,35 +390,36 @@ class extends Component
                 </div>
             </div>
 
-            {{-- Per-network copy --}}
+            {{-- Per-account copy --}}
             <div class="kt-card">
                 <div class="kt-card-header">
                     <h3 class="kt-card-title">Per-network copy</h3>
                     <span class="text-xs text-muted-foreground">Fork one network without touching the rest</span>
                 </div>
                 <div class="kt-card-content p-0 divide-y divide-border">
-                    @forelse ($selected as $n)
+                    @forelse ($selected as $account)
                         @php
-                            $text = $this->textFor($n['key']);
-                            $forked = $this->isOverridden($n['key']);
-                            $over = mb_strlen($text) - $n['limit'];
+                            $text = $this->textFor($account->id);
+                            $forked = $this->isOverridden($account->id);
+                            $limit = $account->characterLimit();
+                            $over = mb_strlen($text) - $limit;
                         @endphp
-                        <div class="p-4 flex flex-col gap-3" wire:key="override-{{ $n['key'] }}">
+                        <div class="p-4 flex flex-col gap-3" wire:key="override-{{ $account->id }}">
                             <div class="flex flex-wrap items-center justify-between gap-2">
                                 <div class="flex items-center gap-2 min-w-0">
-                                    <i class="ki-filled {{ $n['icon'] }} text-base text-muted-foreground"></i>
-                                    <span class="text-sm font-medium text-mono">{{ $n['label'] }}</span>
+                                    <i class="ki-filled {{ $account->icon() }} text-base text-muted-foreground"></i>
+                                    <span class="text-sm font-medium text-mono">{{ $account->label() }}</span>
                                     <span class="text-xs {{ $over > 0 ? 'text-destructive' : 'text-muted-foreground' }}">
-                                        {{ mb_strlen($text) }} / {{ number_format($n['limit']) }}
+                                        {{ mb_strlen($text) }} / {{ number_format($limit) }}
                                     </span>
                                 </div>
                                 <div class="flex items-center gap-2 shrink-0">
                                     @if ($forked && $over > 0)
-                                        <button wire:click="trimToLimit('{{ $n['key'] }}')" class="kt-btn kt-btn-sm kt-btn-outline">
+                                        <button wire:click="trimToLimit({{ $account->id }})" class="kt-btn kt-btn-sm kt-btn-outline">
                                             Trim to fit
                                         </button>
                                     @endif
-                                    <button wire:click="toggleOverride('{{ $n['key'] }}')" class="kt-btn kt-btn-sm kt-btn-ghost">
+                                    <button wire:click="toggleOverride({{ $account->id }})" class="kt-btn kt-btn-sm kt-btn-ghost">
                                         {{ $forked ? 'Use shared text' : 'Customise' }}
                                     </button>
                                 </div>
@@ -311,8 +427,8 @@ class extends Component
 
                             @if ($forked)
                                 <textarea class="kt-textarea min-h-[110px] text-sm {{ $over > 0 ? 'border-destructive' : '' }}"
-                                          wire:model.live.debounce.300ms="overrides.{{ $n['key'] }}"
-                                          aria-label="{{ $n['label'] }} copy"></textarea>
+                                          wire:model.live.debounce.300ms="overrides.{{ $account->id }}"
+                                          aria-label="{{ $account->label() }} copy"></textarea>
                             @else
                                 <p class="text-xs text-muted-foreground">Follows the shared text above.</p>
                             @endif
@@ -320,7 +436,7 @@ class extends Component
                     @empty
                         <div class="flex flex-col items-center py-12 text-center">
                             <i class="ki-filled ki-element-11 text-3xl text-muted-foreground mb-3"></i>
-                            <p class="text-sm text-secondary-foreground">Pick at least one network to post to.</p>
+                            <p class="text-sm text-secondary-foreground">Pick at least one account to post to.</p>
                         </div>
                     @endforelse
                 </div>
@@ -337,47 +453,56 @@ class extends Component
                     <a href="{{ route('social.account-connect') }}" wire:navigate class="kt-btn kt-btn-sm kt-btn-ghost">Connect</a>
                 </div>
                 <div class="kt-card-content p-3 flex flex-col gap-1">
-                    @foreach ($networks as $n)
+                    @forelse ($accounts as $account)
                         @php
-                            $active = in_array($n['key'], $targets, true);
-                            $length = mb_strlen($this->textFor($n['key']));
-                            $over = $length > $n['limit'];
+                            $active = in_array($account->id, array_map('intval', $targets), true);
+                            $length = mb_strlen($this->textFor($account->id));
+                            $over = $length > $account->characterLimit();
                         @endphp
-                        <button wire:click="toggleTarget('{{ $n['key'] }}')"
-                                @disabled(! $n['connected'])
+                        <button wire:click="toggleTarget({{ $account->id }})" wire:key="target-{{ $account->id }}"
                                 class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-start transition-colors
-                                       {{ $active ? 'bg-primary/10' : 'hover:bg-accent/50' }}
-                                       {{ $n['connected'] ? '' : 'opacity-50 cursor-not-allowed' }}">
-                            <i class="ki-filled {{ $n['icon'] }} text-lg shrink-0 {{ $active ? 'text-primary' : 'text-muted-foreground' }}"></i>
+                                       {{ $active ? 'bg-primary/10' : 'hover:bg-accent/50' }}">
+                            <i class="ki-filled {{ $account->icon() }} text-lg shrink-0 {{ $active ? 'text-primary' : 'text-muted-foreground' }}"></i>
                             <span class="min-w-0 grow">
-                                <span class="block text-sm font-medium text-mono">{{ $n['label'] }}</span>
+                                <span class="block text-sm font-medium text-mono">{{ $account->label() }}</span>
+                                <span class="block text-xs text-muted-foreground truncate">{{ $account->handle }}</span>
                                 <span class="block text-xs {{ $over ? 'text-destructive' : 'text-muted-foreground' }}">
-                                    {{ $n['connected'] ? $length . ' / ' . number_format($n['limit']) : 'Not connected' }}
+                                    {{ $account->isConnected()
+                                        ? $length . ' / ' . number_format($account->characterLimit())
+                                        : 'Credentials not configured' }}
                                 </span>
                             </span>
                             @if ($active)
                                 <i class="ki-filled ki-check-circle text-primary text-base shrink-0"></i>
                             @endif
                         </button>
-                    @endforeach
+                    @empty
+                        <div class="flex flex-col items-center py-10 text-center">
+                            <i class="ki-filled ki-abstract-26 text-3xl text-muted-foreground mb-3"></i>
+                            <p class="text-sm text-secondary-foreground">No accounts yet.</p>
+                            <a href="{{ route('social.account-connect') }}" wire:navigate class="kt-btn kt-btn-sm kt-btn-primary mt-3">Connect one</a>
+                        </div>
+                    @endforelse
                 </div>
             </div>
 
-            @forelse ($selected as $n)
+            @foreach ($selected as $account)
                 <livewire:social::post-preview
-                    :key="'preview-'.$n['key']"
-                    :network="$n"
-                    :body="$this->textFor($n['key'])"
-                    :media="$media"
-                    :overridden="$this->isOverridden($n['key'])" />
-            @empty
+                    :key="'preview-'.$account->id"
+                    :network-key="$account->network"
+                    :handle="$account->handle"
+                    :body="$this->textFor($account->id)"
+                    :overridden="$this->isOverridden($account->id)" />
+            @endforeach
+
+            @if ($selected->isEmpty())
                 <div class="kt-card">
                     <div class="kt-card-content flex flex-col items-center py-12 text-center">
                         <i class="ki-filled ki-eye text-3xl text-muted-foreground mb-3"></i>
-                        <p class="text-sm text-secondary-foreground">Previews appear once you select a network.</p>
+                        <p class="text-sm text-secondary-foreground">Previews appear once you select an account.</p>
                     </div>
                 </div>
-            @endforelse
+            @endif
 
         </div>
 
