@@ -95,6 +95,26 @@ interface AttachmentService
      */
     public function countForTargets(iterable $targets): array;
 
+    /**
+     * Every id of one morph alias that carries at least one file.
+     *
+     * The companion to `countForTargets()` for the case where the caller has no
+     * models yet — a SQL predicate being built, rather than a page of rows
+     * already loaded. `has:attachments` is exactly that: the board's search
+     * compiler needs "…and this card has a file" as a `whereIn` **inside** the
+     * query that decides which cards to load, so it cannot pass the targets in.
+     *
+     * Bounded by the number of *attached* things, not by the number of cards:
+     * an install with four hundred cards and nine files returns nine ids. That
+     * is what makes it safe to pull into PHP, and it is why this returns ids
+     * rather than a query builder — a builder would leak Data's own table into
+     * a module that is not allowed to know it exists.
+     *
+     * @param  string  $morphAlias  e.g. `'card'` — the alias, never a class name
+     * @return list<int>
+     */
+    public function targetIdsWithAttachments(string $morphAlias): array;
+
     /** One attachment, or null when it does not exist or has been deleted. */
     public function find(int $attachmentId): ?array;
 

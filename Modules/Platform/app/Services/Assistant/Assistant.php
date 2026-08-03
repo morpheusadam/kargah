@@ -14,8 +14,8 @@ namespace Modules\Platform\Services\Assistant;
  * between a clean test run and every one of them tripping `cURL error 60`.
  *
  * Registered as a singleton so a driver swapped in a test's `setUp` is the
- * same registry the settings page, the (future) CLI and the (future) tool
- * layer all resolve through. Nothing here is static, for the reason
+ * same registry the settings page, `kargah:ask` and `AssistantConversation`
+ * all resolve through. Nothing here is static, for the reason
  * `Delivery`'s docblock gives: this application must not assume a fresh
  * process per request, and static state is how that assumption leaks under a
  * long-lived worker.

@@ -37,12 +37,22 @@ class OpenAiDriver extends HttpAssistantDriver
             throw CompletionFailed::noKeyConfigured($this->driver());
         }
 
-        $raw = $this->post(self::ENDPOINT, [
-            'Authorization' => 'Bearer '.$provider->api_key,
-        ], [
+        $body = [
             'model' => $provider->effectiveModel(),
             'messages' => $this->toOpenAiMessages($request->messages),
-        ]);
+        ];
+
+        // Only when there are some. An empty `tools: []` is not the same
+        // request as no `tools` key at all — some OpenAI-compatible endpoints
+        // reject it outright, and it is one more thing on the wire for every
+        // caller that has no tool layer attached.
+        if ($request->tools !== []) {
+            $body['tools'] = $this->toOpenAiTools($request->tools);
+        }
+
+        $raw = $this->post(self::ENDPOINT, [
+            'Authorization' => 'Bearer '.$provider->api_key,
+        ], $body);
 
         return $this->mapChatCompletionsResponse($raw);
     }

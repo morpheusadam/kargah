@@ -2,7 +2,9 @@
 
 namespace Modules\Platform\Providers;
 
+use Illuminate\Contracts\Container\Container;
 use Modules\Core\Support\MorphMap;
+use Modules\Platform\Console\KargahAsk;
 use Modules\Platform\Http\Middleware\AuthenticateApplicationPassword;
 use Modules\Platform\Http\Middleware\RequireScope;
 use Modules\Platform\Models\ApplicationPassword;
@@ -13,6 +15,20 @@ use Modules\Platform\Services\Assistant\GeminiDriver;
 use Modules\Platform\Services\Assistant\OllamaDriver;
 use Modules\Platform\Services\Assistant\OpenAiDriver;
 use Modules\Platform\Services\Assistant\OpenRouterDriver;
+use Modules\Platform\Services\Assistant\Tools\AccountingTotals;
+use Modules\Platform\Services\Assistant\Tools\CardsDueSoon;
+use Modules\Platform\Services\Assistant\Tools\CardsOverdue;
+use Modules\Platform\Services\Assistant\Tools\CustomerEmails;
+use Modules\Platform\Services\Assistant\Tools\ListBoards;
+use Modules\Platform\Services\Assistant\Tools\ListExpenses;
+use Modules\Platform\Services\Assistant\Tools\ListInvoices;
+use Modules\Platform\Services\Assistant\Tools\ReadBoard;
+use Modules\Platform\Services\Assistant\Tools\ReadCard;
+use Modules\Platform\Services\Assistant\Tools\ReadCustomer;
+use Modules\Platform\Services\Assistant\Tools\ReadInvoice;
+use Modules\Platform\Services\Assistant\Tools\SearchCustomers;
+use Modules\Platform\Services\Assistant\Tools\ToolRegistry;
+use Modules\Platform\Services\Assistant\Tools\UnreadMailCount;
 use Modules\Platform\Support\AssistantDrivers;
 use Nwidart\Modules\Support\ModuleServiceProvider;
 
@@ -39,12 +55,16 @@ class PlatformServiceProvider extends ModuleServiceProvider
     protected string $nameLower = 'platform';
 
     /**
-     * Empty on purpose. The API, the assistant and the CLI are later work; this
-     * module currently ships no artisan command.
+     * `kargah:ask` is not `platform:ask` on purpose — `07-platform.md` names it,
+     * and it is the one command in Kargah a person types rather than the
+     * scheduler, so it reads as the application's own verb rather than as one
+     * module's.
      *
      * @var string[]
      */
-    protected array $commands = [];
+    protected array $commands = [
+        KargahAsk::class,
+    ];
 
     /** @var string[] */
     protected array $providers = [
@@ -60,8 +80,8 @@ class PlatformServiceProvider extends ModuleServiceProvider
          * The assistant driver registry, as a singleton.
          *
          * Singleton so a driver swapped in a test's setUp is the same
-         * registry the settings page — and later the CLI and the tool layer
-         * — resolve. Factories rather than instances, exactly as
+         * registry the settings page, `kargah:ask` and the tool layer all
+         * resolve. Factories rather than instances, exactly as
          * `Modules\Mailbox\Providers\MailboxServiceProvider` binds
          * `Delivery`: a provider nobody asks for is never built, and a test
          * that swaps one for `FakeAssistantDriver` never constructs the real
@@ -78,6 +98,48 @@ class PlatformServiceProvider extends ModuleServiceProvider
             $assistant->extend(AssistantDrivers::OLLAMA, fn () => new OllamaDriver);
 
             return $assistant;
+        });
+
+        /*
+         * The tool catalogue, as a singleton, bound the same way for the same
+         * reasons — with one that bites harder here than it does for drivers.
+         *
+         * Every tool holds a `Modules\<X>\Contracts\…` reader resolved out of
+         * the container. Constructing them all eagerly would resolve every
+         * reader in five modules on every request, including the overwhelming
+         * majority that never mention the assistant. So each is registered as
+         * a factory under its own `NAME` constant — the name the model calls
+         * it by — which is exactly why that constant exists: binding a factory
+         * must not require constructing the thing to ask it what it is called.
+         *
+         * Read-only, deliberately. `07-platform.md` draws the line at
+         * "anything that spends money or sends mail asks first", and the two
+         * write methods the contracts do expose — `InvoiceReader::issue()` and
+         * `CardReader::assignToCustomer()` — are on the wrong side of it or
+         * are not what a model would reach for. Creating and moving a card,
+         * and drafting an invoice, have no contract to go through at all.
+         */
+        $this->app->singleton(ToolRegistry::class, function (Container $app): ToolRegistry {
+            $tools = new ToolRegistry;
+
+            $tools->extend(SearchCustomers::NAME, fn () => $app->make(SearchCustomers::class));
+            $tools->extend(ReadCustomer::NAME, fn () => $app->make(ReadCustomer::class));
+
+            $tools->extend(ListBoards::NAME, fn () => $app->make(ListBoards::class));
+            $tools->extend(ReadBoard::NAME, fn () => $app->make(ReadBoard::class));
+            $tools->extend(ReadCard::NAME, fn () => $app->make(ReadCard::class));
+            $tools->extend(CardsDueSoon::NAME, fn () => $app->make(CardsDueSoon::class));
+            $tools->extend(CardsOverdue::NAME, fn () => $app->make(CardsOverdue::class));
+
+            $tools->extend(ListInvoices::NAME, fn () => $app->make(ListInvoices::class));
+            $tools->extend(ReadInvoice::NAME, fn () => $app->make(ReadInvoice::class));
+            $tools->extend(AccountingTotals::NAME, fn () => $app->make(AccountingTotals::class));
+            $tools->extend(ListExpenses::NAME, fn () => $app->make(ListExpenses::class));
+
+            $tools->extend(CustomerEmails::NAME, fn () => $app->make(CustomerEmails::class));
+            $tools->extend(UnreadMailCount::NAME, fn () => $app->make(UnreadMailCount::class));
+
+            return $tools;
         });
     }
 

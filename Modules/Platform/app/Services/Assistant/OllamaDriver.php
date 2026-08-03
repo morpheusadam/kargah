@@ -45,12 +45,22 @@ class OllamaDriver extends HttpAssistantDriver
 
         $url = rtrim($provider->base_url, '/').'/v1/chat/completions';
 
-        // No Authorization header: a local endpoint with no key is the whole
-        // point of this driver.
-        $raw = $this->post($url, [], [
+        $body = [
             'model' => $provider->effectiveModel(),
             'messages' => $this->toOpenAiMessages($request->messages),
-        ]);
+        ];
+
+        // Sent when there are tools, even though a small local model is the
+        // one most likely to ignore them: whether the model can call a tool is
+        // a property of the model the owner chose, and silently withholding
+        // the catalogue would make a capable local model look incapable.
+        if ($request->tools !== []) {
+            $body['tools'] = $this->toOpenAiTools($request->tools);
+        }
+
+        // No Authorization header: a local endpoint with no key is the whole
+        // point of this driver.
+        $raw = $this->post($url, [], $body);
 
         return $this->mapChatCompletionsResponse($raw);
     }

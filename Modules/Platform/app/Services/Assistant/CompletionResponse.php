@@ -13,10 +13,15 @@ namespace Modules\Platform\Services\Assistant;
  * distinction is spelled out, so a caller does not re-derive it from
  * `$text === null` at every call site.
  *
- * No driver populates `$toolCalls` yet, because nothing offers a
- * `CompletionRequest::$tools` list yet. It is part of the type from the start
- * for the same reason `$tools` is: the day the tool layer exists, it is a new
- * caller and a new driver body, not a new interface.
+ * All five drivers populate `$toolCalls` now, and it cost each of them a
+ * change of body and none of them a change of signature — which is the whole
+ * reason the field was part of the type before anything produced one.
+ *
+ * A model may do both at once: Anthropic and Gemini both allow a turn that
+ * says a sentence *and* calls a tool, so `$text` being set does not mean
+ * `$toolCalls` is empty. `isToolCall()` is what a caller should branch on —
+ * `AssistantConversation` treats any response with tool calls as a step to be
+ * answered rather than as the final word, whatever text came with it.
  */
 final readonly class CompletionResponse
 {

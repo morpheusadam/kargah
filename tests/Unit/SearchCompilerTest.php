@@ -242,17 +242,22 @@ class SearchCompilerTest extends TestCase
     }
 
     /**
-     * Two operators that name real data (`has:attachments`) and two that name
-     * nothing at all (`has:cover`, `has:stickers`, `is:starred`) are all
-     * treated the same way: the query is made to match nothing, and the
-     * caller is told which operator it could not honour, rather than the
-     * search silently ignoring what was typed.
+     * An operator that names data the schema does not hold is made to match
+     * nothing, and the caller is told which one it could not honour, rather
+     * than the search silently ignoring what was typed.
+     *
+     * **`has:stickers` is the last one.** This list used to hold four:
+     * `has:cover` now reads `cards.cover_type`, `has:attachments` goes through
+     * `AttachmentService::targetIdsWithAttachments()`, and `is:starred`
+     * resolves against `board_user_states`. All three are covered by their own
+     * behaviour above rather than by this test, which is about the *reporting*
+     * path and needs only one operator to exercise it.
      */
     public function test_unhonourable_operators_are_reported_and_match_nothing(): void
     {
         Card::factory()->inList($this->listA)->create(['title' => 'Would otherwise match everything']);
 
-        foreach (['has:cover', 'has:stickers', 'has:attachments', 'is:starred'] as $token) {
+        foreach (['has:stickers'] as $token) {
             $query = $this->placementsQuery();
             $unsupported = $this->compiler()->apply($query, SearchQuery::parse($token), $this->board);
 

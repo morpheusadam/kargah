@@ -39,12 +39,21 @@ class OpenRouterDriver extends HttpAssistantDriver
             throw CompletionFailed::noKeyConfigured($this->driver());
         }
 
-        $raw = $this->post(self::ENDPOINT, [
-            'Authorization' => 'Bearer '.$provider->api_key,
-        ], [
+        $body = [
             'model' => $provider->effectiveModel(),
             'messages' => $this->toOpenAiMessages($request->messages),
-        ]);
+        ];
+
+        // Whether the model behind the chosen OpenRouter route supports tools
+        // at all is the route's business, not this driver's — sending the
+        // catalogue to one that does not simply means it never calls one.
+        if ($request->tools !== []) {
+            $body['tools'] = $this->toOpenAiTools($request->tools);
+        }
+
+        $raw = $this->post(self::ENDPOINT, [
+            'Authorization' => 'Bearer '.$provider->api_key,
+        ], $body);
 
         return $this->mapChatCompletionsResponse($raw);
     }

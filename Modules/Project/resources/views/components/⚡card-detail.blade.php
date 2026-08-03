@@ -14,12 +14,15 @@ use Modules\Project\Models\BoardList;
 use Modules\Project\Models\Card;
 use Modules\Project\Models\CardComment;
 use Modules\Project\Models\CardPlacement;
+use Modules\Project\Models\CardVote;
 use Modules\Project\Models\Checklist;
 use Modules\Project\Models\ChecklistItem;
+use Modules\Project\Models\CommentReaction;
 use Modules\Project\Services\CardService;
 use Modules\Project\Services\Watching;
 use Modules\Project\Support\Palette;
 use Modules\Project\Support\Position;
+use Modules\Project\Support\Reactions;
 
 /**
  * Card detail drawer, reading from the database.
@@ -105,6 +108,12 @@ class extends Component
 
     public bool $coverPopoverOpen = false;
 
+    /** The list of who voted, which hangs off the tally rather than sitting in the row. */
+    public bool $votersPopoverOpen = false;
+
+    /** The comment whose emoji picker is open, or null when none is. */
+    public ?int $reactionPickerFor = null;
+
     /** The board the mirror picker is showing lists from, as a string id. */
     public string $mirrorBoard = '';
 
@@ -137,6 +146,11 @@ class extends Component
                 'members',
                 'checklists.items',
                 'comments.author',
+                // The grouped chips need every row, and the tooltip on each
+                // chip needs the name behind it — one load for both, rather
+                // than a count query per comment per emoji.
+                'comments.reactions.user',
+                'votes.user',
             ])
             ->find($this->cardId);
     }
@@ -260,6 +274,50 @@ class extends Component
         });
     }
 
+    /**
+     * The reaction chips under every comment on the card, keyed by comment id.
+     *
+     * Grouped here rather than in the template because it is three steps —
+     * group by emoji, count each group, work out whether the reader is in it —
+     * and a template doing that inline would redo the whole thing for every
+     * chip rather than once for every comment.
+     *
+     * The order is `Reactions`' own, not the order the rows happen to come
+     * back in, so adding a fourth reaction to a comment does not rearrange the
+     * three already sitting there.
+     *
+     * @return array<int, list<array{emoji: string, name: string, count: int, mine: bool, who: string}>>
+     */
+    private function reactionChips(): array
+    {
+        $card = $this->card();
+
+        if ($card === null) {
+            return [];
+        }
+
+        $userId = auth()->id();
+
+        return $card->comments
+            ->mapWithKeys(fn (CardComment $comment): array => [
+                $comment->id => $comment->reactions
+                    ->groupBy('emoji')
+                    ->map(fn (Collection $group, string $emoji): array => [
+                        'emoji' => $emoji,
+                        'name' => Reactions::name($emoji),
+                        'count' => $group->count(),
+                        'mine' => $userId !== null && $group->contains('user_id', $userId),
+                        'who' => $group
+                            ->map(fn (CommentReaction $reaction): string => $reaction->user?->name ?? 'Someone no longer here')
+                            ->join(', ', ' and '),
+                    ])
+                    ->sortBy(fn (array $chip): int => Reactions::order($chip['emoji']))
+                    ->values()
+                    ->all(),
+            ])
+            ->all();
+    }
+
     public function with(): array
     {
         $card = $this->card();
@@ -279,6 +337,16 @@ class extends Component
             'mirrorLists' => $this->mirrorTargets(),
             'checklist' => $items,
             'comments' => $card?->comments ?? collect(),
+            'voteCount' => $card?->votes->count() ?? 0,
+            'hasVoted' => $card?->hasVoteFrom(auth()->id()) ?? false,
+            // Names, not users: the popover lists who voted and nothing else,
+            // and a vote whose user row is gone still counts.
+            'voters' => $card?->votes->map(fn (CardVote $vote): array => [
+                'id' => $vote->id,
+                'name' => $vote->user?->name ?? 'Someone no longer here',
+            ]) ?? collect(),
+            'reactionSet' => Reactions::SET,
+            'reactionChips' => $this->reactionChips(),
             'checklistDone' => $done,
             'checklistTotal' => $total,
             'checklistPercent' => $total > 0 ? (int) round($done / $total * 100) : 0,
@@ -327,6 +395,8 @@ class extends Component
         $this->movePopoverOpen = false;
         $this->mirrorPopoverOpen = false;
         $this->coverPopoverOpen = false;
+        $this->votersPopoverOpen = false;
+        $this->reactionPickerFor = null;
         $this->mirrorBoard = (string) ($card->list?->board_id ?? '');
         $this->mirrorList = '';
         $this->newComment = '';
@@ -365,6 +435,8 @@ class extends Component
         $this->movePopoverOpen = false;
         $this->mirrorPopoverOpen = false;
         $this->coverPopoverOpen = false;
+        $this->votersPopoverOpen = false;
+        $this->reactionPickerFor = null;
     }
 
     /* Title and description ---------------------------------------------- */
@@ -455,6 +527,7 @@ class extends Component
         $this->movePopoverOpen = false;
         $this->mirrorPopoverOpen = false;
         $this->coverPopoverOpen = false;
+        $this->votersPopoverOpen = false;
     }
 
     /** Opening a picker is not worth announcing. */
@@ -467,6 +540,7 @@ class extends Component
         $this->movePopoverOpen = false;
         $this->mirrorPopoverOpen = false;
         $this->coverPopoverOpen = false;
+        $this->votersPopoverOpen = false;
     }
 
     /**
@@ -575,6 +649,7 @@ class extends Component
         $this->movePopoverOpen = false;
         $this->mirrorPopoverOpen = false;
         $this->coverPopoverOpen = false;
+        $this->votersPopoverOpen = false;
     }
 
     /**
@@ -654,6 +729,11 @@ class extends Component
         $this->startPopoverOpen = false;
         $this->movePopoverOpen = false;
         $this->mirrorPopoverOpen = false;
+        // `coverPopoverOpen` was missing from this one list while every other
+        // toggle cleared it — opening the due picker left the cover picker
+        // open behind it, and the two overlap in the same row.
+        $this->coverPopoverOpen = false;
+        $this->votersPopoverOpen = false;
     }
 
     /**
@@ -1017,6 +1097,139 @@ class extends Component
         $this->toastSuccess('Comment posted', 'It is at the bottom of the thread on '.$card->title.'.');
     }
 
+    /* Votes and reactions -------------------------------------------------- */
+
+    /** Opening a list of names is not worth announcing. */
+    public function toggleVotersPopover(): void
+    {
+        $this->votersPopoverOpen = ! $this->votersPopoverOpen;
+        $this->labelPopoverOpen = false;
+        $this->memberPopoverOpen = false;
+        $this->startPopoverOpen = false;
+        $this->duePopoverOpen = false;
+        $this->movePopoverOpen = false;
+        $this->mirrorPopoverOpen = false;
+        $this->coverPopoverOpen = false;
+    }
+
+    /**
+     * Cast your vote, or take it back.
+     *
+     * No toast: the button carries the tally and its own pressed state, so a
+     * toast would report exactly what the person is looking at. No activity
+     * entry and no notification either — a vote is the lightest signal on the
+     * board, and one feed line per vote would bury the changes that matter.
+     * `card_votes` carries `unique(card_id, user_id)`, so a double-click that
+     * arrives as two requests is a vote and an un-vote, never two rows.
+     *
+     * `cardChanged()` rather than `forgetCard()`, because the vote chip is
+     * drawn on the front of the card as well as here.
+     */
+    public function toggleVote(): void
+    {
+        $card = $this->card();
+
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        $userId = auth()->id();
+
+        if ($userId === null) {
+            return;
+        }
+
+        $vote = CardVote::query()
+            ->where('card_id', $card->id)
+            ->where('user_id', $userId)
+            ->first();
+
+        $vote !== null
+            ? $vote->delete()
+            : CardVote::query()->create(['card_id' => $card->id, 'user_id' => $userId]);
+
+        $this->votersPopoverOpen = false;
+
+        $this->cardChanged();
+    }
+
+    public function toggleReactionPicker(int $commentId): void
+    {
+        $this->reactionPickerFor = $this->reactionPickerFor === $commentId ? null : $commentId;
+    }
+
+    /**
+     * Put one of the eight emoji on a comment, or take yours back off it.
+     *
+     * Both halves of the toggle land here: clicking a chip that already exists
+     * and picking from the picker are the same call with the same arguments,
+     * which is what makes "clicking a chip removes your own reaction from it"
+     * true without a second method that could drift from this one.
+     *
+     * The comment is looked up on the open card rather than by id alone. The
+     * id arrives from the browser, and nothing else in this method would stop
+     * it naming a comment on somebody else's card.
+     *
+     * Like a vote: no toast, no activity entry, no notification. The chip
+     * appears under the comment the moment it is written.
+     */
+    public function toggleReaction(int $commentId, string $emoji): void
+    {
+        $card = $this->card();
+
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        $userId = auth()->id();
+
+        if ($userId === null) {
+            return;
+        }
+
+        $comment = $card->comments->firstWhere('id', $commentId);
+
+        if ($comment === null) {
+            $this->toastError('That comment is gone', 'It was deleted while the drawer was open.');
+            $this->forgetCard();
+
+            return;
+        }
+
+        if (! Reactions::has($emoji)) {
+            $this->toastError('That is not one of the reactions', 'Pick one from the picker.');
+
+            return;
+        }
+
+        $reaction = CommentReaction::query()
+            ->where('card_comment_id', $comment->id)
+            ->where('user_id', $userId)
+            ->where('emoji', $emoji)
+            ->first();
+
+        $reaction !== null
+            ? $reaction->delete()
+            : CommentReaction::query()->create([
+                'card_comment_id' => $comment->id,
+                'user_id' => $userId,
+                'emoji' => $emoji,
+            ]);
+
+        // The picker sits where the new chip is about to appear, so it closes
+        // rather than covering the thing it just added.
+        $this->reactionPickerFor = null;
+
+        // No `card-changed`: reactions are not drawn on the front of the card,
+        // so redrawing the whole canvas for one would send every card back for
+        // nothing. The comment *count* on the card face has not moved.
+        $this->forgetCard();
+    }
+
     /* Right rail actions --------------------------------------------------- */
 
     public function toggleMovePopover(): void
@@ -1028,6 +1241,7 @@ class extends Component
         $this->duePopoverOpen = false;
         $this->mirrorPopoverOpen = false;
         $this->coverPopoverOpen = false;
+        $this->votersPopoverOpen = false;
 
         if ($this->movePopoverOpen) {
             $this->moveToList = (string) ($this->card()?->originPlacement?->board_list_id ?? '');
@@ -1108,6 +1322,7 @@ class extends Component
         $this->duePopoverOpen = false;
         $this->movePopoverOpen = false;
         $this->coverPopoverOpen = false;
+        $this->votersPopoverOpen = false;
 
         if ($this->mirrorPopoverOpen) {
             $this->mirrorBoard = (string) ($this->card()?->list?->board_id ?? '');
@@ -1132,6 +1347,7 @@ class extends Component
         $this->duePopoverOpen = false;
         $this->movePopoverOpen = false;
         $this->mirrorPopoverOpen = false;
+        $this->votersPopoverOpen = false;
     }
 
     /**
@@ -1673,6 +1889,56 @@ class extends Component
                             </div>
 
                             {{--
+                                A vote is the lightest thing anybody can do to a
+                                card: no activity entry, no notification, no toast.
+                                The tally rides on the button, because that is the
+                                thing the click changes; who cast the votes is one
+                                click further in, because a row of names here would
+                                push the cover picker off the line.
+                            --}}
+                            <div class="flex flex-col gap-2">
+                                <span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Votes</span>
+                                <div class="flex items-center gap-2">
+                                    <button wire:click="toggleVote" wire:loading.attr="disabled" wire:target="toggleVote"
+                                            class="kt-btn kt-btn-sm gap-2 {{ $hasVoted ? 'kt-btn-primary' : 'kt-btn-outline' }}"
+                                            aria-pressed="{{ $hasVoted ? 'true' : 'false' }}"
+                                            title="{{ $hasVoted ? 'Take your vote back' : 'Vote for this card' }}">
+                                        <i class="ki-filled ki-like text-sm"></i>
+                                        {{ $voteCount }}
+                                    </button>
+
+                                    @if ($voteCount > 0)
+                                        <div class="relative">
+                                            <button wire:click="toggleVotersPopover" class="kt-btn kt-btn-icon kt-btn-outline size-7"
+                                                    title="Who voted" aria-label="Who voted"
+                                                    aria-expanded="{{ $votersPopoverOpen ? 'true' : 'false' }}">
+                                                <i class="ki-filled ki-people text-xs"></i>
+                                            </button>
+
+                                            <div class="kt-dropdown absolute z-20 mt-1 start-0 w-[220px] {{ $votersPopoverOpen ? 'open' : '' }}">
+                                                <div class="flex items-center justify-between gap-2 px-4 py-3 border-b border-border">
+                                                    <h4 class="text-sm font-semibold text-mono">
+                                                        {{ $voteCount }} {{ str('vote')->plural($voteCount) }}
+                                                    </h4>
+                                                    <button wire:click="toggleVotersPopover" class="kt-btn kt-btn-icon kt-btn-ghost size-6"
+                                                            title="Close the voter list" aria-label="Close the voter list">
+                                                        <i class="ki-filled ki-cross text-xs"></i>
+                                                    </button>
+                                                </div>
+                                                <div class="p-2 flex flex-col gap-1">
+                                                    @foreach ($voters as $voter)
+                                                        <span class="px-2 py-1.5 text-sm text-secondary-foreground" wire:key="voter-{{ $voter['id'] }}">
+                                                            {{ $voter['name'] }}
+                                                        </span>
+                                                    @endforeach
+                                                </div>
+                                            </div>
+                                        </div>
+                                    @endif
+                                </div>
+                            </div>
+
+                            {{--
                                 A cover is a colour band or a picture taken from one
                                 of this card's own attachments, half or full height.
                                 A full cover replaces the badges on the card front
@@ -1987,6 +2253,51 @@ class extends Component
                                         {{-- The same sanitising renderer as the description, for the same reason: a comment is user input too. --}}
                                         <div class="text-sm text-secondary-foreground mt-1 rounded-lg bg-muted/40 border border-border px-3 py-2 [&_p]:mb-2 last:[&_p]:mb-0">
                                             {!! \Modules\Project\Support\Markdown::toHtml($comment->body) !!}
+                                        </div>
+
+                                        {{--
+                                            Reactions. A chip is one emoji and everyone
+                                            who used it; clicking it adds or removes
+                                            *your* reaction, which is why a chip you are
+                                            already in is drawn in the primary colour.
+                                            The picker offers the same eight everywhere
+                                            — `Modules\Project\Support\Reactions`.
+                                        --}}
+                                        <div class="flex flex-wrap items-center gap-1 mt-1.5">
+                                            @foreach ($reactionChips[$comment->id] ?? [] as $chip)
+                                                <button wire:click="toggleReaction({{ $comment->id }}, '{{ $chip['emoji'] }}')"
+                                                        wire:key="reaction-{{ $comment->id }}-{{ $chip['emoji'] }}"
+                                                        class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs
+                                                               {{ $chip['mine'] ? 'border-primary text-primary bg-primary/10' : 'border-border text-secondary-foreground hover:bg-accent/60' }}"
+                                                        aria-pressed="{{ $chip['mine'] ? 'true' : 'false' }}"
+                                                        title="{{ $chip['name'] }} — {{ $chip['who'] }}"
+                                                        aria-label="{{ $chip['name'] }}, {{ $chip['count'] }}">
+                                                    <span aria-hidden="true">{{ $chip['emoji'] }}</span>{{ $chip['count'] }}
+                                                </button>
+                                            @endforeach
+
+                                            <div class="relative">
+                                                <button wire:click="toggleReactionPicker({{ $comment->id }})"
+                                                        class="kt-btn kt-btn-icon kt-btn-ghost size-6"
+                                                        title="Add a reaction" aria-label="Add a reaction"
+                                                        aria-expanded="{{ $reactionPickerFor === $comment->id ? 'true' : 'false' }}">
+                                                    <i class="ki-filled ki-emoji-happy text-xs"></i>
+                                                </button>
+
+                                                <div class="kt-dropdown absolute z-20 mt-1 start-0 w-[200px] p-2 {{ $reactionPickerFor === $comment->id ? 'open' : '' }}">
+                                                    <div class="flex flex-wrap gap-1">
+                                                        @foreach ($reactionSet as $emoji)
+                                                            <button wire:click="toggleReaction({{ $comment->id }}, '{{ $emoji }}')"
+                                                                    wire:key="pick-{{ $comment->id }}-{{ $emoji }}"
+                                                                    class="size-7 rounded-md grid place-items-center text-base hover:bg-accent/60"
+                                                                    title="{{ \Modules\Project\Support\Reactions::name($emoji) }}"
+                                                                    aria-label="{{ \Modules\Project\Support\Reactions::name($emoji) }}">
+                                                                <span aria-hidden="true">{{ $emoji }}</span>
+                                                            </button>
+                                                        @endforeach
+                                                    </div>
+                                                </div>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>

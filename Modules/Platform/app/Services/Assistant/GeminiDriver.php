@@ -48,26 +48,91 @@ class GeminiDriver extends HttpAssistantDriver
         $body = array_filter([
             'contents' => $contents,
             'systemInstruction' => $system,
+            // Google nests every declaration inside a single `tools` entry
+            // rather than listing them at the top level, and calls the schema
+            // `parameters` — the same JSON Schema object, one wrapper deeper.
+            'tools' => $request->tools === [] ? null : [[
+                'functionDeclarations' => array_map(
+                    static fn (ToolDefinition $tool): array => [
+                        'name' => $tool->name,
+                        'description' => $tool->description,
+                        'parameters' => $tool->parameters,
+                    ],
+                    $request->tools,
+                ),
+            ]],
         ], fn (mixed $value): bool => $value !== null);
 
         $url = self::ENDPOINT.$provider->effectiveModel().':generateContent?key='.$provider->api_key;
 
         $raw = $this->post($url, [], $body);
 
-        $text = $raw['candidates'][0]['content']['parts'][0]['text'] ?? null;
+        [$text, $toolCalls] = $this->readParts($raw['candidates'][0]['content']['parts'] ?? []);
 
-        if (! is_string($text)) {
-            throw CompletionFailed::malformed($this->driver(), 'no candidate text in the response');
+        // As with Anthropic, a turn that calls a function usually carries no
+        // text at all, so only a candidate with neither is malformed.
+        if ($text === null && $toolCalls === []) {
+            throw CompletionFailed::malformed($this->driver(), 'no candidate text or function call in the response');
         }
 
         $usage = $raw['usageMetadata'] ?? [];
 
         return new CompletionResponse(
             text: $text,
+            toolCalls: $toolCalls,
             stopReason: $raw['candidates'][0]['finishReason'] ?? null,
             promptTokens: is_array($usage) ? ($usage['promptTokenCount'] ?? null) : null,
             completionTokens: is_array($usage) ? ($usage['candidatesTokenCount'] ?? null) : null,
         );
+    }
+
+    /**
+     * Text and function calls out of a candidate's `parts` array.
+     *
+     * **Gemini's `functionCall` has no id of its own**, unlike Anthropic's
+     * `tool_use.id` and OpenAI's `tool_calls[].id`. `ToolCall::$id` is not
+     * optional — a caller has to be able to pair a result back to its call —
+     * so one is synthesised from the part's position. It is only ever echoed
+     * back to this driver, which pairs a `functionResponse` by *name* the way
+     * Google's own API does, so a synthetic id costs nothing and keeps
+     * `ToolCall` one shape across all five providers.
+     *
+     * @return array{0: string|null, 1: list<ToolCall>}
+     */
+    private function readParts(mixed $parts): array
+    {
+        if (! is_array($parts)) {
+            return [null, []];
+        }
+
+        $text = [];
+        $calls = [];
+
+        foreach ($parts as $index => $part) {
+            if (! is_array($part)) {
+                continue;
+            }
+
+            if (is_string($part['text'] ?? null)) {
+                $text[] = $part['text'];
+
+                continue;
+            }
+
+            $call = $part['functionCall'] ?? null;
+
+            if (is_array($call) && is_string($call['name'] ?? null)) {
+                $arguments = $call['args'] ?? [];
+
+                $calls[] = new ToolCall(
+                    id: 'call_'.$index,
+                    name: $call['name'],
+                    arguments: is_array($arguments) ? $arguments : [],
+                );
+            }
+        }
+
+        return [$text === [] ? null : implode("\n", $text), $calls];
     }
 
     /**
@@ -86,6 +151,39 @@ class GeminiDriver extends HttpAssistantDriver
                 // every other driver here treats a conversation with more
                 // than one.
                 $system = ['parts' => [['text' => $message->content]]];
+
+                continue;
+            }
+
+            if ($message->role === 'assistant' && $message->toolCallId !== null) {
+                // The model's own request to call something, played back:
+                // a `functionCall` part on a `model` turn, with the arguments
+                // as a real object rather than the JSON string OpenAI wants.
+                $decoded = json_decode($message->content, true);
+
+                $contents[] = ['role' => 'model', 'parts' => [[
+                    'functionCall' => [
+                        'name' => $message->name,
+                        'args' => is_array($decoded) ? $decoded : [],
+                    ],
+                ]]];
+
+                continue;
+            }
+
+            if ($message->role === 'tool') {
+                // Gemini has no `tool` role either: a result is a
+                // `functionResponse` part on a user turn, paired by name, and
+                // `response` must be an object — a bare string is rejected, so
+                // a result that is not one is wrapped rather than sent as is.
+                $decoded = json_decode($message->content, true);
+
+                $contents[] = ['role' => 'user', 'parts' => [[
+                    'functionResponse' => [
+                        'name' => $message->name,
+                        'response' => is_array($decoded) ? $decoded : ['result' => $message->content],
+                    ],
+                ]]];
 
                 continue;
             }

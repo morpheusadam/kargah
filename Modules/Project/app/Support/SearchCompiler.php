@@ -5,6 +5,7 @@ namespace Modules\Project\Support;
 use App\Models\User;
 use Illuminate\Contracts\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Support\Carbon;
+use Modules\Data\Contracts\AttachmentService;
 use Modules\Project\Models\Board;
 use Modules\Project\Models\Card;
 
@@ -51,16 +52,30 @@ use Modules\Project\Models\Card;
  *
  * ## What this class refuses to fake
  *
- * `has:cover`, `has:stickers` and `is:starred` name things that do not exist
- * yet in the schema — no `cards.cover_*` columns, no `starred_boards` table.
- * `has:attachments` is real data, but `Modules\Data\Contracts\AttachmentService`
- * has no method that answers "which of these cards have a file" for a set of
- * targets in one query — only `countForTarget()`, one target at a time. Calling
- * it once per card on the board would turn a bounded page load into one that
- * grows with the card count, which is exactly what this class exists to avoid.
- * So all four are treated the same way: the query is made to match nothing,
- * and the operator token is returned so the caller can say so, rather than
- * quietly returning results that only look complete.
+ * **`has:stickers`** is the only one left. There is no sticker table, so the
+ * query is made to match nothing and the operator token is returned, letting
+ * the caller say so rather than quietly showing results that only look
+ * complete.
+ *
+ * The other three were stubbed for the same reason and are now real, each for
+ * its own reason:
+ *
+ * - **`has:cover`** — `cards.cover_type` exists. Note it answers the *stored*
+ *   cover, where `Card::coverPresentation()` answers the *drawable* one: an
+ *   image cover whose attachment was later deleted is a row with a cover and a
+ *   card front without one. Matching the column is the right side of that to be
+ *   on — the card does have a cover, it has a broken one, and hiding it from
+ *   search is how it never gets fixed.
+ * - **`has:attachments`** — `AttachmentService::targetIdsWithAttachments()`
+ *   answers it with one query, bounded by the number of attached cards rather
+ *   than by the number of cards. Project may not read Data's table, so this
+ *   goes through the contract and lands as a `whereIn` on ids.
+ * - **`is:starred`** — starring is per person, on `board_user_states`, and this
+ *   board shows one board at a time. So the operator resolves to a property of
+ *   the open board, not of each card: on a starred board every card matches, on
+ *   an unstarred one none does. That is Trello's meaning narrowed to a
+ *   single-board canvas, and it is the honest reading rather than the useless
+ *   one.
  *
  * ## Board scoping
  *
@@ -75,20 +90,29 @@ final class SearchCompiler
     private const WINDOW_DAYS = ['day' => 1, 'week' => 7, 'month' => 30];
 
     /** `has:` values with no column behind them yet. */
-    private const UNSUPPORTED_HAS = ['cover', 'stickers', 'attachments'];
+    private const UNSUPPORTED_HAS = ['stickers'];
 
     /** `is:` values with no table behind them yet. */
-    private const UNSUPPORTED_IS = ['starred'];
+    private const UNSUPPORTED_IS = [];
 
     public function __construct(
         private readonly Carbon $now,
         private readonly string $timezone,
+        /**
+         * Who is searching, when anybody is.
+         *
+         * Optional, and last, so the two-argument construction the unit tests
+         * use still compiles. Only `is:starred` needs it — starring is per
+         * person — and with no user that operator correctly matches nothing,
+         * because nobody has starred anything.
+         */
+        private readonly ?User $user = null,
     ) {}
 
     /** The clock and timezone a request actually has: the signed-in user's, or the app default. */
     public static function forUser(?User $user, ?Carbon $now = null): self
     {
-        return new self($now ?? Carbon::now(), $user?->timezone ?: config('app.timezone', 'UTC'));
+        return new self($now ?? Carbon::now(), $user?->timezone ?: config('app.timezone', 'UTC'), $user);
     }
 
     /**
@@ -191,7 +215,7 @@ final class SearchCompiler
             'edited' => $this->applyElapsedWindow($query, 'updated_at', $values, $negate),
             'due' => $this->applyDueFilter($query, $values, $negate),
             'has' => $this->applyHasFilter($query, $values, $negate),
-            'is' => $this->applyIsFilter($query, $values, $negate),
+            'is' => $this->applyIsFilter($query, $board, $values, $negate),
             default => null,
         };
     }
@@ -353,15 +377,48 @@ final class SearchCompiler
                         'description' => $group->orWhere(function ($q): void {
                             $q->whereNotNull('description')->where('description', '!=', '');
                         }),
-                        default => null, // cover / stickers / attachments: caught earlier, never reached.
+                        // The stored cover, not the drawable one — see the
+                        // class docblock for why that is the right side.
+                        'cover' => $group->orWhereNotNull('cover_type'),
+                        // Ids through the contract, never a join onto Data's
+                        // own table: Project is not allowed to know it exists.
+                        'attachments' => $group->orWhereIn(
+                            'cards.id',
+                            app(AttachmentService::class)->targetIdsWithAttachments((new Card)->getMorphClass()),
+                        ),
+                        default => null, // stickers: caught earlier, never reached.
                     };
                 }
             });
         });
     }
 
-    private function applyIsFilter(EloquentBuilder $query, array $values, bool $negate): void
+    private function applyIsFilter(EloquentBuilder $query, Board $board, array $values, bool $negate): void
     {
+        /*
+         * `starred` is handled apart from the others because it is not a
+         * property of a card at all — it is a property of the board the canvas
+         * has open, and of the person looking at it. Folding it into the
+         * `whereHas('card')` group below would ask the database whether a card
+         * is starred, which is not a question the schema can answer.
+         *
+         * So it resolves to all-or-nothing here, before the card conditions,
+         * and is then dropped from the values the group iterates.
+         */
+        if (in_array('starred', $values, true)) {
+            $starred = $this->user !== null && $board->isStarredBy($this->user);
+
+            if ($starred === $negate) {
+                $query->whereRaw('1 = 0');
+            }
+
+            $values = array_values(array_diff($values, ['starred']));
+
+            if ($values === []) {
+                return;
+            }
+        }
+
         $method = $negate ? 'whereDoesntHave' : 'whereHas';
 
         $query->$method('card', function ($card) use ($values): void {
@@ -370,7 +427,7 @@ final class SearchCompiler
                     match ($value) {
                         'open' => $group->orWhereNull('archived_at'),
                         'archived' => $group->orWhereNotNull('archived_at'),
-                        default => null, // starred: caught earlier, never reached.
+                        default => null,
                     };
                 }
             });

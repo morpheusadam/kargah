@@ -237,6 +237,7 @@ class extends Component
                     ->with(['labels', 'members', 'originPlacement.list.board'])
                     ->withCount([
                         'comments',
+                        'votes',
                         'checklistItems as checklist_total',
                         'checklistItems as checklist_done' => fn ($q) => $q->where('is_done', true),
                     ]),
@@ -1482,7 +1483,7 @@ class extends Component
 
                             <p class="text-sm text-mono leading-snug">{{ $card->title }}</p>
 
-                            @if ((! $hideCardBadges && ($card->checklist_total > 0 || $card->due_on || $card->comments_count > 0)) || $card->members->isNotEmpty())
+                            @if ((! $hideCardBadges && ($card->checklist_total > 0 || $card->due_on || $card->comments_count > 0 || $card->votes_count > 0)) || $card->members->isNotEmpty())
                                 <div class="flex items-center gap-3 mt-2.5 text-xs text-muted-foreground">
                                     @if (! $hideCardBadges && $card->checklist_total > 0)
                                         <span class="inline-flex items-center gap-1 {{ $card->checklist_done === $card->checklist_total ? 'text-success' : '' }}">
@@ -1501,6 +1502,12 @@ class extends Component
                                             <i class="ki-filled ki-message-text-2 text-sm"></i>{{ $card->comments_count }}
                                         </span>
                                     @endif
+                                    @if (! $hideCardBadges && $card->votes_count > 0)
+                                        <span class="inline-flex items-center gap-1" title="{{ $card->votes_count }} {{ str('vote')->plural($card->votes_count) }}">
+                                            <i class="ki-filled ki-like text-sm"></i>{{ $card->votes_count }}
+                                        </span>
+                                    @endif
+                                    {{-- The members stack carries `ms-auto` and must stay last in this row. --}}
                                     @foreach ($card->members as $member)
                                         <span class="ms-auto size-6 rounded-full grid place-items-center text-[10px] font-semibold bg-primary/15 text-primary"
                                               title="{{ $member->name }}">

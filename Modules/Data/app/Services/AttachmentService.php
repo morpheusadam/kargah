@@ -105,6 +105,16 @@ class AttachmentService implements AttachmentServiceContract
         return $counts;
     }
 
+    public function targetIdsWithAttachments(string $morphAlias): array
+    {
+        return Attachment::query()
+            ->where('attachable_type', $morphAlias)
+            ->distinct()
+            ->pluck('attachable_id')
+            ->map(fn ($id): int => (int) $id)
+            ->all();
+    }
+
     public function find(int $attachmentId): ?array
     {
         $attachment = Attachment::query()->find($attachmentId);

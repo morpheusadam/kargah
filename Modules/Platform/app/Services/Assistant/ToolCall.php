@@ -10,8 +10,10 @@ namespace Modules\Platform\Services\Assistant;
  * carrying the result must echo back as `toolCallId`, so the provider can
  * match the answer to the question it asked.
  *
- * Nothing produces one of these yet; see `ToolDefinition`'s docblock for why
- * the type exists ahead of the feature.
+ * All five drivers produce these now. Gemini is the one provider whose
+ * function calls carry no identifier of their own, so `GeminiDriver`
+ * synthesises one from the part's position — `id` is not nullable, because a
+ * caller that cannot pair a result back to its call has nothing to send back.
  */
 final readonly class ToolCall
 {

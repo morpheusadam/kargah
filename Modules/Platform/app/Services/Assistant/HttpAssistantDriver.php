@@ -96,15 +96,130 @@ abstract class HttpAssistantDriver implements AssistantDriver
     /**
      * Messages in the shape every OpenAI-compatible chat endpoint wants.
      *
+     * Three roles pass straight through. The two that do not are the halves of
+     * a tool round trip:
+     *
+     * - an **assistant** message carrying a `toolCallId` is not a turn with
+     *   text in it, it is the model's own request to call something, and
+     *   OpenAI spells that as `content: null` plus a `tool_calls` array whose
+     *   `arguments` is a **JSON string**, not an object;
+     * - a **tool** message is the result, and pairs back to the request by
+     *   `tool_call_id`.
+     *
+     * Consecutive assistant tool-call messages are merged into one turn rather
+     * than emitted as several. A model that asks for three tools in one
+     * response made *one* assistant turn, and sending three — each answering
+     * nothing — is rejected by the API as an unmatched call.
+     *
      * @param  list<ChatMessage>  $messages
-     * @return list<array{role: string, content: string}>
+     * @return list<array<string, mixed>>
      */
     protected function toOpenAiMessages(array $messages): array
     {
+        $out = [];
+
+        foreach ($messages as $message) {
+            if ($message->role === 'tool') {
+                $out[] = [
+                    'role' => 'tool',
+                    'tool_call_id' => $message->toolCallId,
+                    'content' => $message->content,
+                ];
+
+                continue;
+            }
+
+            if ($message->role === 'assistant' && $message->toolCallId !== null) {
+                $call = [
+                    'id' => $message->toolCallId,
+                    'type' => 'function',
+                    'function' => ['name' => $message->name, 'arguments' => $message->content],
+                ];
+
+                $last = array_key_last($out);
+
+                if ($last !== null && ($out[$last]['role'] ?? null) === 'assistant' && isset($out[$last]['tool_calls'])) {
+                    $out[$last]['tool_calls'][] = $call;
+
+                    continue;
+                }
+
+                $out[] = ['role' => 'assistant', 'content' => null, 'tool_calls' => [$call]];
+
+                continue;
+            }
+
+            $out[] = ['role' => $message->role, 'content' => $message->content];
+        }
+
+        return $out;
+    }
+
+    /**
+     * The tool catalogue in the OpenAI function-calling shape.
+     *
+     * `ToolDefinition::$parameters` is already a JSON Schema object, which is
+     * exactly what `function.parameters` wants — the tool layer was built to
+     * this shape on purpose, so nothing is translated here beyond the wrapper.
+     *
+     * @param  list<ToolDefinition>  $tools
+     * @return list<array<string, mixed>>
+     */
+    protected function toOpenAiTools(array $tools): array
+    {
         return array_map(
-            fn (ChatMessage $message): array => ['role' => $message->role, 'content' => $message->content],
-            $messages,
+            static fn (ToolDefinition $tool): array => [
+                'type' => 'function',
+                'function' => [
+                    'name' => $tool->name,
+                    'description' => $tool->description,
+                    'parameters' => $tool->parameters,
+                ],
+            ],
+            $tools,
         );
+    }
+
+    /**
+     * Tool calls off an OpenAI-compatible response, if the model made any.
+     *
+     * `arguments` arrives as a JSON *string*, and a model does occasionally
+     * emit one that does not parse. That is decoded to an empty argument list
+     * rather than thrown on: the tool will answer "x is required", which the
+     * model can correct on the next turn, where an exception would end the
+     * conversation over one malformed field.
+     *
+     * @param  array<array-key, mixed>  $rawCalls
+     * @return list<ToolCall>
+     */
+    protected function mapOpenAiToolCalls(array $rawCalls): array
+    {
+        $calls = [];
+
+        foreach ($rawCalls as $index => $raw) {
+            if (! is_array($raw)) {
+                continue;
+            }
+
+            $name = $raw['function']['name'] ?? null;
+
+            if (! is_string($name) || $name === '') {
+                continue;
+            }
+
+            $arguments = $raw['function']['arguments'] ?? null;
+            $decoded = is_array($arguments)
+                ? $arguments
+                : json_decode(is_string($arguments) ? $arguments : '', true);
+
+            $calls[] = new ToolCall(
+                id: is_string($raw['id'] ?? null) ? $raw['id'] : 'call_'.$index,
+                name: $name,
+                arguments: is_array($decoded) ? $decoded : [],
+            );
+        }
+
+        return $calls;
     }
 
     /**
@@ -128,10 +243,17 @@ abstract class HttpAssistantDriver implements AssistantDriver
             throw CompletionFailed::malformed($this->driver(), 'the message content was not text');
         }
 
+        // A model calling a tool answers with `content: null` and a
+        // `tool_calls` array, so the absence of text is not a malformed
+        // response here — it is the other half of the shape.
+        $rawCalls = $choice['message']['tool_calls'] ?? [];
+        $toolCalls = is_array($rawCalls) ? $this->mapOpenAiToolCalls($rawCalls) : [];
+
         $usage = $raw['usage'] ?? [];
 
         return new CompletionResponse(
             text: $text,
+            toolCalls: $toolCalls,
             stopReason: $choice['finish_reason'] ?? null,
             promptTokens: is_array($usage) ? ($usage['prompt_tokens'] ?? null) : null,
             completionTokens: is_array($usage) ? ($usage['completion_tokens'] ?? null) : null,

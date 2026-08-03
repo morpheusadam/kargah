@@ -208,6 +208,38 @@ class Card extends Model
         return $this->hasMany(CardComment::class)->orderBy('created_at');
     }
 
+    /**
+     * Who has voted for this card, oldest vote first.
+     *
+     * Kept as a plain `hasMany` on `CardVote` rather than a `belongsToMany` to
+     * `User`, because the board front wants the number and nothing else:
+     * `withCount('votes')` on this relation is one subquery per card query,
+     * which is what makes a vote chip on the card face cost nothing. The
+     * drawer, which does want the names, eager-loads `votes.user`.
+     */
+    public function votes(): HasMany
+    {
+        return $this->hasMany(CardVote::class)->orderBy('created_at');
+    }
+
+    /**
+     * Whether one person has already voted.
+     *
+     * Reads the loaded collection when there is one — the drawer has it — and
+     * falls back to a query when there is not, so this is safe to call from
+     * anywhere without knowing what was eager-loaded.
+     */
+    public function hasVoteFrom(?int $userId): bool
+    {
+        if ($userId === null) {
+            return false;
+        }
+
+        return $this->relationLoaded('votes')
+            ? $this->votes->contains('user_id', $userId)
+            : $this->votes()->where('user_id', $userId)->exists();
+    }
+
     public function scopeActive(Builder $query): Builder
     {
         return $query->whereNull('archived_at');

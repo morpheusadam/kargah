@@ -20,6 +20,9 @@ class FakeAssistantDriver implements AssistantDriver
 
     private ?CompletionResponse $nextResponse = null;
 
+    /** @var list<CompletionResponse> Answers for the next calls, in order, the last one repeating. */
+    private array $queue = [];
+
     private ?string $failWith = null;
 
     private ?string $unavailableBecause = null;
@@ -43,6 +46,32 @@ class FakeAssistantDriver implements AssistantDriver
     public function willReply(string $text): static
     {
         return $this->willRespond(new CompletionResponse(text: $text));
+    }
+
+    /**
+     * Answer successive calls with successive responses.
+     *
+     * `willRespond()` sets one answer and repeats it forever, which is right
+     * for a settings-page test and wrong for a tool-calling one: a fake that
+     * answers "call read_board" every single time drives
+     * `AssistantConversation` straight into its iteration cap, so the loop can
+     * only ever be observed failing. This is how a test spells the real
+     * sequence — ask for a tool, then answer in words.
+     *
+     * The last response repeats once the queue is empty, so a fake set up with
+     * one tool call and one answer never runs out mid-conversation.
+     */
+    public function willRespondInOrder(CompletionResponse ...$responses): static
+    {
+        $this->queue = array_values($responses);
+
+        return $this;
+    }
+
+    /** A tool call, as a model asking for one arrives. */
+    public function willCallTool(string $name, array $arguments = [], string $id = 'call_1'): static
+    {
+        return $this->willRespond(new CompletionResponse(text: null, toolCalls: [new ToolCall($id, $name, $arguments)]));
     }
 
     /** Make the next `complete()` call throw, as a provider that refuses does. */
@@ -72,6 +101,13 @@ class FakeAssistantDriver implements AssistantDriver
 
         if ($this->failWith !== null) {
             throw CompletionFailed::providerError($this->driver, $this->failWith);
+        }
+
+        if ($this->queue !== []) {
+            // The last one is kept rather than consumed, so a conversation that
+            // takes one more turn than the test expected gets the final answer
+            // again instead of falling through to the placeholder text.
+            return count($this->queue) === 1 ? $this->queue[0] : array_shift($this->queue);
         }
 
         return $this->nextResponse ?? new CompletionResponse(text: 'This is a fake reply, from the '.$this->driver.' fake.');
