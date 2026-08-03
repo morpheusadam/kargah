@@ -13,4 +13,7 @@ use Illuminate\Support\Facades\Route;
 Route::middleware('auth')->prefix('settings')->group(function () {
     Route::livewire('/application-passwords', 'platform::application-passwords')
         ->name('platform.application-passwords');
+
+    Route::livewire('/assistant', 'platform::assistant')
+        ->name('platform.assistant');
 });

@@ -6,6 +6,14 @@ use Modules\Core\Support\MorphMap;
 use Modules\Platform\Http\Middleware\AuthenticateApplicationPassword;
 use Modules\Platform\Http\Middleware\RequireScope;
 use Modules\Platform\Models\ApplicationPassword;
+use Modules\Platform\Models\AssistantProvider;
+use Modules\Platform\Services\Assistant\AnthropicDriver;
+use Modules\Platform\Services\Assistant\Assistant;
+use Modules\Platform\Services\Assistant\GeminiDriver;
+use Modules\Platform\Services\Assistant\OllamaDriver;
+use Modules\Platform\Services\Assistant\OpenAiDriver;
+use Modules\Platform\Services\Assistant\OpenRouterDriver;
+use Modules\Platform\Support\AssistantDrivers;
 use Nwidart\Modules\Support\ModuleServiceProvider;
 
 /**
@@ -44,6 +52,35 @@ class PlatformServiceProvider extends ModuleServiceProvider
         RouteServiceProvider::class,
     ];
 
+    public function register(): void
+    {
+        parent::register();
+
+        /*
+         * The assistant driver registry, as a singleton.
+         *
+         * Singleton so a driver swapped in a test's setUp is the same
+         * registry the settings page — and later the CLI and the tool layer
+         * — resolve. Factories rather than instances, exactly as
+         * `Modules\Mailbox\Providers\MailboxServiceProvider` binds
+         * `Delivery`: a provider nobody asks for is never built, and a test
+         * that swaps one for `FakeAssistantDriver` never constructs the real
+         * driver at all — which on a machine with no CA bundle configured is
+         * the difference between a clean run and `cURL error 60`.
+         */
+        $this->app->singleton(Assistant::class, function (): Assistant {
+            $assistant = new Assistant;
+
+            $assistant->extend(AssistantDrivers::GEMINI, fn () => new GeminiDriver);
+            $assistant->extend(AssistantDrivers::OPENROUTER, fn () => new OpenRouterDriver);
+            $assistant->extend(AssistantDrivers::ANTHROPIC, fn () => new AnthropicDriver);
+            $assistant->extend(AssistantDrivers::OPENAI, fn () => new OpenAiDriver);
+            $assistant->extend(AssistantDrivers::OLLAMA, fn () => new OllamaDriver);
+
+            return $assistant;
+        });
+    }
+
     public function boot(): void
     {
         parent::boot();
@@ -55,6 +92,7 @@ class PlatformServiceProvider extends ModuleServiceProvider
         // runs in time.
         MorphMap::register([
             'application_password' => ApplicationPassword::class,
+            'assistant_provider' => AssistantProvider::class,
         ]);
 
         // Registered here rather than in bootstrap/app.php: a module that needs
