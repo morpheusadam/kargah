@@ -2,11 +2,15 @@
 
 namespace Modules\Accounting\Providers;
 
+use Modules\Accounting\Contracts\ExpenseReader as ExpenseReaderContract;
+use Modules\Accounting\Contracts\InvoiceReader as InvoiceReaderContract;
 use Modules\Accounting\Models\Expense;
 use Modules\Accounting\Models\Invoice;
 use Modules\Accounting\Models\InvoiceLine;
 use Modules\Accounting\Models\LedgerEntry;
 use Modules\Accounting\Models\Payment;
+use Modules\Accounting\Services\ExpenseReader;
+use Modules\Accounting\Services\InvoiceReader;
 use Modules\Core\Support\MorphMap;
 use Nwidart\Modules\Support\ModuleServiceProvider;
 
@@ -32,6 +36,18 @@ class AccountingServiceProvider extends ModuleServiceProvider
         EventServiceProvider::class,
         RouteServiceProvider::class,
     ];
+
+    public function register(): void
+    {
+        parent::register();
+
+        // The Platform API is the first consumer outside Accounting. Bound the
+        // same way Core binds CustomerReader: an interface in Contracts, a
+        // concrete class in Services, resolved by the container so a caller
+        // never new()s the implementation directly.
+        $this->app->bind(InvoiceReaderContract::class, InvoiceReader::class);
+        $this->app->bind(ExpenseReaderContract::class, ExpenseReader::class);
+    }
 
     public function boot(): void
     {

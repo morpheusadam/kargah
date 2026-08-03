@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\RateLimiter;
 use Modules\Platform\Models\ApplicationPassword;
 use Modules\Platform\Services\ApplicationPasswordAuthenticator;
+use Modules\Platform\Support\ApiResponse;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
@@ -63,6 +64,7 @@ class AuthenticateApplicationPassword
                 $this->report($request, $email, 'rate limited');
 
                 return $this->refused(
+                    'rate_limited',
                     'Too many attempts. Try again in '.RateLimiter::availableIn($key).' seconds.',
                     429,
                     ['Retry-After' => (string) RateLimiter::availableIn($key)],
@@ -117,6 +119,7 @@ class AuthenticateApplicationPassword
     private function unauthorised(): Response
     {
         return $this->refused(
+            'unauthenticated',
             'Unauthenticated. Use HTTP Basic auth: your Kargah email address, and an application password as the password.',
             401,
             ['WWW-Authenticate' => 'Basic realm="Kargah"'],
@@ -124,11 +127,15 @@ class AuthenticateApplicationPassword
     }
 
     /**
+     * Every refusal from here goes out in the same envelope as every other API
+     * failure — `message` and a machine-readable `code`. A client should branch
+     * on one skeleton, not on which layer happened to refuse it.
+     *
      * @param  array<string, string>  $headers
      */
-    private function refused(string $message, int $status, array $headers = []): Response
+    private function refused(string $code, string $message, int $status, array $headers = []): Response
     {
-        return response()->json(['message' => $message], $status, $headers);
+        return ApiResponse::error($status, $code, $message)->withHeaders($headers);
     }
 
     private function report(Request $request, string $email, string $reason): void

@@ -4,6 +4,7 @@ namespace Modules\Platform\Http\Middleware;
 
 use Closure;
 use Illuminate\Http\Request;
+use Modules\Platform\Support\ApiResponse;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
@@ -31,20 +32,24 @@ class RequireScope
             // Reached without going through the authenticator first. That is a
             // routing mistake, not a client mistake, but it must not be a way
             // past the check.
-            return response()->json(
-                ['message' => 'Unauthenticated. Use HTTP Basic auth with an application password.'],
+            return ApiResponse::error(
                 401,
-                ['WWW-Authenticate' => 'Basic realm="Kargah"'],
-            );
+                'unauthenticated',
+                'Unauthenticated. Use HTTP Basic auth with an application password.',
+            )->withHeaders(['WWW-Authenticate' => 'Basic realm="Kargah"']);
         }
 
         foreach ($scopes as $scope) {
             if (! $credential->hasScope($scope)) {
-                return response()->json([
-                    'message' => 'This application password does not carry the '.$scope.' scope.',
-                    'required' => array_values($scopes),
-                    'granted' => $credential->grantedScopes(),
-                ], 403);
+                return ApiResponse::error(
+                    403,
+                    'insufficient_scope',
+                    'This application password does not carry the '.$scope.' scope.',
+                    [
+                        'required' => array_values($scopes),
+                        'granted' => $credential->grantedScopes(),
+                    ],
+                );
             }
         }
 

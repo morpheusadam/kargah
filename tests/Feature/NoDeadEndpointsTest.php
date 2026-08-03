@@ -44,6 +44,14 @@ class NoDeadEndpointsTest extends TestCase
      */
     private const WRITTEN = [
         'api/v1/whoami',
+        'api/v1/customers',
+        'api/v1/customers/{customer}',
+        'api/v1/customers/{customer}/emails',
+        'api/v1/invoices',
+        'api/v1/invoices/{invoice}',
+        'api/v1/invoices/{invoice}/issue',
+        'api/v1/expenses',
+        'api/v1/expenses/{expense}',
     ];
 
     public function test_no_module_ships_the_scaffolded_api_resource(): void
