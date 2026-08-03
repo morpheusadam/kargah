@@ -250,6 +250,58 @@ class CardMovementTest extends TestCase
         $this->assertDatabaseHas('activity_log', ['event' => 'card.created']);
     }
 
+    /**
+     * "Every board action appears in the activity feed" is an acceptance
+     * criterion for this phase, so it is asserted as one thing rather than
+     * inferred from a handful of separate tests.
+     */
+    public function test_every_board_action_reaches_the_activity_feed(): void
+    {
+        $service = $this->service();
+
+        $card = $service->append($this->todo, 'Rewrite portfolio landing copy');
+        $service->move($card, $this->doing, 0);
+        $card->forceFill(['title' => 'Rewrite the landing copy'])->save();
+        $card->forceFill(['due_on' => now()->addWeek()->toDateString()])->save();
+        $service->archive($card);
+        $service->restore($card);
+
+        $events = DB::table('activity_log')->pluck('event')->unique()->all();
+
+        foreach (['card.created', 'card.moved', 'card.archived', 'card.restored', 'updated'] as $expected) {
+            $this->assertContains($expected, $events, 'Nothing recorded a '.$expected.' in the activity feed.');
+        }
+
+        // A rename and a due date are attribute changes, logged by the model
+        // itself. Both must carry what changed, not just that something did.
+        $renamed = DB::table('activity_log')
+            ->where('event', 'updated')
+            ->get()
+            ->first(fn ($row): bool => str_contains((string) $row->properties, 'Rewrite the landing copy'));
+
+        $this->assertNotNull($renamed, 'A rename reached the feed without saying what the new title was.');
+    }
+
+    public function test_a_drag_writes_one_readable_entry_rather_than_an_attribute_diff(): void
+    {
+        // `position` changes on every drag and its before/after is a pair of
+        // ten-decimal strings nobody will ever read. The move is logged once,
+        // by name, and the attribute log is not told to watch the column.
+        [$card] = $this->seedCards($this->todo, 1);
+
+        $this->assertNotContains('position', $card->getActivitylogOptions()->logAttributes);
+
+        DB::table('activity_log')->delete();
+
+        $this->service()->move($card, $this->doing, 0);
+
+        $entries = DB::table('activity_log')->get();
+
+        $this->assertCount(1, $entries, 'A drag should leave one entry in the feed, not two.');
+        $this->assertSame('card.moved', $entries->first()->event);
+        $this->assertStringContainsString('moved from To Do to In Progress', $entries->first()->description);
+    }
+
     public function test_archiving_a_card_keeps_it_readable_and_records_who_did_it(): void
     {
         [$card] = $this->seedCards($this->todo, 1);

@@ -4,6 +4,8 @@ use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
 use Modules\Core\Concerns\InteractsWithToasts;
+use Modules\Core\Models\Customer;
+use Modules\Project\Contracts\CardReader;
 
 /**
  * Client record.
@@ -70,10 +72,14 @@ class extends Component
             ],
             'tabs' => [
                 'overview' => 'Overview',
+                'projects' => 'Projects',
                 'invoices' => 'Invoices',
                 'expenses' => 'Expenses',
                 'notes' => 'Notes',
             ],
+            // Real, from Project, through its contract. Accounting may read a
+            // card; it may not hold one — see Modules\Project\Contracts\CardReader.
+            'cards' => $this->cards(),
             'stats' => [
                 ['label' => 'Lifetime value', 'value' => $this->money(16750.00), 'tone' => 'text-mono'],
                 ['label' => 'Outstanding',    'value' => $this->money(2400.00),  'tone' => 'text-warning'],
@@ -108,6 +114,27 @@ class extends Component
                 'overdue' => 'kt-badge-destructive',
             ],
         ];
+    }
+
+    /**
+     * The customer this page is about, once one exists.
+     *
+     * The money on this page is still a fixture until the Accounting phase.
+     * The Projects tab is not — it reads real cards, because proving a card
+     * can be found from the person it is for is what the Project phase was
+     * for.
+     */
+    private function customer(): ?Customer
+    {
+        return Customer::query()->find((int) $this->clientId);
+    }
+
+    /** This client's cards, read across the module boundary by contract. */
+    private function cards(): \Illuminate\Support\Collection
+    {
+        $customer = $this->customer();
+
+        return $customer === null ? collect() : app(CardReader::class)->forCustomer($customer->id);
     }
 
     /* ---- Actions the backend will implement. Signatures are final. ---- */
@@ -206,7 +233,66 @@ class extends Component
         {{-- Tab panel --}}
         <div class="col-span-12 lg:col-span-8 flex flex-col gap-5">
 
-            @if ($tab === 'overview')
+            @if ($tab === 'projects')
+
+                <div class="kt-card">
+                    <div class="kt-card-header">
+                        <h3 class="kt-card-title">Cards</h3>
+                        <span class="text-sm text-muted-foreground">
+                            {{ $cards->count() }} {{ $cards->count() === 1 ? 'card' : 'cards' }} on the boards
+                        </span>
+                    </div>
+                    <div class="kt-card-table">
+                        <div class="kt-scrollable-x-auto">
+                            <table class="kt-table align-middle text-sm">
+                                <thead>
+                                    <tr>
+                                        <th>Card</th>
+                                        <th class="w-[150px]">Board</th>
+                                        <th class="w-[130px]">List</th>
+                                        <th class="w-[120px]">Due</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @forelse ($cards as $card)
+                                        <tr wire:key="card-{{ $card['id'] }}">
+                                            <td>
+                                                <a href="{{ $card['url'] }}" wire:navigate class="text-mono hover:text-primary">
+                                                    {{ $card['title'] }}
+                                                </a>
+                                            </td>
+                                            <td class="text-secondary-foreground">{{ $card['board'] }}</td>
+                                            <td class="text-secondary-foreground">{{ $card['list'] }}</td>
+                                            <td>
+                                                @if ($card['due_on'])
+                                                    <span class="{{ $card['due_state'] === 'overdue' ? 'text-destructive' : ($card['due_state'] === 'soon' ? 'text-warning' : 'text-secondary-foreground') }}">
+                                                        {{ $card['due_on'] }}
+                                                    </span>
+                                                @else
+                                                    <span class="text-muted-foreground">—</span>
+                                                @endif
+                                            </td>
+                                        </tr>
+                                    @empty
+                                        <tr>
+                                            <td colspan="4" class="py-10 text-center">
+                                                <i class="ki-filled ki-element-plus text-2xl text-muted-foreground"></i>
+                                                <p class="text-sm text-muted-foreground mt-2">
+                                                    No cards point at this client yet. Set the client on a card from its drawer.
+                                                </p>
+                                                <a href="{{ route('projects.boards') }}" wire:navigate class="kt-btn kt-btn-sm kt-btn-outline mt-4">
+                                                    Open the boards
+                                                </a>
+                                            </td>
+                                        </tr>
+                                    @endforelse
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+            @elseif ($tab === 'overview')
 
                 <div class="grid grid-cols-2 xl:grid-cols-4 gap-5">
                     @foreach ($stats as $s)

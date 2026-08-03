@@ -121,3 +121,62 @@ pushed stack nor `@assets` from a component through to the layout, and discards 
 warning — which is the actual reason the board's drag and drop was dead. The doc now says
 `@script … @endscript`, and `BoardsTest` asserts the page really ships the initialiser so the
 failure mode cannot come back silently.
+
+---
+
+## Phase 2 — Project
+
+**The spec is wrong about islands, and 04-frontend.md has been corrected.**
+It asked for an island per list column. An island's identity is a token assigned at compile time
+from the file hash plus the ordinal of the `@island` directive *in the source*
+(`IslandCompiler.php:91`), so a directive inside a `@foreach` gives every iteration the same
+token. The client locates the fragment to morph by `type` and `token` only — not by name — and
+`findFragment()` stops at the first match (`dist/livewire.js:14933`, `6637`). Asking for the
+seventh column morphs the seventh column's HTML into the first. `renderSlot()` twenty lines below
+matches on name *and* token, so this reads as an oversight upstream rather than a design. The
+board canvas is therefore one island, and a test pins the file to a single `@island(`.
+
+**An island nobody names does not update, and that makes `assertSee` misleading in tests.**
+After an action, an unnamed island comes back with `mode=skip` and the morph engine walks past the
+whole fragment. So every action that changes a card calls `refreshBoard()`, and the board's tests
+assert on view data or on `effects.islandFragments` rather than on the response body — after an
+action the body holds the toolbar, not the cards. Two tests guard both directions: that an action
+changing the board emits a fragment, and that one merely opening a panel does not.
+
+**`moveCard` keeps its three-argument signature and derives the visible ordering server-side.**
+Sortable reports the index the card landed on among the cards the *browser* could see. With a
+filter on, that is not an offset into the list — rows are hidden between the visible ones. Rather
+than widen the signature the front end froze, the component recomputes which cards were visible
+from the same filter that rendered the page. The server already knows, and a client-supplied
+ordering is one more thing that can be wrong or forged.
+
+**Positions are decimal strings through `brick/math`, not floats.**
+Money is not the only place a float ruins a column. Two cards that land on the same position have
+whatever order the database feels like that day. `Position` does every operation on decimal
+strings, and `MIN_GAP` (1e-4) sits well above the column's own 1e-10 resolution because SQLite
+stores a decimal as a float and the last digits of the declared scale are not somewhere to be
+operating.
+
+**`Brick\Math\RoundingMode` is an enum, so the spec's `RoundingMode::HALF_UP` does not exist.**
+The installed brick/math spells the cases `Down`, `HalfUp`, `Ceiling`. 03-accounting.md's example
+will not parse as written; phase 3 uses `RoundingMode::HalfUp`.
+
+**`card_members` rather than `cards.assigned_to`.**
+The UI has exactly one assignee and a pivot to model a single value is ceremony. The pivot is what
+02-data-model.md names, though, and multi-user is stated as coming — retrofitting a pivot later
+means rewriting every read. One mechanism, kept.
+
+**Core's morph map needed `user`, which nothing had noticed.**
+The enforced map threw the first time anything wrote an activity entry, because the log stores its
+causer polymorphically. `User` is an application model rather than a module one, but Core owns the
+map, so Core registers it. Phase 1 could not have found this: nothing logged activity yet.
+
+**Colour keys, never concatenated class names.**
+`boards.colour` and `labels.colour` store `'success'`, and `Support\Palette` maps that to whole
+Tailwind strings. Tailwind's scanner reads source as text and cannot see a class that only exists
+once PHP has run, so `"bg-{$colour}"` is simply absent from the stylesheet.
+
+**"The customer's page lists its cards" is wired now; the rest of that page is still phase 3.**
+`/accounting/clients/{id}` gained a Projects tab reading real cards through
+`Modules\Project\Contracts\CardReader` — arrays, not models, so Accounting never holds one of
+Project's entities. The money on that page is still a fixture, and still says so.

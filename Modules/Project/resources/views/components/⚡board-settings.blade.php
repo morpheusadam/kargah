@@ -1,20 +1,39 @@
 <?php
 
+use Illuminate\Support\Collection;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Validate;
 use Livewire\Component;
 use Modules\Core\Concerns\InteractsWithToasts;
+use Modules\Project\Models\Board;
+use Modules\Project\Models\BoardList;
+use Modules\Project\Models\Card;
+use Modules\Project\Models\Label;
+use Modules\Project\Support\Palette;
+use Modules\Project\Support\Position;
 
 /**
- * Board settings.
+ * Board settings, reading from the database.
  *
- * Everything that belongs to the board rather than to a card: its name, its
- * background, the labels every card picks from, who can see it and the two
- * ways to get rid of it.
+ * Everything that belongs to the board rather than to a card: its name and
+ * description, its colour, the labels every card picks from, the order of its
+ * lists, and the two ways to retire it.
  *
- * Frontend phase: labels and members come from a fixture. Selecting a
- * background or opening a label editor changes this component's own state so
- * the screen can be reviewed; every write is left to the backend.
+ * Three things are worth knowing before changing anything.
+ *
+ * **The route carries a slug, and the slug never changes.** `/projects/{board}`
+ * is a link somebody may have bookmarked or pasted into an invoice; renaming
+ * the board rewrites what it is called, not where it lives. A rename that moved
+ * the URL would break every link to it and log the user out of their own page.
+ *
+ * **An unknown slug is an empty state, not a 404.** The smoke test walks every
+ * route against an empty database, and a page that only renders when somebody
+ * has seeded it is a page nobody can prove renders at all.
+ *
+ * **Reordering a list writes one row.** Lists share the cards' fractional
+ * position column, so moving one takes the midpoint of its new neighbours. The
+ * only path that writes every row is the rebalance, and it is reached when two
+ * neighbours have been halved apart past `Position::MIN_GAP`.
  */
 new
 #[Title('Board settings — Kargah')]
@@ -22,137 +41,240 @@ class extends Component
 {
     use InteractsWithToasts;
 
-    /** Board slug from the route. */
+    /** Board slug from the route. Read-only for the life of the page. */
     public string $board = '';
 
     #[Validate('required|min:2|max:40')]
     public string $name = '';
 
-    public string $background = 'indigo';
+    #[Validate('nullable|max:2000')]
+    public string $description = '';
 
-    /** Label key currently being edited inline. */
-    public ?string $editingLabel = null;
+    /** A `Palette` key, never a class string. */
+    public string $colour = 'primary';
+
+    /** Label being edited inline, by id. */
+    public ?int $editingLabel = null;
 
     public string $labelDraft = '';
 
-    public string $labelColorDraft = 'primary';
+    public string $labelColourDraft = 'primary';
 
     public string $newLabelName = '';
 
-    public string $newLabelColor = 'primary';
+    public string $newLabelColour = 'primary';
 
-    public string $inviteEmail = '';
+    /** List being renamed inline, by id. */
+    public ?int $editingList = null;
 
-    public string $inviteRole = 'member';
-
-    /** Roles keyed by member, so each select can bind to its own value. */
-    public array $roles = [];
+    public string $listDraft = '';
 
     public bool $confirmingDelete = false;
 
     public string $deleteConfirmation = '';
 
+    /** Per-request memo. Private, so Livewire neither ships nor rehydrates it. */
+    private ?Board $resolvedBoard = null;
+
     public function mount(string $board): void
     {
         $this->board = $board;
-        $this->name = ucwords(str_replace('-', ' ', $board));
-        $this->roles = array_map(fn (array $member): string => $member['role'], $this->members());
+
+        $record = $this->board();
+
+        if ($record === null) {
+            return;
+        }
+
+        $this->name = $record->name;
+        $this->description = (string) $record->description;
+        $this->colour = Palette::has($record->colour) ? $record->colour : 'neutral';
     }
 
-    private function backgrounds(): array
+    /* Reading the board ------------------------------------------------------ */
+
+    /**
+     * The board this page is about, archived or not.
+     *
+     * An archived board keeps its settings page on purpose: it is where you go
+     * to read what it was, and the archive is where you go to bring it back.
+     */
+    private function board(): ?Board
     {
-        return [
-            'indigo' => ['name' => 'Indigo', 'swatch' => 'bg-primary'],
-            'moss' => ['name' => 'Moss', 'swatch' => 'bg-success'],
-            'amber' => ['name' => 'Amber', 'swatch' => 'bg-warning'],
-            'clay' => ['name' => 'Clay', 'swatch' => 'bg-destructive'],
-            'sky' => ['name' => 'Sky', 'swatch' => 'bg-info'],
-            'slate' => ['name' => 'Slate', 'swatch' => 'bg-muted-foreground'],
-        ];
+        return $this->resolvedBoard ??= Board::query()->where('slug', $this->board)->first();
     }
 
-    private function colours(): array
+    private function forgetBoard(): void
     {
-        return [
-            'primary' => ['name' => 'Indigo', 'dot' => 'bg-primary', 'chip' => 'bg-primary/15 text-primary'],
-            'success' => ['name' => 'Green', 'dot' => 'bg-success', 'chip' => 'bg-success/15 text-success'],
-            'warning' => ['name' => 'Amber', 'dot' => 'bg-warning', 'chip' => 'bg-warning/15 text-warning'],
-            'destructive' => ['name' => 'Red', 'dot' => 'bg-destructive', 'chip' => 'bg-destructive/15 text-destructive'],
-            'info' => ['name' => 'Blue', 'dot' => 'bg-info', 'chip' => 'bg-info/15 text-info'],
-            'muted' => ['name' => 'Grey', 'dot' => 'bg-muted-foreground', 'chip' => 'bg-accent/60 text-secondary-foreground'],
-        ];
+        $this->resolvedBoard = null;
     }
 
-    private function labels(): array
+    /** @return Collection<int, Label> */
+    private function labels(): Collection
     {
-        return [
-            'copy' => ['name' => 'Copywriting', 'colour' => 'primary', 'cards' => 6],
-            'outreach' => ['name' => 'Outreach', 'colour' => 'success', 'cards' => 9],
-            'dev' => ['name' => 'Development', 'colour' => 'info', 'cards' => 14],
-            'bug' => ['name' => 'Bug', 'colour' => 'destructive', 'cards' => 3],
-            'finance' => ['name' => 'Finance', 'colour' => 'warning', 'cards' => 5],
-            'admin' => ['name' => 'Admin', 'colour' => 'muted', 'cards' => 2],
-        ];
+        $board = $this->board();
+
+        return $board === null
+            ? collect()
+            : $board->labels()->withCount('cards')->orderBy('position')->orderBy('name')->get();
     }
 
-    private function members(): array
+    /** @return Collection<int, BoardList> */
+    private function lists(): Collection
     {
-        return [
-            'nima' => ['name' => 'Nima Fazlipour', 'email' => 'nima@kargah.dev', 'initials' => 'NF', 'tone' => 'bg-primary/15 text-primary', 'role' => 'owner', 'joined' => 'Jan 2026'],
-            'sara' => ['name' => 'Sara Rahimi', 'email' => 'sara@kargah.dev', 'initials' => 'SR', 'tone' => 'bg-success/15 text-success', 'role' => 'admin', 'joined' => 'Mar 2026'],
-            'dan' => ['name' => 'Daniel Whitfield', 'email' => 'dan@northwind.co.uk', 'initials' => 'DW', 'tone' => 'bg-info/15 text-info', 'role' => 'member', 'joined' => 'May 2026'],
-            'mina' => ['name' => 'Mina Karimi', 'email' => 'mina@acmestudio.com', 'initials' => 'MK', 'tone' => 'bg-warning/15 text-warning', 'role' => 'observer', 'joined' => 'Jun 2026'],
-        ];
+        $board = $this->board();
+
+        if ($board === null) {
+            return collect();
+        }
+
+        return BoardList::query()
+            ->where('board_id', $board->id)
+            ->active()
+            ->orderBy('position')
+            ->orderBy('id')
+            ->withCount(['cards' => fn ($query) => $query->active()])
+            ->get();
     }
 
     public function with(): array
     {
+        $board = $this->board();
+        $lists = $this->lists();
+
         return [
-            'backgrounds' => $this->backgrounds(),
-            'colours' => $this->colours(),
+            'record' => $board,
+            'colours' => Palette::all(),
             'labels' => $this->labels(),
-            'members' => $this->members(),
-            'roleOptions' => [
-                'owner' => 'Owner',
-                'admin' => 'Admin',
-                'member' => 'Member',
-                'observer' => 'Observer',
-            ],
+            'lists' => $lists,
+            'archivedLists' => $board === null
+                ? 0
+                : BoardList::query()->where('board_id', $board->id)->whereNotNull('archived_at')->count(),
+            'cardTotal' => $lists->sum('cards_count'),
         ];
     }
 
-    /* Name and appearance -------------------------------------------------- */
+    /* Name, description and colour ------------------------------------------- */
 
-    /** Rename the board. */
+    /** Save the board's name and description. The slug is left alone. */
     public function renameBoard(): void
     {
-        $this->validateOnly('name');
+        $board = $this->board();
 
-        // Backend: persist the new name and update the board slug.
-        $this->toastInfo('Not connected yet', 'The old name comes back on the next refresh.');
+        if ($board === null) {
+            $this->toastError('There is no board at this address', 'Pick one from the boards page.');
+
+            return;
+        }
+
+        $this->validate();
+
+        $name = trim($this->name);
+        $description = trim($this->description);
+
+        $renamed = $board->name !== $name;
+        $described = (string) $board->description !== $description;
+
+        if (! $renamed && ! $described) {
+            $this->toastSuccess('Nothing to save', 'The name and description already read like that.');
+
+            return;
+        }
+
+        $was = $board->name;
+
+        $board->forceFill([
+            'name' => $name,
+            'description' => $description === '' ? null : $description,
+        ])->save();
+
+        activity('board')
+            ->performedOn($board)
+            ->causedBy(auth()->user())
+            ->event('board.updated')
+            ->withProperties(['from' => $was, 'to' => $name])
+            ->log($renamed ? 'renamed from '.$was.' to '.$name : 'description updated');
+
+        $this->name = $board->name;
+        $this->description = (string) $board->description;
+
+        $this->toastSuccess(
+            $renamed ? 'Board renamed' : 'Description saved',
+            $renamed
+                ? $was.' is now '.$name.'. The address stays /projects/'.$board->slug.'.'
+                : $board->name.' reads differently in the board picker.',
+        );
     }
 
-    public function selectBackground(string $key): void
+    /** Persist the board's colour. Keys come from `Palette`, classes never do. */
+    public function selectColour(string $key): void
     {
-        $this->background = $key;
+        $board = $this->board();
 
-        // Backend: persist the chosen background.
-        $name = $this->backgrounds()[$key]['name'] ?? $key;
+        if ($board === null) {
+            $this->toastError('There is no board at this address', 'Pick one from the boards page.');
 
-        $this->toastSuccess($name.' picked', 'On screen only — backgrounds are stored with the backend phase.');
+            return;
+        }
+
+        if (! Palette::has($key)) {
+            $this->toastError('That is not a board colour', 'Pick one of the swatches.');
+
+            return;
+        }
+
+        if ($board->colour === $key) {
+            $this->colour = $key;
+
+            $this->toastSuccess($board->name.' is already '.Palette::name($key), 'Nothing changed.');
+
+            return;
+        }
+
+        $from = $board->colour;
+        $was = Palette::name($from);
+
+        $board->forceFill(['colour' => $key])->save();
+
+        activity('board')
+            ->performedOn($board)
+            ->causedBy(auth()->user())
+            ->event('board.recoloured')
+            ->withProperties(['from' => $from, 'to' => $key])
+            ->log('colour changed to '.$key);
+
+        $this->colour = $key;
+
+        $this->toastSuccess(
+            'Board colour saved',
+            $board->name.' went from '.$was.' to '.Palette::name($key).'.',
+        );
     }
 
-    /* Labels ---------------------------------------------------------------- */
+    /* Labels ------------------------------------------------------------------ */
 
-    public function startEditLabel(string $key): void
+    private function labelOnThisBoard(int $labelId): ?Label
     {
-        $labels = $this->labels();
+        $board = $this->board();
 
-        $this->editingLabel = $key;
-        $this->labelDraft = $labels[$key]['name'] ?? '';
-        $this->labelColorDraft = $labels[$key]['colour'] ?? 'primary';
+        return $board === null ? null : $board->labels()->find($labelId);
+    }
 
-        $this->toastSuccess('Editing '.($labels[$key]['name'] ?? $key), 'Esc closes the editor without changing anything.');
+    public function startEditLabel(int $labelId): void
+    {
+        $label = $this->labelOnThisBoard($labelId);
+
+        if ($label === null) {
+            $this->toastError('That label is not on this board', 'Reload the page and try again.');
+
+            return;
+        }
+
+        $this->editingLabel = $label->id;
+        $this->labelDraft = $label->name;
+        $this->labelColourDraft = Palette::has($label->colour) ? $label->colour : 'neutral';
+
+        $this->toastSuccess('Editing '.$label->name, 'Esc closes the editor without changing anything.');
     }
 
     public function cancelEditLabel(): void
@@ -168,66 +290,432 @@ class extends Component
     }
 
     /** Rename a label and change its colour. */
-    public function saveLabel(string $key): void
+    public function saveLabel(int $labelId): void
     {
-        // Backend: persist the label's name and colour.
+        $label = $this->labelOnThisBoard($labelId);
+
+        if ($label === null) {
+            $this->toastError('That label is not on this board', 'Reload the page and try again.');
+
+            return;
+        }
+
+        $name = trim($this->labelDraft);
+
+        if ($name === '') {
+            $this->toastError('The label needs a name', 'Something like "Bug" or "Finance".');
+
+            return;
+        }
+
+        $colour = Palette::has($this->labelColourDraft) ? $this->labelColourDraft : $label->colour;
+
+        $renamed = $label->name !== $name;
+        $recoloured = $label->colour !== $colour;
+
+        if (! $renamed && ! $recoloured) {
+            $this->editingLabel = null;
+
+            $this->toastSuccess('Nothing to save', $label->name.' already reads like that.');
+
+            return;
+        }
+
+        $was = $label->name;
+
+        $label->forceFill(['name' => $name, 'colour' => $colour])->save();
+
+        activity('board')
+            ->performedOn($this->board())
+            ->causedBy(auth()->user())
+            ->event('board.label-updated')
+            ->withProperties(['label_id' => $label->id, 'from' => $was, 'to' => $name, 'colour' => $colour])
+            ->log('label '.$name.' updated');
+
         $this->editingLabel = null;
 
-        $this->toastInfo('Not connected yet', 'Label edits are stored with the backend phase.');
+        $this->toastSuccess(
+            $renamed ? 'Label renamed' : 'Label recoloured',
+            trim(implode(' ', array_filter([
+                $renamed ? $was.' is now '.$name.' on every card carrying it.' : null,
+                $recoloured ? $name.' is now '.Palette::name($colour).'.' : null,
+            ]))),
+        );
     }
 
     /** Remove a label from the board and from every card carrying it. */
-    public function deleteLabel(string $key): void
+    public function deleteLabel(int $labelId): void
     {
-        // Backend: delete the label and detach it from its cards.
-        $this->toastInfo('Not connected yet', 'Deleting a label lands with the backend phase.');
+        $label = $this->labelOnThisBoard($labelId);
+
+        if ($label === null) {
+            $this->toastError('That label is not on this board', 'Reload the page and try again.');
+
+            return;
+        }
+
+        $name = $label->name;
+        $detached = $label->cards()->count();
+
+        // The pivot has a cascade, but only a real delete fires it, and a label
+        // left attached to a card it no longer exists for is a broken chip.
+        $label->cards()->detach();
+        $label->delete();
+
+        activity('board')
+            ->performedOn($this->board())
+            ->causedBy(auth()->user())
+            ->event('board.label-deleted')
+            ->withProperties(['label' => $name, 'detached' => $detached])
+            ->log('label '.$name.' deleted');
+
+        if ($this->editingLabel === $labelId) {
+            $this->editingLabel = null;
+        }
+
+        $this->toastSuccess(
+            $name.' deleted',
+            $detached === 0
+                ? 'No card was wearing it.'
+                : 'It came off '.$detached.' '.str('card')->plural($detached).'. The cards themselves are untouched.',
+        );
     }
 
     /** Add a label to the board. */
     public function createLabel(): void
     {
-        // Backend: persist the label, then clear $newLabelName.
-        $this->toastInfo('Not connected yet', 'New labels land with the backend phase.');
+        $board = $this->board();
+
+        if ($board === null) {
+            $this->toastError('There is no board at this address', 'Pick one from the boards page.');
+
+            return;
+        }
+
+        $name = trim($this->newLabelName);
+
+        if ($name === '') {
+            $this->toastError('The label needs a name', 'Something like "Bug" or "Finance".');
+
+            return;
+        }
+
+        $taken = $board->labels()
+            ->whereRaw('lower(name) = ?', [mb_strtolower($name)])
+            ->exists();
+
+        if ($taken) {
+            $this->toastError($name.' is already a label here', 'Edit the one that exists instead of adding a second.');
+
+            return;
+        }
+
+        $colour = Palette::has($this->newLabelColour) ? $this->newLabelColour : 'neutral';
+
+        $label = Label::query()->create([
+            'board_id' => $board->id,
+            'name' => $name,
+            'colour' => $colour,
+            // `labels.position` is an integer column, not the fractional one the
+            // cards use — labels are a short list nobody drags.
+            'position' => ((int) $board->labels()->max('position')) + 1,
+        ]);
+
+        activity('board')
+            ->performedOn($board)
+            ->causedBy(auth()->user())
+            ->event('board.label-added')
+            ->withProperties(['label' => $label->name, 'colour' => $colour])
+            ->log('label '.$label->name.' added');
+
+        $this->newLabelName = '';
+
+        $this->toastSuccess(
+            $label->name.' added',
+            'Every card on '.$board->name.' can wear it, in '.Palette::name($colour).'.',
+        );
     }
 
-    /* Members ---------------------------------------------------------------- */
+    /* Lists -------------------------------------------------------------------- */
 
-    /** Fired when a member's role select changes. */
-    public function updatedRoles(string $value, string $memberKey): void
+    private function listOnThisBoard(int $listId): ?BoardList
     {
-        // Backend: persist the new role for this member.
-        $this->toastInfo('Not connected yet', 'The old role comes back on the next refresh.');
+        $board = $this->board();
+
+        if ($board === null) {
+            return null;
+        }
+
+        return BoardList::query()->where('board_id', $board->id)->active()->find($listId);
     }
 
-    public function removeMember(string $memberKey): void
+    public function startEditList(int $listId): void
     {
-        // Backend: revoke access and unassign the member from their cards.
-        $name = $this->members()[$memberKey]['name'] ?? $memberKey;
+        $list = $this->listOnThisBoard($listId);
 
-        $this->toastInfo('Not connected yet', $name.' keeps access until the backend phase lands.');
+        if ($list === null) {
+            $this->toastError('That list is not on this board', 'Reload the page and try again.');
+
+            return;
+        }
+
+        $this->editingList = $list->id;
+        $this->listDraft = $list->name;
+
+        $this->toastSuccess('Renaming '.$list->name, 'Esc closes the editor without changing anything.');
     }
 
-    /** Invite somebody to the board by email. */
-    public function invite(): void
+    public function cancelEditList(): void
     {
-        // Backend: create the invitation and send the email.
-        $this->toastInfo('Not connected yet', 'No invitation was sent.');
+        $wasEditing = $this->editingList !== null;
+
+        $this->editingList = null;
+        $this->listDraft = '';
+
+        if ($wasEditing) {
+            $this->toastSuccess('List editor closed', 'The list was left as it was.');
+        }
     }
 
-    /* Danger zone ------------------------------------------------------------ */
+    public function saveList(int $listId): void
+    {
+        $list = $this->listOnThisBoard($listId);
+
+        if ($list === null) {
+            $this->toastError('That list is not on this board', 'Reload the page and try again.');
+
+            return;
+        }
+
+        $name = trim($this->listDraft);
+
+        if ($name === '') {
+            $this->toastError('The list needs a name', 'Something like "Waiting on client".');
+
+            return;
+        }
+
+        if ($list->name === $name) {
+            $this->editingList = null;
+
+            $this->toastSuccess('Nothing to save', $list->name.' already reads like that.');
+
+            return;
+        }
+
+        $was = $list->name;
+
+        $list->forceFill(['name' => $name])->save();
+
+        activity('list')
+            ->performedOn($list)
+            ->causedBy(auth()->user())
+            ->event('list.renamed')
+            ->withProperties(['from' => $was, 'to' => $name])
+            ->log('renamed from '.$was.' to '.$name);
+
+        $this->editingList = null;
+
+        $this->toastSuccess('List renamed', $was.' is now '.$name.' on the board.');
+    }
+
+    public function moveListUp(int $listId): void
+    {
+        $this->moveList($listId, -1);
+    }
+
+    public function moveListDown(int $listId): void
+    {
+        $this->moveList($listId, 1);
+    }
+
+    /**
+     * Move a list one place along the board.
+     *
+     * The list lands between the two lists that will end up either side of it,
+     * which is one write. `spread()` is only reached once the gap between those
+     * two neighbours has been halved past what the column can tell apart.
+     */
+    private function moveList(int $listId, int $direction): void
+    {
+        $list = $this->listOnThisBoard($listId);
+
+        if ($list === null) {
+            $this->toastError('That list is not on this board', 'Reload the page and try again.');
+
+            return;
+        }
+
+        $order = $this->lists()->values();
+        $index = $order->search(fn (BoardList $candidate): bool => $candidate->id === $list->id);
+
+        if ($index === false) {
+            $this->toastError('That list is not on this board', 'Reload the page and try again.');
+
+            return;
+        }
+
+        $target = $index + $direction;
+
+        if ($target < 0 || $target >= $order->count()) {
+            $this->toastSuccess(
+                $list->name.' is already '.($direction < 0 ? 'first' : 'last'),
+                'Nothing moved.',
+            );
+
+            return;
+        }
+
+        $neighbours = $this->slot($order, $index, $direction);
+
+        if (Position::needsRebalance($neighbours['before'], $neighbours['after'])) {
+            $this->spreadLists();
+
+            $order = $this->lists()->values();
+            $index = $order->search(fn (BoardList $candidate): bool => $candidate->id === $list->id);
+            $neighbours = $this->slot($order, (int) $index, $direction);
+        }
+
+        $swapped = $order[$index + $direction]->name;
+
+        $list->forceFill([
+            'position' => Position::between($neighbours['before'], $neighbours['after']),
+        ])->save();
+
+        activity('list')
+            ->performedOn($list)
+            ->causedBy(auth()->user())
+            ->event('list.moved')
+            ->withProperties(['position' => (string) $list->position])
+            ->log($direction < 0 ? 'moved before '.$swapped : 'moved after '.$swapped);
+
+        $this->toastSuccess(
+            $list->name.' moved',
+            $direction < 0
+                ? 'It now sits before '.$swapped.'.'
+                : 'It now sits after '.$swapped.'.',
+        );
+    }
+
+    /**
+     * The two positions the list must land between once it has moved.
+     *
+     * @param  Collection<int, BoardList>  $order
+     * @return array{before: ?string, after: ?string}
+     */
+    private function slot(Collection $order, int $index, int $direction): array
+    {
+        $at = fn (int $i): ?string => isset($order[$i])
+            ? Position::format((string) $order[$i]->position)
+            : null;
+
+        $target = $index + $direction;
+
+        return $direction < 0
+            ? ['before' => $at($target - 1), 'after' => $at($target)]
+            : ['before' => $at($target), 'after' => $at($target + 1)];
+    }
+
+    /** Space the board's lists evenly again. Writes every row, so it is not the usual path. */
+    private function spreadLists(): void
+    {
+        $lists = $this->lists()->values();
+        $positions = Position::spread($lists->count());
+
+        foreach ($lists as $index => $list) {
+            BoardList::query()->whereKey($list->id)->update(['position' => $positions[$index]]);
+        }
+    }
+
+    public function archiveList(int $listId): void
+    {
+        $list = $this->listOnThisBoard($listId);
+
+        if ($list === null) {
+            $this->toastError('That list is not on this board', 'Reload the page and try again.');
+
+            return;
+        }
+
+        $cards = Card::query()->where('board_list_id', $list->id)->active()->update(['archived_at' => now()]);
+
+        $list->forceFill(['archived_at' => now()])->save();
+
+        activity('list')
+            ->performedOn($list)
+            ->causedBy(auth()->user())
+            ->event('list.archived')
+            ->withProperties(['cards' => $cards])
+            ->log('archived from board settings');
+
+        if ($this->editingList === $listId) {
+            $this->editingList = null;
+        }
+
+        $this->toastSuccess(
+            $list->name.' archived',
+            $cards === 0
+                ? 'It was empty. You can restore it from the archive.'
+                : $cards.' '.str('card')->plural($cards).' went with it, and can be restored from the archive.',
+        );
+    }
+
+    /* Danger zone -------------------------------------------------------------- */
 
     public function archiveBoard(): void
     {
-        // Backend: archive the board, its lists and its cards.
-        $this->toastInfo('Not connected yet', 'Archiving a board lands with the backend phase.');
+        $board = $this->board();
+
+        if ($board === null) {
+            $this->toastError('There is no board at this address', 'Pick one from the boards page.');
+
+            return;
+        }
+
+        if ($board->isArchived()) {
+            $this->toastSuccess($board->name.' is already archived', 'Restore it from the archive.');
+
+            return;
+        }
+
+        $lists = BoardList::query()->where('board_id', $board->id)->active()->count();
+        $cards = Card::query()
+            ->whereIn('board_list_id', BoardList::query()->where('board_id', $board->id)->select('id'))
+            ->active()
+            ->count();
+
+        $board->forceFill(['archived_at' => now()])->save();
+
+        activity('board')
+            ->performedOn($board)
+            ->causedBy(auth()->user())
+            ->event('board.archived')
+            ->withProperties(['lists' => $lists, 'cards' => $cards])
+            ->log('archived from board settings');
+
+        $this->forgetBoard();
+
+        $this->toastSuccess(
+            $board->name.' archived',
+            'It has left the board picker. Its '.$lists.' '.str('list')->plural($lists).' and '
+                .$cards.' '.str('card')->plural($cards).' are untouched and come back with it from the archive.',
+        );
     }
 
     public function confirmDelete(): void
     {
+        $board = $this->board();
+
+        if ($board === null) {
+            $this->toastError('There is no board at this address', 'Pick one from the boards page.');
+
+            return;
+        }
+
         $this->confirmingDelete = true;
         $this->deleteConfirmation = '';
 
-        $this->toastWarning('Confirmation needed', 'Type '.$this->name.' to unlock the delete button.');
+        $this->toastWarning('Confirmation needed', 'Type '.$board->name.' to unlock the delete button.');
     }
 
     public function cancelDelete(): void
@@ -242,11 +730,52 @@ class extends Component
         }
     }
 
-    /** Delete the board for good. */
+    /**
+     * Take the board out of the application.
+     *
+     * A soft delete, like everything else here: the rows keep their ids and
+     * their history and stop being something anybody will be shown. The schema
+     * cascade only fires on a real delete, so the children are written here.
+     */
     public function deleteBoard(): void
     {
-        // Backend: delete the board and everything under it.
-        $this->toastInfo('Not connected yet', 'The board is still here.');
+        $board = $this->board();
+
+        if ($board === null) {
+            $this->toastError('There is no board at this address', 'Pick one from the boards page.');
+
+            return;
+        }
+
+        if ($this->deleteConfirmation !== $board->name) {
+            $this->toastError('That is not the board name', 'Type '.$board->name.' exactly, then delete.');
+
+            return;
+        }
+
+        $name = $board->name;
+        $listIds = BoardList::query()->where('board_id', $board->id)->pluck('id');
+        $cards = Card::query()->whereIn('board_list_id', $listIds)->count();
+
+        Card::query()->whereIn('board_list_id', $listIds)->delete();
+        BoardList::query()->whereIn('id', $listIds)->delete();
+        $board->delete();
+
+        activity('board')
+            ->performedOn($board)
+            ->causedBy(auth()->user())
+            ->event('board.deleted')
+            ->withProperties(['lists' => $listIds->count(), 'cards' => $cards])
+            ->log('deleted from board settings');
+
+        $this->flashToast(
+            'success',
+            $name.' deleted',
+            $listIds->count().' '.str('list')->plural($listIds->count()).' and '.$cards.' '
+                .str('card')->plural($cards).' went with it.',
+        );
+
+        $this->redirect(route('projects.boards'), navigate: true);
     }
 };
 
@@ -260,296 +789,343 @@ class extends Component
             <div class="flex items-center gap-2 text-sm text-muted-foreground">
                 <a href="{{ route('projects.boards') }}" wire:navigate class="hover:text-primary">Boards</a>
                 <i class="ki-filled ki-right text-[10px]"></i>
-                <span class="text-secondary-foreground">{{ $name }}</span>
+                <span class="text-secondary-foreground">{{ $record?->name ?? $board }}</span>
             </div>
             <h1 class="text-xl font-semibold text-mono mt-1">Board settings</h1>
-            <p class="text-sm text-secondary-foreground mt-1">Set how this board looks and who is allowed to work on it.</p>
+            <p class="text-sm text-secondary-foreground mt-1">Set how this board reads, what its cards can be tagged with, and the order of its lists.</p>
         </div>
         <a href="{{ route('projects.boards') }}" wire:navigate class="kt-btn kt-btn-outline gap-2">
             <i class="ki-filled ki-arrow-left"></i> Back to the board
         </a>
     </div>
 
-    <div class="grid grid-cols-1 xl:grid-cols-2 gap-5 items-start">
+    @if ($record === null)
 
-        {{-- Rename --}}
+        {{-- Unknown slug. A 404 here would take the smoke test with it. --}}
         <div class="kt-card">
-            <div class="kt-card-header">
-                <h2 class="kt-card-title">Board name</h2>
-            </div>
-            <div class="kt-card-content flex flex-col gap-3 p-5">
-                <div class="flex flex-col gap-1.5">
-                    <label class="kt-form-label" for="board-name">Name</label>
-                    <input id="board-name" type="text" class="kt-input @error('name') border-destructive @enderror"
-                           wire:model="name" wire:keydown.enter.prevent="renameBoard">
-                    @error('name')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
-                    <span class="text-xs text-muted-foreground">Shown in the board switcher and on every card link.</span>
-                </div>
-                <div>
-                    <button wire:click="renameBoard" wire:loading.attr="disabled" wire:target="renameBoard"
-                            class="kt-btn kt-btn-primary gap-2">
-                        <span wire:loading.remove wire:target="renameBoard">Save name</span>
-                        <span wire:loading wire:target="renameBoard"><i class="ki-filled ki-loading animate-spin"></i> Saving…</span>
-                    </button>
+            <div class="kt-card-content text-center py-16 px-6">
+                <i class="ki-filled ki-questionnaire-tablet text-3xl text-muted-foreground"></i>
+                <h2 class="text-base font-semibold text-mono mt-3">No board answers to “{{ $board }}”</h2>
+                <p class="text-sm text-secondary-foreground mt-2">
+                    It was deleted, or the address was mistyped. The boards page lists everything that exists.
+                </p>
+                <div class="flex flex-wrap items-center justify-center gap-2 mt-5">
+                    <a href="{{ route('projects.boards') }}" wire:navigate class="kt-btn kt-btn-primary gap-2">
+                        <i class="ki-filled ki-element-plus"></i> Go to the boards
+                    </a>
+                    <a href="{{ route('projects.archive') }}" wire:navigate class="kt-btn kt-btn-outline gap-2">
+                        <i class="ki-filled ki-archive"></i> Look in the archive
+                    </a>
                 </div>
             </div>
         </div>
 
-        {{-- Background --}}
-        <div class="kt-card">
-            <div class="kt-card-header">
-                <h2 class="kt-card-title">Background</h2>
-            </div>
-            <div class="kt-card-content flex flex-col gap-4 p-5">
-                <p class="text-sm text-secondary-foreground">The colour behind the lists. It also tints the board switcher.</p>
+    @else
 
-                <div class="grid grid-cols-3 sm:grid-cols-6 gap-3">
-                    @foreach ($backgrounds as $key => $option)
-                        <button wire:click="selectBackground('{{ $key }}')" wire:key="bg-{{ $key }}"
-                                class="flex flex-col items-center gap-1.5 group"
-                                aria-pressed="{{ $background === $key ? 'true' : 'false' }}"
-                                title="{{ $option['name'] }}">
-                            <span class="w-full h-12 rounded-lg {{ $option['swatch'] }} border-2 transition-colors
-                                         {{ $background === $key ? 'border-mono' : 'border-transparent group-hover:border-border' }}"></span>
-                            <span class="text-xs {{ $background === $key ? 'text-mono' : 'text-muted-foreground' }}">{{ $option['name'] }}</span>
+        @if ($record->isArchived())
+            <div class="flex flex-wrap items-center gap-3 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3">
+                <i class="ki-filled ki-archive text-base text-warning"></i>
+                <span class="text-sm text-secondary-foreground grow">
+                    This board is archived, so it is not in the board picker. Its settings still work.
+                </span>
+                <a href="{{ route('projects.archive') }}" wire:navigate class="kt-btn kt-btn-sm kt-btn-outline gap-2">
+                    <i class="ki-filled ki-arrow-circle-left"></i> Restore it
+                </a>
+            </div>
+        @endif
+
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-5 items-start">
+
+            {{-- Name and description --}}
+            <div class="kt-card">
+                <div class="kt-card-header">
+                    <h2 class="kt-card-title">Board name</h2>
+                </div>
+                <div class="kt-card-content flex flex-col gap-4 p-5">
+                    <div class="flex flex-col gap-1.5">
+                        <label class="kt-form-label" for="board-name">Name</label>
+                        <input id="board-name" type="text" class="kt-input @error('name') border-destructive @enderror"
+                               wire:model="name" wire:keydown.enter.prevent="renameBoard">
+                        @error('name')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
+                        <span class="text-xs text-muted-foreground">
+                            Shown in the board switcher. The address stays /projects/{{ $record->slug }} whatever you call it.
+                        </span>
+                    </div>
+
+                    <div class="flex flex-col gap-1.5">
+                        <label class="kt-form-label" for="board-description">Description</label>
+                        <textarea id="board-description" rows="3" class="kt-textarea @error('description') border-destructive @enderror"
+                                  placeholder="What this board is for, in a sentence."
+                                  wire:model="description"></textarea>
+                        @error('description')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
+                    </div>
+
+                    <div>
+                        <button wire:click="renameBoard" wire:loading.attr="disabled" wire:target="renameBoard"
+                                class="kt-btn kt-btn-primary gap-2">
+                            <span wire:loading.remove wire:target="renameBoard">Save changes</span>
+                            <span wire:loading wire:target="renameBoard"><i class="ki-filled ki-loading animate-spin"></i> Saving…</span>
                         </button>
-                    @endforeach
-                </div>
-
-                <div class="flex items-center gap-2 rounded-lg border border-dashed border-border px-4 py-3">
-                    <i class="ki-filled ki-picture text-base text-muted-foreground"></i>
-                    <span class="text-sm text-muted-foreground grow">Photo backgrounds arrive with the backend.</span>
-                    <span class="kt-badge kt-badge-sm kt-badge-outline">Later</span>
+                    </div>
                 </div>
             </div>
-        </div>
 
-        {{-- Labels --}}
-        <div class="kt-card xl:col-span-2">
-            <div class="kt-card-header">
-                <h2 class="kt-card-title">Labels</h2>
-                <span class="text-xs text-muted-foreground">{{ count($labels) }} labels on this board</span>
-            </div>
-            <div class="kt-card-content flex flex-col gap-3 p-5">
+            {{-- Colour --}}
+            <div class="kt-card">
+                <div class="kt-card-header">
+                    <h2 class="kt-card-title">Colour</h2>
+                    <span class="text-xs text-muted-foreground">Saved as you pick</span>
+                </div>
+                <div class="kt-card-content flex flex-col gap-4 p-5">
+                    <p class="text-sm text-secondary-foreground">The dot beside the board in the switcher, and the tint on its links.</p>
 
-                @forelse ($labels as $key => $label)
-                    <div class="rounded-lg border border-border px-3 py-2.5" wire:key="label-{{ $key }}">
-                        @if ($editingLabel === $key)
-                            <div class="flex flex-wrap items-center gap-2">
-                                <input type="text" class="kt-input max-w-[240px]" aria-label="Label name"
-                                       wire:model="labelDraft" wire:keydown.escape="cancelEditLabel"
-                                       wire:keydown.enter.prevent="saveLabel('{{ $key }}')">
-
-                                <div class="flex items-center gap-1.5">
-                                    @foreach ($colours as $colourKey => $colour)
-                                        <button wire:click="$set('labelColorDraft', '{{ $colourKey }}')"
-                                                class="size-6 rounded-md {{ $colour['dot'] }} border-2 {{ $labelColorDraft === $colourKey ? 'border-mono' : 'border-transparent' }}"
-                                                title="{{ $colour['name'] }}" aria-label="Use {{ $colour['name'] }}"></button>
-                                    @endforeach
-                                </div>
-
-                                <div class="flex items-center gap-2 ms-auto">
-                                    <button wire:click="saveLabel('{{ $key }}')" wire:loading.attr="disabled" wire:target="saveLabel"
-                                            class="kt-btn kt-btn-sm kt-btn-primary">
-                                        <span wire:loading.remove wire:target="saveLabel">Save</span>
-                                        <span wire:loading wire:target="saveLabel"><i class="ki-filled ki-loading animate-spin"></i></span>
-                                    </button>
-                                    <button wire:click="cancelEditLabel" class="kt-btn kt-btn-sm kt-btn-ghost">Cancel</button>
-                                </div>
-                            </div>
-                        @else
-                            <div class="flex flex-wrap items-center gap-3">
-                                <span class="text-xs font-medium px-2 py-1 rounded {{ $colours[$label['colour']]['chip'] }}">{{ $label['name'] }}</span>
-                                <span class="text-xs text-muted-foreground">on {{ $label['cards'] }} {{ $label['cards'] === 1 ? 'card' : 'cards' }}</span>
-                                <div class="flex items-center gap-1 ms-auto">
-                                    <button wire:click="startEditLabel('{{ $key }}')" class="kt-btn kt-btn-sm kt-btn-ghost gap-1">
-                                        <i class="ki-filled ki-pencil text-sm"></i> Edit
-                                    </button>
-                                    <button wire:click="deleteLabel('{{ $key }}')" wire:loading.attr="disabled" wire:target="deleteLabel"
-                                            class="kt-btn kt-btn-sm kt-btn-ghost text-destructive gap-1">
-                                        <i class="ki-filled ki-trash text-sm"></i> Delete
-                                    </button>
-                                </div>
-                            </div>
-                        @endif
-                    </div>
-                @empty
-                    <div class="text-center py-8">
-                        <i class="ki-filled ki-tag text-2xl text-muted-foreground"></i>
-                        <p class="text-sm text-muted-foreground mt-2">No labels yet. Add the first one below.</p>
-                    </div>
-                @endforelse
-
-                <div class="flex flex-wrap items-center gap-2 pt-2 border-t border-border">
-                    <input type="text" class="kt-input max-w-[240px]" placeholder="New label name"
-                           aria-label="New label name" wire:model="newLabelName"
-                           wire:keydown.enter.prevent="createLabel">
-                    <div class="flex items-center gap-1.5">
-                        @foreach ($colours as $colourKey => $colour)
-                            <button wire:click="$set('newLabelColor', '{{ $colourKey }}')"
-                                    class="size-6 rounded-md {{ $colour['dot'] }} border-2 {{ $newLabelColor === $colourKey ? 'border-mono' : 'border-transparent' }}"
-                                    title="{{ $colour['name'] }}" aria-label="Use {{ $colour['name'] }}"></button>
+                    <div class="grid grid-cols-3 sm:grid-cols-6 gap-3">
+                        @foreach ($colours as $key => $option)
+                            <button wire:click="selectColour('{{ $key }}')" wire:key="colour-{{ $key }}"
+                                    wire:loading.attr="disabled" wire:target="selectColour"
+                                    class="flex flex-col items-center gap-1.5 group"
+                                    aria-pressed="{{ $colour === $key ? 'true' : 'false' }}"
+                                    title="{{ $option['name'] }}">
+                                <span class="w-full h-12 rounded-lg {{ $option['dot'] }} border-2 transition-colors
+                                             {{ $colour === $key ? 'border-mono' : 'border-transparent group-hover:border-border' }}"></span>
+                                <span class="text-xs {{ $colour === $key ? 'text-mono' : 'text-muted-foreground' }}">{{ $option['name'] }}</span>
+                            </button>
                         @endforeach
                     </div>
-                    <button wire:click="createLabel" wire:loading.attr="disabled" wire:target="createLabel"
-                            class="kt-btn kt-btn-outline gap-2">
-                        <span wire:loading.remove wire:target="createLabel" class="inline-flex items-center gap-2">
-                            <i class="ki-filled ki-plus"></i> Add label
-                        </span>
-                        <span wire:loading wire:target="createLabel" class="inline-flex items-center gap-2">
-                            <i class="ki-filled ki-loading animate-spin"></i> Adding…
-                        </span>
-                    </button>
-                </div>
-            </div>
-        </div>
-
-        {{-- Members --}}
-        <div class="kt-card xl:col-span-2">
-            <div class="kt-card-header">
-                <h2 class="kt-card-title">Members</h2>
-                <span class="text-xs text-muted-foreground">{{ count($members) }} people can open this board</span>
-            </div>
-
-            <div class="kt-card-table">
-                <div class="kt-scrollable-x-auto">
-                    <table class="kt-table align-middle text-sm">
-                        <thead>
-                            <tr>
-                                <th class="min-w-[240px]">Person</th>
-                                <th class="w-[220px]">Email</th>
-                                <th class="w-[160px]">Role</th>
-                                <th class="w-[120px]">Joined</th>
-                                <th class="w-[100px] text-end">Action</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            @forelse ($members as $key => $member)
-                                <tr wire:key="member-{{ $key }}">
-                                    <td>
-                                        <div class="flex items-center gap-2.5">
-                                            <span class="size-8 rounded-full grid place-items-center text-[11px] font-semibold {{ $member['tone'] }}">
-                                                {{ $member['initials'] }}
-                                            </span>
-                                            <span class="text-mono font-medium">{{ $member['name'] }}</span>
-                                        </div>
-                                    </td>
-                                    <td class="text-secondary-foreground">{{ $member['email'] }}</td>
-                                    <td>
-                                        @if ($member['role'] === 'owner')
-                                            <span class="kt-badge kt-badge-sm kt-badge-primary gap-1">
-                                                <i class="ki-filled ki-crown text-xs"></i> Owner
-                                            </span>
-                                        @else
-                                            <select class="kt-select" aria-label="Role for {{ $member['name'] }}"
-                                                    wire:model.live="roles.{{ $key }}">
-                                                @foreach ($roleOptions as $roleKey => $roleName)
-                                                    @continue($roleKey === 'owner')
-                                                    <option value="{{ $roleKey }}">{{ $roleName }}</option>
-                                                @endforeach
-                                            </select>
-                                        @endif
-                                    </td>
-                                    <td class="text-secondary-foreground">{{ $member['joined'] }}</td>
-                                    <td class="text-end">
-                                        @if ($member['role'] === 'owner')
-                                            <span class="text-xs text-muted-foreground">—</span>
-                                        @else
-                                            <button wire:click="removeMember('{{ $key }}')" wire:loading.attr="disabled" wire:target="removeMember"
-                                                    class="kt-btn kt-btn-sm kt-btn-ghost text-destructive gap-1">
-                                                <i class="ki-filled ki-cross-circle text-sm"></i> Remove
-                                            </button>
-                                        @endif
-                                    </td>
-                                </tr>
-                            @empty
-                                <tr>
-                                    <td colspan="5" class="text-center py-10 text-secondary-foreground">
-                                        Only you can open this board. Invite somebody below.
-                                    </td>
-                                </tr>
-                            @endforelse
-                        </tbody>
-                    </table>
                 </div>
             </div>
 
-            <div class="kt-card-footer flex flex-wrap items-center gap-2 p-5">
-                <div class="kt-input max-w-[280px]">
-                    <i class="ki-filled ki-sms text-muted-foreground"></i>
-                    <input type="email" placeholder="name@studio.com" aria-label="Email to invite" wire:model="inviteEmail">
-                </div>
-                <select class="kt-select max-w-[160px]" aria-label="Role for the invitation" wire:model="inviteRole">
-                    @foreach ($roleOptions as $roleKey => $roleName)
-                        @continue($roleKey === 'owner')
-                        <option value="{{ $roleKey }}">{{ $roleName }}</option>
-                    @endforeach
-                </select>
-                <button wire:click="invite" wire:loading.attr="disabled" wire:target="invite" class="kt-btn kt-btn-outline gap-2">
-                    <span wire:loading.remove wire:target="invite" class="inline-flex items-center gap-2">
-                        <i class="ki-filled ki-user-tick"></i> Send invitation
+            {{-- Labels --}}
+            <div class="kt-card xl:col-span-2">
+                <div class="kt-card-header">
+                    <h2 class="kt-card-title">Labels</h2>
+                    <span class="text-xs text-muted-foreground">
+                        {{ $labels->count() }} {{ $labels->count() === 1 ? 'label' : 'labels' }} on this board
                     </span>
-                    <span wire:loading wire:target="invite" class="inline-flex items-center gap-2">
-                        <i class="ki-filled ki-loading animate-spin"></i> Sending…
-                    </span>
-                </button>
-            </div>
-        </div>
-
-        {{-- Danger zone --}}
-        <div class="kt-card xl:col-span-2 border-destructive/30">
-            <div class="kt-card-header">
-                <h2 class="kt-card-title text-destructive">Danger zone</h2>
-            </div>
-            <div class="kt-card-content flex flex-col gap-4 p-5">
-
-                <div class="flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                        <div class="text-sm font-medium text-mono">Archive this board</div>
-                        <p class="text-xs text-muted-foreground mt-1">
-                            It leaves the switcher but every card stays readable from the archive.
-                        </p>
-                    </div>
-                    <button wire:click="archiveBoard" wire:loading.attr="disabled" wire:target="archiveBoard"
-                            class="kt-btn kt-btn-outline gap-2">
-                        <span wire:loading.remove wire:target="archiveBoard" class="inline-flex items-center gap-2">
-                            <i class="ki-filled ki-archive"></i> Archive board
-                        </span>
-                        <span wire:loading wire:target="archiveBoard" class="inline-flex items-center gap-2">
-                            <i class="ki-filled ki-loading animate-spin"></i> Archiving…
-                        </span>
-                    </button>
                 </div>
+                <div class="kt-card-content flex flex-col gap-3 p-5">
 
-                <div class="flex flex-wrap items-start justify-between gap-3 pt-4 border-t border-border">
-                    <div>
-                        <div class="text-sm font-medium text-mono">Delete this board</div>
-                        <p class="text-xs text-muted-foreground mt-1">
-                            Lists, cards, comments and attachments go with it. This cannot be undone.
-                        </p>
-                    </div>
+                    @forelse ($labels as $label)
+                        <div class="rounded-lg border border-border px-3 py-2.5" wire:key="label-{{ $label->id }}">
+                            @if ($editingLabel === $label->id)
+                                <div class="flex flex-wrap items-center gap-2">
+                                    <input type="text" class="kt-input max-w-[240px]" aria-label="Label name"
+                                           wire:model="labelDraft" wire:keydown.escape="cancelEditLabel"
+                                           wire:keydown.enter.prevent="saveLabel({{ $label->id }})">
 
-                    @if ($confirmingDelete)
-                        <div class="flex flex-col gap-2 w-full sm:w-auto">
-                            <label class="kt-form-label text-xs" for="delete-confirm">Type <span class="text-mono">{{ $name }}</span> to confirm</label>
-                            <div class="flex items-center gap-2">
-                                <input id="delete-confirm" type="text" class="kt-input max-w-[220px]"
-                                       wire:model.live="deleteConfirmation" wire:keydown.escape="cancelDelete">
-                                <button wire:click="deleteBoard" wire:loading.attr="disabled" wire:target="deleteBoard"
-                                        class="kt-btn kt-btn-destructive gap-2" @disabled($deleteConfirmation !== $name)>
-                                    <span wire:loading.remove wire:target="deleteBoard">Delete for good</span>
-                                    <span wire:loading wire:target="deleteBoard"><i class="ki-filled ki-loading animate-spin"></i> Deleting…</span>
-                                </button>
-                                <button wire:click="cancelDelete" class="kt-btn kt-btn-ghost">Cancel</button>
-                            </div>
+                                    <div class="flex items-center gap-1.5">
+                                        @foreach ($colours as $colourKey => $option)
+                                            <button wire:click="$set('labelColourDraft', '{{ $colourKey }}')"
+                                                    wire:key="draft-{{ $label->id }}-{{ $colourKey }}"
+                                                    class="size-6 rounded-md {{ $option['dot'] }} border-2 {{ $labelColourDraft === $colourKey ? 'border-mono' : 'border-transparent' }}"
+                                                    title="{{ $option['name'] }}" aria-label="Use {{ $option['name'] }}"></button>
+                                        @endforeach
+                                    </div>
+
+                                    <div class="flex items-center gap-2 ms-auto">
+                                        <button wire:click="saveLabel({{ $label->id }})" wire:loading.attr="disabled" wire:target="saveLabel"
+                                                class="kt-btn kt-btn-sm kt-btn-primary">
+                                            <span wire:loading.remove wire:target="saveLabel">Save</span>
+                                            <span wire:loading wire:target="saveLabel"><i class="ki-filled ki-loading animate-spin"></i></span>
+                                        </button>
+                                        <button wire:click="cancelEditLabel" class="kt-btn kt-btn-sm kt-btn-ghost">Cancel</button>
+                                    </div>
+                                </div>
+                            @else
+                                <div class="flex flex-wrap items-center gap-3">
+                                    <span class="text-xs font-medium px-2 py-1 rounded {{ $label->chipClass() }}">{{ $label->name }}</span>
+                                    <span class="text-xs text-muted-foreground">
+                                        on {{ $label->cards_count }} {{ $label->cards_count === 1 ? 'card' : 'cards' }}
+                                    </span>
+                                    <div class="flex items-center gap-1 ms-auto">
+                                        <button wire:click="startEditLabel({{ $label->id }})" class="kt-btn kt-btn-sm kt-btn-ghost gap-1">
+                                            <i class="ki-filled ki-pencil text-sm"></i> Edit
+                                        </button>
+                                        <button wire:click="deleteLabel({{ $label->id }})" wire:loading.attr="disabled" wire:target="deleteLabel"
+                                                class="kt-btn kt-btn-sm kt-btn-ghost text-destructive gap-1">
+                                            <i class="ki-filled ki-trash text-sm"></i> Delete
+                                        </button>
+                                    </div>
+                                </div>
+                            @endif
                         </div>
-                    @else
-                        <button wire:click="confirmDelete" class="kt-btn kt-btn-destructive gap-2">
-                            <i class="ki-filled ki-trash"></i> Delete board
+                    @empty
+                        <div class="text-center py-8">
+                            <i class="ki-filled ki-tag text-2xl text-muted-foreground"></i>
+                            <p class="text-sm text-muted-foreground mt-2">No labels yet. Add the first one below.</p>
+                        </div>
+                    @endforelse
+
+                    <div class="flex flex-wrap items-center gap-2 pt-2 border-t border-border">
+                        <input type="text" class="kt-input max-w-[240px]" placeholder="New label name"
+                               aria-label="New label name" wire:model="newLabelName"
+                               wire:keydown.enter.prevent="createLabel">
+                        <div class="flex items-center gap-1.5">
+                            @foreach ($colours as $colourKey => $option)
+                                <button wire:click="$set('newLabelColour', '{{ $colourKey }}')"
+                                        wire:key="new-{{ $colourKey }}"
+                                        class="size-6 rounded-md {{ $option['dot'] }} border-2 {{ $newLabelColour === $colourKey ? 'border-mono' : 'border-transparent' }}"
+                                        title="{{ $option['name'] }}" aria-label="Use {{ $option['name'] }}"></button>
+                            @endforeach
+                        </div>
+                        <button wire:click="createLabel" wire:loading.attr="disabled" wire:target="createLabel"
+                                class="kt-btn kt-btn-outline gap-2">
+                            <span wire:loading.remove wire:target="createLabel" class="inline-flex items-center gap-2">
+                                <i class="ki-filled ki-plus"></i> Add label
+                            </span>
+                            <span wire:loading wire:target="createLabel" class="inline-flex items-center gap-2">
+                                <i class="ki-filled ki-loading animate-spin"></i> Adding…
+                            </span>
                         </button>
+                    </div>
+                </div>
+            </div>
+
+            {{-- Lists --}}
+            <div class="kt-card xl:col-span-2">
+                <div class="kt-card-header">
+                    <h2 class="kt-card-title">Lists</h2>
+                    <span class="text-xs text-muted-foreground">
+                        {{ $lists->count() }} {{ $lists->count() === 1 ? 'list' : 'lists' }},
+                        {{ $cardTotal }} {{ $cardTotal === 1 ? 'card' : 'cards' }}
+                        @if ($archivedLists > 0)
+                            · {{ $archivedLists }} archived
+                        @endif
+                    </span>
+                </div>
+                <div class="kt-card-content flex flex-col gap-3 p-5">
+
+                    @forelse ($lists as $index => $list)
+                        <div class="rounded-lg border border-border px-3 py-2.5" wire:key="list-{{ $list->id }}">
+                            @if ($editingList === $list->id)
+                                <div class="flex flex-wrap items-center gap-2">
+                                    <input type="text" class="kt-input max-w-[280px]" aria-label="List name"
+                                           wire:model="listDraft" wire:keydown.escape="cancelEditList"
+                                           wire:keydown.enter.prevent="saveList({{ $list->id }})">
+                                    <div class="flex items-center gap-2 ms-auto">
+                                        <button wire:click="saveList({{ $list->id }})" wire:loading.attr="disabled" wire:target="saveList"
+                                                class="kt-btn kt-btn-sm kt-btn-primary">
+                                            <span wire:loading.remove wire:target="saveList">Save</span>
+                                            <span wire:loading wire:target="saveList"><i class="ki-filled ki-loading animate-spin"></i></span>
+                                        </button>
+                                        <button wire:click="cancelEditList" class="kt-btn kt-btn-sm kt-btn-ghost">Cancel</button>
+                                    </div>
+                                </div>
+                            @else
+                                <div class="flex flex-wrap items-center gap-3">
+                                    <span class="text-xs text-muted-foreground w-5 text-center">{{ $index + 1 }}</span>
+                                    <span class="text-sm font-medium text-mono">{{ $list->name }}</span>
+                                    <span class="kt-badge kt-badge-sm kt-badge-outline">
+                                        {{ $list->cards_count }} {{ $list->cards_count === 1 ? 'card' : 'cards' }}
+                                    </span>
+
+                                    <div class="flex items-center gap-1 ms-auto">
+                                        <button wire:click="moveListUp({{ $list->id }})"
+                                                wire:loading.attr="disabled" wire:target="moveListUp"
+                                                class="kt-btn kt-btn-sm kt-btn-icon kt-btn-ghost"
+                                                title="Move {{ $list->name }} earlier" aria-label="Move {{ $list->name }} earlier"
+                                                @disabled($index === 0)>
+                                            <i class="ki-filled ki-up text-sm"></i>
+                                        </button>
+                                        <button wire:click="moveListDown({{ $list->id }})"
+                                                wire:loading.attr="disabled" wire:target="moveListDown"
+                                                class="kt-btn kt-btn-sm kt-btn-icon kt-btn-ghost"
+                                                title="Move {{ $list->name }} later" aria-label="Move {{ $list->name }} later"
+                                                @disabled($index === $lists->count() - 1)>
+                                            <i class="ki-filled ki-down text-sm"></i>
+                                        </button>
+                                        <button wire:click="startEditList({{ $list->id }})" class="kt-btn kt-btn-sm kt-btn-ghost gap-1">
+                                            <i class="ki-filled ki-pencil text-sm"></i> Rename
+                                        </button>
+                                        <button wire:click="archiveList({{ $list->id }})"
+                                                wire:loading.attr="disabled" wire:target="archiveList"
+                                                class="kt-btn kt-btn-sm kt-btn-ghost text-destructive gap-1">
+                                            <i class="ki-filled ki-archive text-sm"></i> Archive
+                                        </button>
+                                    </div>
+                                </div>
+                            @endif
+                        </div>
+                    @empty
+                        <div class="text-center py-8">
+                            <i class="ki-filled ki-row-vertical text-2xl text-muted-foreground"></i>
+                            <p class="text-sm text-muted-foreground mt-2">No lists on this board yet.</p>
+                            <a href="{{ route('projects.boards', ['board' => $record->slug]) }}" wire:navigate
+                               class="kt-btn kt-btn-primary gap-2 mt-4">
+                                <i class="ki-filled ki-plus"></i> Add the first list
+                            </a>
+                        </div>
+                    @endforelse
+
+                    @if ($archivedLists > 0)
+                        <p class="text-xs text-muted-foreground pt-2 border-t border-border">
+                            {{ $archivedLists }} archived {{ $archivedLists === 1 ? 'list is' : 'lists are' }} not shown here.
+                            <a href="{{ route('projects.archive') }}" wire:navigate class="text-primary hover:underline">Open the archive</a>
+                            to bring one back.
+                        </p>
                     @endif
                 </div>
             </div>
+
+            {{-- Danger zone --}}
+            <div class="kt-card xl:col-span-2 border-destructive/30">
+                <div class="kt-card-header">
+                    <h2 class="kt-card-title text-destructive">Danger zone</h2>
+                </div>
+                <div class="kt-card-content flex flex-col gap-4 p-5">
+
+                    <div class="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                            <div class="text-sm font-medium text-mono">Archive this board</div>
+                            <p class="text-xs text-muted-foreground mt-1">
+                                It leaves the switcher, and every list and card stays readable from the archive.
+                            </p>
+                        </div>
+                        <button wire:click="archiveBoard" wire:loading.attr="disabled" wire:target="archiveBoard"
+                                class="kt-btn kt-btn-outline gap-2" @disabled($record->isArchived())>
+                            <span wire:loading.remove wire:target="archiveBoard" class="inline-flex items-center gap-2">
+                                <i class="ki-filled ki-archive"></i>
+                                {{ $record->isArchived() ? 'Already archived' : 'Archive board' }}
+                            </span>
+                            <span wire:loading wire:target="archiveBoard" class="inline-flex items-center gap-2">
+                                <i class="ki-filled ki-loading animate-spin"></i> Archiving…
+                            </span>
+                        </button>
+                    </div>
+
+                    <div class="flex flex-wrap items-start justify-between gap-3 pt-4 border-t border-border">
+                        <div>
+                            <div class="text-sm font-medium text-mono">Delete this board</div>
+                            <p class="text-xs text-muted-foreground mt-1">
+                                Lists, cards and comments go with it. It leaves the archive too, and nothing in the
+                                application can bring it back.
+                            </p>
+                        </div>
+
+                        @if ($confirmingDelete)
+                            <div class="flex flex-col gap-2 w-full sm:w-auto">
+                                <label class="kt-form-label text-xs" for="delete-confirm">
+                                    Type <span class="text-mono">{{ $record->name }}</span> to confirm
+                                </label>
+                                <div class="flex items-center gap-2">
+                                    <input id="delete-confirm" type="text" class="kt-input max-w-[220px]"
+                                           wire:model.live="deleteConfirmation" wire:keydown.escape="cancelDelete">
+                                    <button wire:click="deleteBoard" wire:loading.attr="disabled" wire:target="deleteBoard"
+                                            class="kt-btn kt-btn-destructive gap-2" @disabled($deleteConfirmation !== $record->name)>
+                                        <span wire:loading.remove wire:target="deleteBoard">Delete for good</span>
+                                        <span wire:loading wire:target="deleteBoard"><i class="ki-filled ki-loading animate-spin"></i> Deleting…</span>
+                                    </button>
+                                    <button wire:click="cancelDelete" class="kt-btn kt-btn-ghost">Cancel</button>
+                                </div>
+                            </div>
+                        @else
+                            <button wire:click="confirmDelete" class="kt-btn kt-btn-destructive gap-2">
+                                <i class="ki-filled ki-trash"></i> Delete board
+                            </button>
+                        @endif
+                    </div>
+                </div>
+            </div>
         </div>
-    </div>
+    @endif
 </div>

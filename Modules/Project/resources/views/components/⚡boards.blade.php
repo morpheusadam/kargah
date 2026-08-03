@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\User;
 use Illuminate\Support\Collection;
 use Livewire\Attributes\On;
 use Livewire\Attributes\Title;
@@ -71,10 +72,24 @@ class extends Component
 
     public string $newListName = '';
 
-    /** Per-request memo. Private, so Livewire neither ships nor rehydrates it. */
+    /**
+     * Per-request memos. Private, so Livewire neither ships nor rehydrates
+     * them, and a new component instance starts empty — no code here may
+     * assume either a fresh process or a persistent one.
+     *
+     * Without these the page asks for the same boards four times and the same
+     * users three times, because `with()`, `mount()`, `boardName()` and the
+     * template each go looking independently.
+     */
     private ?Board $resolvedBoard = null;
 
     private ?Collection $resolvedLists = null;
+
+    private ?Collection $resolvedBoards = null;
+
+    private ?Collection $resolvedLabels = null;
+
+    private ?Collection $resolvedMembers = null;
 
     /**
      * An `#[Url]` property is whatever the address bar says, which may be a
@@ -96,7 +111,7 @@ class extends Component
 
     private function allBoards(): Collection
     {
-        return Board::query()->active()->orderBy('position')->orderBy('name')->get();
+        return $this->resolvedBoards ??= Board::query()->active()->orderBy('position')->orderBy('name')->get();
     }
 
     private function board(): ?Board
@@ -142,15 +157,19 @@ class extends Component
     /** @return Collection<int, \Modules\Project\Models\Label> */
     private function labels(): Collection
     {
+        if ($this->resolvedLabels !== null) {
+            return $this->resolvedLabels;
+        }
+
         $board = $this->board();
 
-        return $board === null ? collect() : $board->labels()->get();
+        return $this->resolvedLabels = $board === null ? collect() : $board->labels()->get();
     }
 
     /** People who can be put on a card. */
     private function members(): Collection
     {
-        return \App\Models\User::query()->orderBy('name')->get();
+        return $this->resolvedMembers ??= User::query()->orderBy('name')->get();
     }
 
     /* Filtering ------------------------------------------------------------- */
@@ -292,8 +311,11 @@ class extends Component
     public function selectBoard(string $slug): void
     {
         $this->activeBoard = $this->resolveBoard($slug);
+
+        // Every memo below is scoped to a board. Switching invalidates them all.
         $this->resolvedBoard = null;
         $this->resolvedLists = null;
+        $this->resolvedLabels = null;
 
         // A filter set against one board's labels and people matches nothing on
         // the next one, and an empty board with no visible reason reads as a bug.

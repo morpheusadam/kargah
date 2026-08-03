@@ -5,21 +5,31 @@ namespace Database\Seeders;
 use App\Models\User;
 use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
+use Modules\Core\Database\Seeders\CoreDatabaseSeeder;
+use Modules\Project\Database\Seeders\ProjectDatabaseSeeder;
 
+/**
+ * Core first, then every feature module.
+ *
+ * The order is the module dependency order, not alphabetical: a card that
+ * belongs to a customer needs the customer to exist. Every seeder called from
+ * here is idempotent, because this runs from the deploy script and a deploy
+ * that duplicates the client list is a bad afternoon.
+ */
 class DatabaseSeeder extends Seeder
 {
     use WithoutModelEvents;
 
-    /**
-     * Seed the application's database.
-     */
     public function run(): void
     {
-        // User::factory(10)->create();
+        User::query()->firstOrCreate(
+            ['email' => 'admin@kargah.local'],
+            ['name' => 'Nima Fazlipour', 'password' => 'kargah1234'],
+        );
 
-        User::factory()->create([
-            'name' => 'Test User',
-            'email' => 'test@example.com',
+        $this->call([
+            CoreDatabaseSeeder::class,
+            ProjectDatabaseSeeder::class,
         ]);
     }
 }

@@ -1,37 +1,92 @@
 <?php
 
 /**
- * Times real page renders in the *dev* environment (not the testing env the
- * suite uses), so we measure what the browser actually hits.
- * Delete this file once the cause is found.
+ * Times real page renders against the *dev* database, not the in-memory one the
+ * suite uses, so the number is what a browser would actually wait for.
+ *
+ * The budget is 200 ms warm per page (project-guaid/spec/05-build-order.md).
+ * The first hit of each URL is discarded: it pays for autoloading, the route
+ * cache and OPcache filling up, and nobody sees that number twice.
+ *
+ *     php timing-probe.php
  */
 
 require __DIR__.'/vendor/autoload.php';
 
 $app = require_once __DIR__.'/bootstrap/app.php';
 $kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
+
+// Bind a request before bootstrapping: the URL generator is constructed during
+// boot and will not accept a null one.
+$app->instance('request', Illuminate\Http\Request::create('/', 'GET'));
 $kernel->bootstrap();
 
-$user = App\Models\User::first();
-if (! $user) {
-    exit("no user in database\n");
-}
+$urls = [
+    '/dashboard',
+    '/projects',
+    '/projects/archive',
+    '/projects/client-work/settings',
+    '/mail/inbox',
+    '/accounting/invoices',
+    '/accounting/clients/1',
+];
 
-foreach (['/login', '/dashboard', '/projects', '/mail/inbox', '/accounting/invoices'] as $uri) {
-    $t0 = microtime(true);
+/** Render one URL as the first user and give back milliseconds plus the size. */
+$render = function (string $uri) use ($app, $kernel): array {
+    $request = Illuminate\Http\Request::create($uri, 'GET');
 
+    // Bind before anything resolves the URL generator, which needs a request.
+    $app->instance('request', $request);
+
+    $user = App\Models\User::query()->first();
+
+    if ($user !== null) {
+        // Put the user in the session the way a real login does, so the auth
+        // middleware lets the request through instead of redirecting.
+        $session = $app['session']->driver();
+        $session->start();
+        $session->put('login_web_'.sha1(Illuminate\Auth\SessionGuard::class), $user->getAuthIdentifier());
+        $request->setLaravelSession($session);
+        $request->cookies->set($session->getName(), $app['encrypter']->encrypt($session->getId(), false));
+    }
+
+    $started = microtime(true);
+    $response = $kernel->handle($request);
+    $ms = (microtime(true) - $started) * 1000;
+
+    return [$response->getStatusCode(), $ms, strlen($response->getContent()) / 1024];
+};
+
+printf("%-34s %-6s %9s %10s\n", 'URL', 'status', 'warm ms', 'KB');
+printf("%s\n", str_repeat('-', 62));
+
+$over = [];
+$failed = [];
+
+foreach ($urls as $uri) {
     try {
-        $request = Illuminate\Http\Request::create($uri, 'GET');
-        $app['session']->driver()->start();
-        $request->setLaravelSession($app['session']->driver());
-        Illuminate\Support\Facades\Auth::setUser($user);
+        $render($uri);            // cold, discarded
+        [$status, $ms, $kb] = $render($uri);
 
-        $response = $kernel->handle($request);
+        printf("%-34s %-6s %8.0f %9.1f%s\n", $uri, $status, $ms, $kb, $ms > 200 ? '  <- over budget' : '');
 
-        $ms = round((microtime(true) - $t0) * 1000);
-        printf("%-22s %s  %6d ms  %7.1f KB\n", $uri, $response->getStatusCode(), $ms, strlen($response->getContent()) / 1024);
+        if ($status >= 400 || $status === 302) {
+            $failed[] = $uri.' ('.$status.')';
+        } elseif ($ms > 200) {
+            $over[] = $uri;
+        }
     } catch (Throwable $e) {
-        $ms = round((microtime(true) - $t0) * 1000);
-        printf("%-22s FAILED after %d ms: %s\n   at %s:%d\n", $uri, $ms, $e->getMessage(), $e->getFile(), $e->getLine());
+        printf("%-34s FAILED  %s\n   at %s:%d\n", $uri, $e->getMessage(), $e->getFile(), $e->getLine());
+        $failed[] = $uri;
     }
 }
+
+echo PHP_EOL;
+
+if ($failed !== []) {
+    echo 'Did not render: '.implode(', ', $failed)."\n";
+}
+
+echo $over === []
+    ? "Every page that rendered is inside the 200 ms budget.\n"
+    : 'Over budget: '.implode(', ', $over)."\n";

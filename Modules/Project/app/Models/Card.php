@@ -15,11 +15,14 @@ use Modules\Core\Concerns\Linkable;
 use Modules\Core\Models\Company;
 use Modules\Core\Models\Customer;
 use Modules\Project\Database\Factories\CardFactory;
+use Spatie\Activitylog\LogOptions;
+use Spatie\Activitylog\Traits\LogsActivity;
 
 class Card extends Model
 {
     use HasFactory;
     use Linkable;
+    use LogsActivity;
     use SoftDeletes;
 
     protected $fillable = [
@@ -137,6 +140,26 @@ class Card extends Model
         $items = $this->checklists->flatMap->items;
 
         return [$items->where('is_done', true)->count(), $items->count()];
+    }
+
+    /**
+     * Attribute changes go to the activity feed on their own.
+     *
+     * `CardService` logs the things an attribute diff cannot describe — a move
+     * names both lists, a copy names its original. Everything else is a field
+     * changing value, and that is what this covers: renaming a card, setting a
+     * due date, attaching it to a customer, archiving it.
+     *
+     * `position` is deliberately absent. It changes on every drag and its
+     * before/after would bury the feed in decimals nobody reads.
+     */
+    public function getActivitylogOptions(): LogOptions
+    {
+        return LogOptions::defaults()
+            ->logOnly(['title', 'description', 'due_on', 'customer_id', 'company_id', 'archived_at', 'completed_at'])
+            ->logOnlyDirty()
+            ->dontSubmitEmptyLogs()
+            ->useLogName('card');
     }
 
     protected static function newFactory(): CardFactory

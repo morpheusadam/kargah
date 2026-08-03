@@ -1,9 +1,17 @@
 <?php
 
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Livewire\Attributes\On;
 use Livewire\Attributes\Validate;
 use Livewire\Component;
 use Modules\Core\Concerns\InteractsWithToasts;
+use Modules\Project\Models\Board;
+use Modules\Project\Models\BoardList;
+use Modules\Project\Models\Card;
+use Modules\Project\Models\Label;
+use Modules\Project\Support\Palette;
+use Modules\Project\Support\Position;
 
 /**
  * Board template picker.
@@ -12,6 +20,19 @@ use Modules\Core\Concerns\InteractsWithToasts;
  * dispatches `open-board-templates`. Each template shows the lists it would
  * create and the first cards it seeds them with, so the choice is made on
  * what the board will look like rather than on its name.
+ *
+ * The four templates below are configuration, not a fixture: they are the
+ * definition of what `createBoard()` writes, and the preview is a rendering of
+ * that same definition rather than a second copy of it.
+ *
+ * Two things are worth knowing before changing anything.
+ *
+ * **The slug is unique in the schema, including for soft-deleted rows.** Two
+ * boards called "Client work" are a perfectly reasonable thing to want, so the
+ * slug is suffixed until it is free rather than the second create failing.
+ *
+ * **The toast is flashed, not dispatched.** This method redirects, and a
+ * dispatched browser event dies with the page that would have shown it.
  */
 new
 class extends Component
@@ -25,13 +46,18 @@ class extends Component
     #[Validate('required|min:2|max:40')]
     public string $name = '';
 
+    /**
+     * `colour` is a palette key, never a class string — the board stores the
+     * key and `Palette` resolves it, so the Tailwind scanner can see every
+     * class name in one file.
+     */
     private function templates(): array
     {
         return [
             'client-project' => [
                 'name' => 'Client project',
                 'icon' => 'ki-briefcase',
-                'tone' => 'bg-primary/15 text-primary',
+                'colour' => 'primary',
                 'summary' => 'Take one client from the first brief through to a paid invoice.',
                 'lists' => [
                     ['name' => 'Brief', 'cards' => ['Kick-off call notes', 'Success criteria']],
@@ -45,7 +71,7 @@ class extends Component
             'job-hunt' => [
                 'name' => 'Job hunt',
                 'icon' => 'ki-profile-circle',
-                'tone' => 'bg-success/15 text-success',
+                'colour' => 'success',
                 'summary' => 'Track every application so no follow-up is missed.',
                 'lists' => [
                     ['name' => 'Leads', 'cards' => ['Studios hiring contract developers', 'Referrals to chase']],
@@ -58,7 +84,7 @@ class extends Component
             'content-pipeline' => [
                 'name' => 'Content pipeline',
                 'icon' => 'ki-note-2',
-                'tone' => 'bg-info/15 text-info',
+                'colour' => 'info',
                 'summary' => 'Move posts from a rough idea to something published.',
                 'lists' => [
                     ['name' => 'Ideas', 'cards' => ['What clients ask before they hire', 'Invoicing without a limited company']],
@@ -71,7 +97,7 @@ class extends Component
             'blank' => [
                 'name' => 'Blank board',
                 'icon' => 'ki-element-plus',
-                'tone' => 'bg-accent/60 text-secondary-foreground',
+                'colour' => 'neutral',
                 'summary' => 'Start with nothing and add the lists as you go.',
                 'lists' => [],
             ],
@@ -121,13 +147,113 @@ class extends Component
         );
     }
 
-    /** Create the board from the chosen template. */
+    /**
+     * A slug nothing else has taken.
+     *
+     * `withTrashed()` on purpose: a soft-deleted board still holds its slug in
+     * a unique index, so ignoring it turns a delete-and-recreate into a
+     * constraint violation the user cannot do anything about.
+     */
+    private function uniqueSlug(string $name): string
+    {
+        $base = Str::slug($name) ?: 'board';
+        $slug = $base;
+        $suffix = 2;
+
+        while (Board::withTrashed()->where('slug', $slug)->exists()) {
+            $slug = $base.'-'.$suffix++;
+        }
+
+        return $slug;
+    }
+
+    /**
+     * The default label set on a new board.
+     *
+     * One label per palette colour, named after the colour, because a board
+     * nobody has set up yet is more useful with six colours to reach for than
+     * with six guesses at what the work is called.
+     */
+    private function seedLabels(Board $board): void
+    {
+        foreach (Palette::keys() as $position => $colour) {
+            Label::query()->create([
+                'board_id' => $board->id,
+                'name' => Palette::name($colour),
+                'colour' => $colour,
+                'position' => $position,
+            ]);
+        }
+    }
+
+    /** Create the board, its lists and its seed cards, then go and look at it. */
     public function createBoard(): void
     {
         $this->validate();
 
-        // Backend: create the board, its lists and the seed cards, then redirect to it.
-        $this->toastInfo('Not connected yet', 'Boards are created once the backend phase lands.');
+        $templates = $this->templates();
+        $key = array_key_exists($this->template, $templates) ? $this->template : 'blank';
+        $template = $templates[$key];
+        $name = trim($this->name);
+
+        $board = DB::transaction(function () use ($template, $name): Board {
+            $board = Board::query()->create([
+                'slug' => $this->uniqueSlug($name),
+                'name' => $name,
+                'colour' => $template['colour'],
+                'description' => $template['summary'],
+                'company_id' => null,
+                'position' => (int) Board::query()->max('position') + 1,
+                'created_by' => auth()->id(),
+            ]);
+
+            $this->seedLabels($board);
+
+            // Spread rather than counted up by hand: `position` is a decimal
+            // column and every value that goes near it comes from `Position`.
+            $listPositions = Position::spread(count($template['lists']));
+
+            foreach ($template['lists'] as $index => $list) {
+                $row = BoardList::query()->create([
+                    'board_id' => $board->id,
+                    'name' => $list['name'],
+                    'position' => $listPositions[$index],
+                    'created_by' => auth()->id(),
+                ]);
+
+                $cardPositions = Position::spread(count($list['cards']));
+
+                foreach ($list['cards'] as $i => $title) {
+                    Card::query()->create([
+                        'board_list_id' => $row->id,
+                        'title' => $title,
+                        'position' => $cardPositions[$i],
+                        'created_by' => auth()->id(),
+                    ]);
+                }
+            }
+
+            return $board;
+        });
+
+        $lists = count($template['lists']);
+        $cards = array_sum(array_map(fn (array $list): int => count($list['cards']), $template['lists']));
+
+        $this->open = false;
+        $this->name = '';
+        $this->template = 'client-project';
+
+        // Flashed, not dispatched: a browser event does not survive the
+        // redirect that is about to replace the page.
+        $this->flashToast(
+            'success',
+            $board->name.' created',
+            $lists === 0
+                ? 'It has no lists yet, so start by adding the first one.'
+                : $lists.' '.str('list')->plural($lists).' and '.$cards.' '.str('card')->plural($cards).' are waiting on it.',
+        );
+
+        $this->redirect(route('projects.boards', ['board' => $board->slug]), navigate: true);
     }
 };
 
@@ -169,7 +295,7 @@ class extends Component
                                 class="flex items-start gap-3 rounded-lg border px-3 py-3 text-start transition-colors
                                        {{ $template === $key ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/40' }}"
                                 aria-pressed="{{ $template === $key ? 'true' : 'false' }}">
-                            <span class="size-9 rounded-md grid place-items-center shrink-0 {{ $item['tone'] }}">
+                            <span class="size-9 rounded-md grid place-items-center shrink-0 {{ \Modules\Project\Support\Palette::tone($item['colour']) }}">
                                 <i class="ki-filled {{ $item['icon'] }} text-base"></i>
                             </span>
                             <span class="min-w-0 grow">

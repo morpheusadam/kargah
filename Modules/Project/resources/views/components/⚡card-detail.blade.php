@@ -1,22 +1,43 @@
 <?php
 
+use App\Models\User;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
 use Livewire\Attributes\On;
 use Livewire\Attributes\Validate;
 use Livewire\Component;
 use Modules\Core\Concerns\InteractsWithToasts;
+use Modules\Project\Models\BoardList;
+use Modules\Project\Models\Card;
+use Modules\Project\Models\CardComment;
+use Modules\Project\Models\Checklist;
+use Modules\Project\Models\ChecklistItem;
+use Modules\Project\Services\CardService;
+use Modules\Project\Support\Position;
 
 /**
- * Card detail drawer.
+ * Card detail drawer, reading from the database.
  *
  * Nested inside the board. The board dispatches `open-card` with a card id and
- * this component slides in from the right with everything that hangs off a
- * card: description, labels, due date, assignee, checklist, attachments and
- * the comment thread.
+ * this component loads that row with everything hanging off it: labels,
+ * members, checklists, comments — then slides in from the right.
  *
- * Frontend phase: the card comes from a fixture. Ticking a checklist item or
- * toggling a label changes this component's own state so the interaction can
- * be reviewed — nothing is written anywhere. Every action the backend will
- * own already exists with its final signature and an empty body.
+ * Three things are worth knowing before changing anything.
+ *
+ * **Every write here is a real write.** There is no local copy of the card that
+ * the drawer edits and the board later reconciles; the component holds the card
+ * *id* and reads the row on each render. So the only state that has to survive
+ * a round-trip is what the user has typed but not yet saved.
+ *
+ * **Anything that changes the front of the card dispatches `card-changed`.**
+ * The board canvas is an island, and an island nobody redraws keeps whatever
+ * the DOM already had. The description is the one field deliberately left out:
+ * it is not drawn on the card face, so redrawing the canvas for it would send
+ * every card back for nothing.
+ *
+ * **Labels come from the card's own board.** A label belongs to one board, so
+ * the picker is `$card->list->board->labels` and never a global list — putting
+ * another board's label on a card would attach a row the board can never show.
  */
 new
 class extends Component
@@ -32,15 +53,13 @@ class extends Component
 
     public string $description = '';
 
-    /** @var string[] */
-    public array $cardLabels = [];
-
     public string $dueDate = '';
 
+    /** The single assignee's user id, as a string, or '' for nobody. */
     public string $assignee = '';
 
-    /** @var array<int, array{id:int, text:string, done:bool}> */
-    public array $checklist = [];
+    /** The list `moveCard()` will move to, as a string id. */
+    public string $moveToList = '';
 
     public string $newChecklistItem = '';
 
@@ -54,208 +73,107 @@ class extends Component
 
     public bool $duePopoverOpen = false;
 
-    /** Labels defined on the board. Kept in step with the board fixture. */
-    private function labels(): array
+    public bool $movePopoverOpen = false;
+
+    /** Per-request memo. Private, so Livewire neither ships nor rehydrates it. */
+    private ?Card $resolvedCard = null;
+
+    /* Reading the card ---------------------------------------------------- */
+
+    /**
+     * The open card, or null when the drawer has never been opened — or when
+     * the card was archived away underneath it.
+     */
+    private function card(): ?Card
     {
-        return [
-            'copy' => ['name' => 'Copywriting', 'chip' => 'bg-primary/15 text-primary', 'dot' => 'bg-primary'],
-            'outreach' => ['name' => 'Outreach', 'chip' => 'bg-success/15 text-success', 'dot' => 'bg-success'],
-            'dev' => ['name' => 'Development', 'chip' => 'bg-info/15 text-info', 'dot' => 'bg-info'],
-            'bug' => ['name' => 'Bug', 'chip' => 'bg-destructive/15 text-destructive', 'dot' => 'bg-destructive'],
-            'finance' => ['name' => 'Finance', 'chip' => 'bg-warning/15 text-warning', 'dot' => 'bg-warning'],
-            'admin' => ['name' => 'Admin', 'chip' => 'bg-accent/60 text-secondary-foreground', 'dot' => 'bg-muted-foreground'],
-        ];
+        if ($this->cardId === null) {
+            return null;
+        }
+
+        return $this->resolvedCard ??= Card::query()
+            ->with([
+                'list.board.labels',
+                'labels',
+                'members',
+                'checklists.items',
+                'comments.author',
+            ])
+            ->find($this->cardId);
     }
 
-    private function members(): array
+    /** Drop the memo so the next read sees what was just written. */
+    private function forgetCard(): void
     {
-        return [
-            'nima' => ['name' => 'Nima Fazlipour', 'initials' => 'NF', 'tone' => 'bg-primary/15 text-primary'],
-            'sara' => ['name' => 'Sara Rahimi', 'initials' => 'SR', 'tone' => 'bg-success/15 text-success'],
-            'dan' => ['name' => 'Daniel Whitfield', 'initials' => 'DW', 'tone' => 'bg-info/15 text-info'],
-            'mina' => ['name' => 'Mina Karimi', 'initials' => 'MK', 'tone' => 'bg-warning/15 text-warning'],
-        ];
+        $this->resolvedCard = null;
     }
 
-    /** Everything the drawer knows about a card, keyed by card id. */
-    private function cards(): array
+    /**
+     * Redraw the board canvas.
+     *
+     * Only for changes the card face actually shows — title, labels, due date,
+     * members, checklist counts, comment counts, and whether the card is on the
+     * board at all.
+     */
+    private function cardChanged(): void
     {
-        return [
-            1 => [
-                'title' => 'Rewrite portfolio landing copy',
-                'list' => 'Backlog',
-                'board' => 'Client Work',
-                'description' => "The current page reads like a CV. Rewrite it around the three services that actually sell:\n\n- retainer development\n- one-off audits\n- migration work\n\nKeep it under 400 words and end on the booking link.",
-                'labels' => ['copy'],
-                'due' => '',
-                'assignee' => 'nima',
-                'checklist' => [
-                    ['id' => 1, 'text' => 'Pull the three highest-earning services from the 2026 invoices', 'done' => false],
-                    ['id' => 2, 'text' => 'Draft the hero paragraph', 'done' => false],
-                    ['id' => 3, 'text' => 'Rewrite the services section', 'done' => false],
-                    ['id' => 4, 'text' => 'Proofread and publish', 'done' => false],
-                ],
-                'attachments' => [
-                    ['name' => 'landing-copy-v2.md', 'size' => '11 KB', 'added' => '28 Jul 2026', 'icon' => 'ki-document'],
-                ],
-                'comments' => [
-                    ['author' => 'sara', 'when' => '30 Jul, 09:12', 'body' => 'The old headline still mentions WordPress. We stopped taking that work in March.'],
-                    ['author' => 'nima', 'when' => '30 Jul, 10:04', 'body' => 'Good catch. Dropping it in the rewrite.'],
-                ],
-            ],
-            2 => [
-                'title' => 'Collect testimonials from past clients',
-                'list' => 'Backlog',
-                'board' => 'Client Work',
-                'description' => "Ask the five clients from the last two quarters for two sentences each. Offer to draft something they can edit — it doubles the reply rate.",
-                'labels' => ['outreach', 'admin'],
-                'due' => '2026-08-12',
-                'assignee' => 'sara',
-                'checklist' => [
-                    ['id' => 1, 'text' => 'Northwind Ltd', 'done' => true],
-                    ['id' => 2, 'text' => 'Acme Studio', 'done' => false],
-                    ['id' => 3, 'text' => 'Bluepeak', 'done' => false],
-                ],
-                'attachments' => [],
-                'comments' => [
-                    ['author' => 'sara', 'when' => '29 Jul, 16:40', 'body' => 'Northwind replied the same day. Two lines, already usable.'],
-                ],
-            ],
-            3 => [
-                'title' => 'Send the Northwind retainer proposal',
-                'list' => 'To Do',
-                'board' => 'Client Work',
-                'description' => "Twelve months, four days a month, invoiced on the first. Reuse the Acme Studio structure but drop the on-call clause.",
-                'labels' => ['outreach'],
-                'due' => '2026-08-05',
-                'assignee' => 'nima',
-                'checklist' => [
-                    ['id' => 1, 'text' => 'Confirm the day rate for 2027', 'done' => true],
-                    ['id' => 2, 'text' => 'Write the scope section', 'done' => true],
-                    ['id' => 3, 'text' => 'Add the payment terms', 'done' => true],
-                    ['id' => 4, 'text' => 'Internal read-through', 'done' => true],
-                    ['id' => 5, 'text' => 'Export to PDF', 'done' => true],
-                    ['id' => 6, 'text' => 'Send to Helen at Northwind', 'done' => false],
-                ],
-                'attachments' => [
-                    ['name' => 'northwind-retainer-2026.pdf', 'size' => '284 KB', 'added' => '01 Aug 2026', 'icon' => 'ki-document'],
-                ],
-                'comments' => [
-                    ['author' => 'dan', 'when' => '01 Aug, 11:20', 'body' => 'Rate looks low next to what we quoted Bluepeak for the same work.'],
-                ],
-            ],
-            4 => [
-                'title' => 'Fix invoice PDF margins',
-                'list' => 'To Do',
-                'board' => 'Client Work',
-                'description' => "The footer overlaps the last table row when an invoice runs past fifteen line items. Only shows up on A4.",
-                'labels' => ['bug'],
-                'due' => '',
-                'assignee' => 'dan',
-                'checklist' => [],
-                'attachments' => [],
-                'comments' => [],
-            ],
-            5 => [
-                'title' => 'Build the Acme Studio mail module',
-                'list' => 'In Progress',
-                'board' => 'Client Work',
-                'description' => "Inbox, campaigns, contacts and provider settings. The provider layer has to stay swappable — Acme want to move off Postmark next year.",
-                'labels' => ['dev'],
-                'due' => '2026-08-20',
-                'assignee' => 'nima',
-                'checklist' => [
-                    ['id' => 1, 'text' => 'Inbox list and reading pane', 'done' => true],
-                    ['id' => 2, 'text' => 'Campaign composer', 'done' => true],
-                    ['id' => 3, 'text' => 'Contact import', 'done' => true],
-                    ['id' => 4, 'text' => 'Provider credentials screen', 'done' => false],
-                    ['id' => 5, 'text' => 'Bounce handling', 'done' => false],
-                    ['id' => 6, 'text' => 'Unsubscribe page', 'done' => false],
-                    ['id' => 7, 'text' => 'Sending domain checks', 'done' => false],
-                    ['id' => 8, 'text' => 'Rate limiting', 'done' => false],
-                    ['id' => 9, 'text' => 'Hand-over notes', 'done' => false],
-                ],
-                'attachments' => [
-                    ['name' => 'acme-mail-brief.pdf', 'size' => '1.2 MB', 'added' => '14 Jul 2026', 'icon' => 'ki-document'],
-                    ['name' => 'inbox-wireframe.png', 'size' => '640 KB', 'added' => '18 Jul 2026', 'icon' => 'ki-picture'],
-                    ['name' => 'provider-comparison.csv', 'size' => '8 KB', 'added' => '22 Jul 2026', 'icon' => 'ki-document'],
-                ],
-                'comments' => [
-                    ['author' => 'mina', 'when' => '25 Jul, 14:02', 'body' => 'Acme asked whether campaign stats can be exported. Adding it here so it is not forgotten.'],
-                    ['author' => 'nima', 'when' => '25 Jul, 14:31', 'body' => 'Out of scope for the first release. I will quote it separately.'],
-                    ['author' => 'dan', 'when' => '28 Jul, 08:55', 'body' => 'Provider screen is blocked on the credentials store landing first.'],
-                    ['author' => 'nima', 'when' => '31 Jul, 17:10', 'body' => 'Credentials store merged this morning, so that one is unblocked.'],
-                ],
-            ],
-            6 => [
-                'title' => 'Q3 expense reconciliation',
-                'list' => 'Review',
-                'board' => 'Client Work',
-                'description' => "Match every card payment against a receipt before the quarter closes. Anything without a receipt goes on the personal side.",
-                'labels' => ['finance'],
-                'due' => '2026-08-01',
-                'assignee' => 'mina',
-                'checklist' => [
-                    ['id' => 1, 'text' => 'Export the card statement', 'done' => true],
-                    ['id' => 2, 'text' => 'Match hosting invoices', 'done' => true],
-                    ['id' => 3, 'text' => 'Match software subscriptions', 'done' => true],
-                    ['id' => 4, 'text' => 'Match travel', 'done' => true],
-                    ['id' => 5, 'text' => 'Match equipment', 'done' => true],
-                    ['id' => 6, 'text' => 'Flag anything unmatched', 'done' => true],
-                    ['id' => 7, 'text' => 'File the receipts', 'done' => true],
-                    ['id' => 8, 'text' => 'Hand to the accountant', 'done' => true],
-                ],
-                'attachments' => [
-                    ['name' => 'q3-card-statement.csv', 'size' => '46 KB', 'added' => '31 Jul 2026', 'icon' => 'ki-document'],
-                ],
-                'comments' => [],
-            ],
-            7 => [
-                'title' => 'Register the kargah.dev domain',
-                'list' => 'Done',
-                'board' => 'Client Work',
-                'description' => "Registered for five years with privacy on. Renewal is in the calendar.",
-                'labels' => ['admin'],
-                'due' => '',
-                'assignee' => 'nima',
-                'checklist' => [],
-                'attachments' => [],
-                'comments' => [],
-            ],
-            8 => [
-                'title' => 'Scope the Bluepeak booking widget',
-                'list' => 'Backlog',
-                'board' => 'Client Work',
-                'description' => "Embeddable widget for their existing site. Needs to work without a build step, so plain JS and a single stylesheet.",
-                'labels' => ['dev'],
-                'due' => '',
-                'assignee' => '',
-                'checklist' => [],
-                'attachments' => [
-                    ['name' => 'bluepeak-requirements.docx', 'size' => '92 KB', 'added' => '26 Jul 2026', 'icon' => 'ki-document'],
-                    ['name' => 'current-booking-flow.png', 'size' => '410 KB', 'added' => '26 Jul 2026', 'icon' => 'ki-picture'],
-                ],
-                'comments' => [],
-            ],
-        ];
+        $this->forgetCard();
+
+        $this->dispatch('card-changed');
     }
 
-    /** The open card, or null when the drawer has never been opened. */
-    private function card(): ?array
+    private function reportMissingCard(): void
     {
-        return $this->cards()[$this->cardId] ?? null;
+        $this->open = false;
+        $this->cardId = null;
+
+        $this->toastError('That card is gone', 'It was deleted while the drawer was open.');
+    }
+
+    /** Every checklist item on the card, in order, across every checklist. */
+    private function items(): Collection
+    {
+        $card = $this->card();
+
+        return $card === null ? collect() : $card->checklists->flatMap->items;
+    }
+
+    /** One item, but only if it belongs to the open card. */
+    private function itemOnThisCard(int $itemId): ?ChecklistItem
+    {
+        return $this->items()->firstWhere('id', $itemId);
+    }
+
+    /** The lists the card can be moved to: its own board's, still on the board. */
+    private function listsOnThisBoard(): Collection
+    {
+        $card = $this->card();
+
+        if ($card?->list === null) {
+            return collect();
+        }
+
+        return BoardList::query()
+            ->where('board_id', $card->list->board_id)
+            ->active()
+            ->orderBy('position')
+            ->get();
     }
 
     public function with(): array
     {
         $card = $this->card();
-        $done = count(array_filter($this->checklist, fn (array $item): bool => $item['done']));
-        $total = count($this->checklist);
+        $items = $this->items();
+        $done = $items->where('is_done', true)->count();
+        $total = $items->count();
 
         return [
             'card' => $card,
-            'labels' => $this->labels(),
-            'members' => $this->members(),
+            'labels' => $card?->list?->board?->labels ?? collect(),
+            'cardLabelIds' => $card?->labels->pluck('id')->all() ?? [],
+            'members' => User::query()->orderBy('name')->get(),
+            'lists' => $this->listsOnThisBoard(),
+            'checklist' => $items,
+            'comments' => $card?->comments ?? collect(),
             'checklistDone' => $done,
             'checklistTotal' => $total,
             'checklistPercent' => $total > 0 ? (int) round($done / $total * 100) : 0,
@@ -273,29 +191,46 @@ class extends Component
 
     /* Opening and closing ------------------------------------------------ */
 
-    #[On('open-card')]
-    public function openCard(int $cardId): void
+    /** Fill the editable fields from the row. */
+    private function hydrateFrom(Card $card): void
     {
-        $this->cardId = $cardId;
-        $card = $this->card();
-
-        $this->title = $card['title'] ?? '';
-        $this->description = $card['description'] ?? '';
-        $this->cardLabels = $card['labels'] ?? [];
-        $this->dueDate = $card['due'] ?? '';
-        $this->assignee = $card['assignee'] ?? '';
-        $this->checklist = $card['checklist'] ?? [];
+        $this->cardId = $card->id;
+        $this->title = $card->title;
+        $this->description = (string) $card->description;
+        $this->dueDate = $card->due_on?->toDateString() ?? '';
+        $this->assignee = (string) ($card->members->first()?->id ?? '');
+        $this->moveToList = (string) $card->board_list_id;
 
         $this->editingTitle = false;
         $this->editingDescription = false;
         $this->labelPopoverOpen = false;
         $this->duePopoverOpen = false;
+        $this->movePopoverOpen = false;
         $this->newComment = '';
         $this->newChecklistItem = '';
 
+        $this->resetValidation();
+    }
+
+    #[On('open-card')]
+    public function openCard(int $cardId): void
+    {
+        $this->cardId = $cardId;
+        $this->forgetCard();
+
+        $card = $this->card();
+
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        $this->hydrateFrom($card);
+
         $this->open = true;
 
-        $this->toastSuccess('Card open', $this->title.' is in the drawer on the right.');
+        $this->toastSuccess('Card open', $card->title.' is in the drawer on the right.');
     }
 
     public function close(): void
@@ -305,9 +240,10 @@ class extends Component
         $this->open = false;
         $this->labelPopoverOpen = false;
         $this->duePopoverOpen = false;
+        $this->movePopoverOpen = false;
 
         if ($wasOpen) {
-            $this->toastSuccess('Card closed', 'Nothing you typed was saved.');
+            $this->toastSuccess('Card closed', 'Anything still open in an editor was not saved.');
         }
     }
 
@@ -325,7 +261,8 @@ class extends Component
         $wasEditing = $this->editingTitle;
 
         $this->editingTitle = false;
-        $this->title = $this->card()['title'] ?? '';
+        $this->title = $this->card()?->title ?? '';
+        $this->resetValidation('title');
 
         if ($wasEditing) {
             $this->toastSuccess('Rename abandoned', 'The card kept its old title.');
@@ -337,10 +274,22 @@ class extends Component
     {
         $this->validateOnly('title');
 
-        // Backend: persist the new title, then close the editor.
+        $card = $this->card();
+
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        $card->update(['title' => trim($this->title)]);
+
+        $this->title = $card->title;
         $this->editingTitle = false;
 
-        $this->toastInfo('Not connected yet', 'The new title goes back on the next refresh.');
+        $this->cardChanged();
+
+        $this->toastSuccess('Card renamed', 'It reads '.$card->title.' everywhere now.');
     }
 
     public function editDescription(): void
@@ -355,20 +304,40 @@ class extends Component
         $wasEditing = $this->editingDescription;
 
         $this->editingDescription = false;
-        $this->description = $this->card()['description'] ?? '';
+        $this->description = (string) ($this->card()?->description ?? '');
 
         if ($wasEditing) {
             $this->toastSuccess('Edit abandoned', 'The card kept its old description.');
         }
     }
 
-    /** Store the description. */
+    /**
+     * Store the description.
+     *
+     * No `card-changed`: the description is not drawn on the card face, so
+     * redrawing the canvas for it would send every card back for nothing.
+     */
     public function saveDescription(): void
     {
-        // Backend: persist the description as written, markdown included.
+        $card = $this->card();
+
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        $card->update(['description' => $this->description === '' ? null : $this->description]);
+
+        $this->description = (string) $card->description;
         $this->editingDescription = false;
 
-        $this->toastInfo('Not connected yet', 'The description goes back on the next refresh.');
+        $this->forgetCard();
+
+        $this->toastSuccess(
+            trim($this->description) === '' ? 'Description cleared' : 'Description saved',
+            'Markdown was kept exactly as you wrote it.',
+        );
     }
 
     /* Labels, due date, assignee ----------------------------------------- */
@@ -377,25 +346,55 @@ class extends Component
     {
         $this->labelPopoverOpen = ! $this->labelPopoverOpen;
         $this->duePopoverOpen = false;
+        $this->movePopoverOpen = false;
 
         $this->labelPopoverOpen
             ? $this->toastSuccess('Label picker open', 'Tick the labels this card should carry.')
             : $this->toastSuccess('Label picker closed');
     }
 
-    /** Add or remove a label on this card. */
-    public function toggleLabel(string $key): void
+    /** Add or remove one of the board's labels on this card. */
+    public function toggleLabel(int $labelId): void
     {
-        $this->cardLabels = in_array($key, $this->cardLabels, true)
-            ? array_values(array_diff($this->cardLabels, [$key]))
-            : [...$this->cardLabels, $key];
+        $card = $this->card();
 
-        // Backend: persist the card's labels.
-        $name = $this->labels()[$key]['name'] ?? $key;
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        $label = $card->list?->board?->labels->firstWhere('id', $labelId);
+
+        if ($label === null) {
+            $this->toastError('That label is not on this board', 'Reload the page and try again.');
+
+            return;
+        }
+
+        $wasOn = $card->labels->contains('id', $label->id);
+
+        $wasOn
+            ? $card->labels()->detach($label->id)
+            : $card->labels()->attach($label->id);
+
+        // A pivot change is invisible to the model's own attribute log, so it
+        // is written by hand. Every board action reaches the feed or none of
+        // them can be trusted to.
+        activity('card')
+            ->performedOn($card)
+            ->causedBy(auth()->user())
+            ->event($wasOn ? 'card.label_removed' : 'card.label_added')
+            ->withProperties(['label' => $label->name])
+            ->log($wasOn ? 'lost the label '.$label->name : 'gained the label '.$label->name);
+
+        $this->cardChanged();
 
         $this->toastSuccess(
-            in_array($key, $this->cardLabels, true) ? $name.' put on the card' : $name.' taken off the card',
-            'On screen only — labels are stored with the backend phase.',
+            $wasOn ? $label->name.' taken off the card' : $label->name.' put on the card',
+            $wasOn
+                ? 'It no longer shows on the front of the card.'
+                : 'It shows on the front of the card and in the board filter.',
         );
     }
 
@@ -403,110 +402,444 @@ class extends Component
     {
         $this->duePopoverOpen = ! $this->duePopoverOpen;
         $this->labelPopoverOpen = false;
+        $this->movePopoverOpen = false;
 
         $this->duePopoverOpen
             ? $this->toastSuccess('Due date picker open', 'Pick a date, or remove the one already set.')
             : $this->toastSuccess('Due date picker closed');
     }
 
-    /** Set the due date. */
+    /**
+     * Set the due date.
+     *
+     * `cards.due_on` is a date, not an instant: a card due on 31 July is due on
+     * 31 July wherever it is read, so only the day is stored.
+     */
     public function saveDueDate(): void
     {
-        // Backend: persist the due date and schedule the reminder.
+        $card = $this->card();
+
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        $typed = trim($this->dueDate);
+
+        if ($typed === '') {
+            $this->toastError('No date was picked', 'Choose a day, or use remove to clear the one already set.');
+
+            return;
+        }
+
+        try {
+            $due = Carbon::parse($typed)->startOfDay();
+        } catch (\Throwable) {
+            $this->toastError('That date could not be read', 'Use the picker rather than typing the day in.');
+
+            return;
+        }
+
+        $card->update(['due_on' => $due->toDateString()]);
+
+        $this->dueDate = $due->toDateString();
         $this->duePopoverOpen = false;
 
-        $this->toastInfo('Not connected yet', 'Due dates and their reminders land with the backend phase.');
+        $this->cardChanged();
+
+        $this->toastSuccess('Due date set', $card->title.' is due on '.$due->format('j M Y').'.');
     }
 
     public function clearDueDate(): void
     {
-        $this->dueDate = '';
+        $card = $this->card();
 
-        // Backend: clear the due date and cancel the reminder.
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        $card->update(['due_on' => null]);
+
+        $this->dueDate = '';
         $this->duePopoverOpen = false;
 
-        $this->toastSuccess('Due date removed', 'On screen only — it returns on the next refresh.');
+        $this->cardChanged();
+
+        $this->toastSuccess('Due date removed', $card->title.' is no longer counted as due.');
     }
 
-    /** Fired when the assignee select changes; empty means unassigned. */
-    public function updatedAssignee(string $memberKey): void
+    /**
+     * Fired when the assignee select changes; empty means unassigned.
+     *
+     * The schema models members as a pivot, but the drawer offers one assignee,
+     * so setting it replaces whoever was on the card rather than adding to them.
+     */
+    public function updatedAssignee(string $value): void
     {
-        // Backend: persist the assignment and notify the member.
-        $this->toastInfo('Not connected yet', 'Nobody is notified until the backend phase lands.');
+        $card = $this->card();
+
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        if (trim($value) === '') {
+            $card->members()->sync([]);
+
+            $this->cardChanged();
+
+            $this->toastSuccess('Card unassigned', 'Nobody is carrying '.$card->title.'.');
+
+            return;
+        }
+
+        $user = User::query()->find((int) $value);
+
+        if ($user === null) {
+            $this->assignee = (string) ($card->members->first()?->id ?? '');
+
+            $this->toastError('That person could not be found', 'Reload the page and try again.');
+
+            return;
+        }
+
+        $card->members()->sync([$user->id]);
+
+        $this->assignee = (string) $user->id;
+
+        $this->cardChanged();
+
+        $this->toastSuccess('Card assigned', $user->name.' is carrying '.$card->title.'.');
     }
 
     /* Checklist ----------------------------------------------------------- */
 
     public function toggleChecklistItem(int $itemId): void
     {
-        $done = false;
+        $item = $this->itemOnThisCard($itemId);
 
-        foreach ($this->checklist as $index => $item) {
-            if ($item['id'] === $itemId) {
-                $this->checklist[$index]['done'] = ! $item['done'];
-                $done = $this->checklist[$index]['done'];
-            }
+        if ($item === null) {
+            $this->toastError('That item is gone', 'It was deleted while the drawer was open.');
+            $this->forgetCard();
+
+            return;
         }
 
-        // Backend: persist the tick.
+        $done = ! $item->is_done;
+
+        $item->update([
+            'is_done' => $done,
+            'completed_at' => $done ? now() : null,
+        ]);
+
+        $this->cardChanged();
+
         $this->toastSuccess(
             $done ? 'Item ticked' : 'Item unticked',
-            'On screen only — ticks are stored with the backend phase.',
+            $item->text,
         );
     }
 
-    /** Append an item to the checklist. */
+    /**
+     * Append an item to the checklist.
+     *
+     * A card that has never had one gets a checklist created here rather than
+     * on every card up front, and the item takes the position after the last —
+     * never a raw float.
+     */
     public function addChecklistItem(): void
     {
-        // Backend: persist the item, then clear $newChecklistItem.
-        $this->toastInfo('Not connected yet', 'Checklist items land with the backend phase.');
+        $card = $this->card();
+
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        $text = trim($this->newChecklistItem);
+
+        if ($text === '') {
+            $this->toastError('The item needs some text', 'Type what has to be done, then add it.');
+
+            return;
+        }
+
+        $checklist = $card->checklists->first() ?? Checklist::query()->create([
+            'card_id' => $card->id,
+            'name' => 'Checklist',
+            'position' => Position::after(null),
+        ]);
+
+        $last = ChecklistItem::query()
+            ->where('checklist_id', $checklist->id)
+            ->orderByDesc('position')
+            ->value('position');
+
+        ChecklistItem::query()->create([
+            'checklist_id' => $checklist->id,
+            'text' => $text,
+            'is_done' => false,
+            'position' => Position::after($last === null ? null : Position::format((string) $last)),
+            'created_by' => auth()->id(),
+        ]);
+
+        // Adding one item usually means adding three, so the box empties and
+        // keeps the focus rather than closing anything.
+        $this->newChecklistItem = '';
+
+        $this->cardChanged();
+
+        $this->toastSuccess('Item added', $text.' is at the bottom of the checklist.');
     }
 
     public function deleteChecklistItem(int $itemId): void
     {
-        // Backend: delete the item.
-        $this->toastInfo('Not connected yet', 'Checklist items land with the backend phase.');
+        $item = $this->itemOnThisCard($itemId);
+
+        if ($item === null) {
+            $this->toastError('That item is gone', 'It was deleted while the drawer was open.');
+            $this->forgetCard();
+
+            return;
+        }
+
+        $text = $item->text;
+
+        $item->delete();
+
+        $this->cardChanged();
+
+        $this->toastSuccess('Item deleted', $text.' is off the checklist.');
     }
 
     /* Attachments and comments -------------------------------------------- */
 
+    /**
+     * There is no attachments table yet.
+     *
+     * Files land with the Data module, which owns the disk, the size accounting
+     * and the download route. Until then the section renders its empty state
+     * and this says so rather than pretending to delete a row.
+     */
     public function removeAttachment(string $name): void
     {
-        // Backend: delete the file from the disk and the row from the card.
-        $this->toastInfo('Not connected yet', $name.' stays on the card until the backend phase lands.');
+        $this->toastInfo('Not connected yet', 'File attachments arrive with the Data module.');
     }
 
     /** Post a comment on the card. */
     public function addComment(): void
     {
-        // Backend: persist the comment, then clear $newComment.
-        $this->toastInfo('Not connected yet', 'Comments are posted once the backend phase lands.');
+        $card = $this->card();
+
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        $body = trim($this->newComment);
+
+        if ($body === '') {
+            $this->toastError('The comment is empty', 'Write something before posting it.');
+
+            return;
+        }
+
+        CardComment::query()->create([
+            'card_id' => $card->id,
+            'created_by' => auth()->id(),
+            'body' => $body,
+        ]);
+
+        activity('card')
+            ->performedOn($card)
+            ->causedBy(auth()->user())
+            ->event('card.commented')
+            ->log('was commented on');
+
+        $this->newComment = '';
+
+        $this->cardChanged();
+
+        $this->toastSuccess('Comment posted', 'It is at the bottom of the thread on '.$card->title.'.');
     }
 
     /* Right rail actions --------------------------------------------------- */
 
+    public function toggleMovePopover(): void
+    {
+        $this->movePopoverOpen = ! $this->movePopoverOpen;
+        $this->labelPopoverOpen = false;
+        $this->duePopoverOpen = false;
+
+        if ($this->movePopoverOpen) {
+            $this->moveToList = (string) ($this->card()?->board_list_id ?? '');
+
+            $this->toastSuccess('Move picker open', 'Pick the list this card belongs in.');
+
+            return;
+        }
+
+        $this->toastSuccess('Move picker closed');
+    }
+
+    /** Move the card to another list on the same board. */
     public function moveCard(): void
     {
-        // Backend: move the card to another list or board.
-        $this->toastInfo('Not connected yet', 'Moving a card from here lands with the backend phase.');
+        $card = $this->card();
+
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        $target = $this->listsOnThisBoard()->firstWhere('id', (int) $this->moveToList);
+
+        if ($target === null) {
+            $this->toastError('That list is not on this board', 'Reload the page and try the move again.');
+
+            return;
+        }
+
+        if ($target->id === $card->board_list_id) {
+            $this->movePopoverOpen = false;
+
+            $this->toastSuccess('Nothing to move', $card->title.' is already in '.$target->name.'.');
+
+            return;
+        }
+
+        // The bottom of the target list, counted rather than guessed: the
+        // service brackets the index by real positions on either side.
+        $below = Card::query()
+            ->where('board_list_id', $target->id)
+            ->where('id', '!=', $card->id)
+            ->active()
+            ->count();
+
+        app(CardService::class)->move($card, $target, $below);
+
+        $this->movePopoverOpen = false;
+
+        $this->cardChanged();
+
+        $this->toastSuccess('Card moved', $card->title.' is at the bottom of '.$target->name.'.');
     }
 
+    /** Duplicate the card, its labels and its checklist into the same list. */
     public function copyCard(): void
     {
-        // Backend: duplicate the card, its labels and its checklist.
-        $this->toastInfo('Not connected yet', 'Copying a card lands with the backend phase.');
+        $card = $this->card();
+
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        $list = $card->list;
+
+        if ($list === null) {
+            $this->toastError('That card has no list', 'Reload the page and try again.');
+
+            return;
+        }
+
+        // `cards.title` is 255, so the suffix has to be made room for rather
+        // than appended to whatever is already there.
+        $copy = app(CardService::class)->append($list, mb_substr($card->title, 0, 240).' (copy)', [
+            'description' => $card->description,
+            'due_on' => $card->due_on?->toDateString(),
+        ]);
+
+        $copy->labels()->sync($card->labels->pluck('id')->all());
+
+        foreach ($card->checklists as $checklist) {
+            $copied = Checklist::query()->create([
+                'card_id' => $copy->id,
+                'name' => $checklist->name,
+                'position' => Position::format((string) $checklist->position),
+            ]);
+
+            foreach ($checklist->items as $item) {
+                ChecklistItem::query()->create([
+                    'checklist_id' => $copied->id,
+                    'text' => $item->text,
+                    'is_done' => $item->is_done,
+                    'position' => Position::format((string) $item->position),
+                    'completed_at' => $item->completed_at,
+                    'created_by' => auth()->id(),
+                ]);
+            }
+        }
+
+        // The drawer follows the copy: it is the card the user now wants to
+        // edit, and the original is one click away on the board behind it.
+        $this->cardId = $copy->id;
+        $this->forgetCard();
+
+        $fresh = $this->card();
+
+        if ($fresh !== null) {
+            $this->hydrateFrom($fresh);
+        }
+
+        $this->cardChanged();
+
+        $this->toastSuccess('Card copied', 'The copy is at the bottom of '.$list->name.', and the drawer is on it.');
     }
 
+    /** Archive the card. Nothing is deleted — the archive can put it back. */
     public function archiveCard(): void
     {
-        // Backend: archive the card so it leaves the board but stays readable.
-        $this->toastInfo('Not connected yet', 'Archiving a card lands with the backend phase.');
+        $card = $this->card();
+
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        app(CardService::class)->archive($card);
+
+        $title = $card->title;
+
+        $this->open = false;
+        $this->movePopoverOpen = false;
+
+        $this->cardChanged();
+
+        $this->toastSuccess($title.' archived', 'It left the board and can be restored from the archive.');
     }
 
+    /** Soft-delete the card, so the row survives for anything pointing at it. */
     public function deleteCard(): void
     {
-        // Backend: delete the card and everything attached to it.
-        $this->toastInfo('Not connected yet', 'Deleting a card lands with the backend phase.');
+        $card = $this->card();
+
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        $title = $card->title;
+
+        $card->delete();
+
+        $this->open = false;
+        $this->movePopoverOpen = false;
+        $this->cardId = null;
+
+        $this->cardChanged();
+
+        $this->toastSuccess($title.' deleted', 'It is off the board, and nothing else moved.');
     }
 };
 
@@ -548,11 +881,11 @@ class extends Component
                         <button wire:click="editTitle"
                                 class="text-start w-full rounded-md px-1 -mx-1 hover:bg-accent/60"
                                 title="Rename this card">
-                            <h2 class="text-lg font-semibold text-mono leading-snug">{{ $title }}</h2>
+                            <h2 class="text-lg font-semibold text-mono leading-snug">{{ $card->title }}</h2>
                         </button>
                         <p class="text-xs text-muted-foreground mt-1">
-                            In list <span class="text-secondary-foreground">{{ $card['list'] }}</span>
-                            on <span class="text-secondary-foreground">{{ $card['board'] }}</span>
+                            In list <span class="text-secondary-foreground">{{ $card->list?->name ?? '—' }}</span>
+                            on <span class="text-secondary-foreground">{{ $card->list?->board?->name ?? '—' }}</span>
                         </p>
                     @endif
                 </div>
@@ -576,8 +909,8 @@ class extends Component
                             <div class="flex flex-col gap-2">
                                 <span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Labels</span>
                                 <div class="flex flex-wrap items-center gap-1.5">
-                                    @forelse ($cardLabels as $key)
-                                        <span class="text-xs font-medium px-2 py-1 rounded {{ $labels[$key]['chip'] }}">{{ $labels[$key]['name'] }}</span>
+                                    @forelse ($card->labels as $label)
+                                        <span class="text-xs font-medium px-2 py-1 rounded {{ $label->chipClass() }}">{{ $label->name }}</span>
                                     @empty
                                         <span class="text-sm text-muted-foreground">None yet</span>
                                     @endforelse
@@ -598,23 +931,27 @@ class extends Component
                                                 </button>
                                             </div>
                                             <div class="p-2 flex flex-col gap-1">
-                                                @foreach ($labels as $key => $label)
-                                                    <button wire:click="toggleLabel('{{ $key }}')"
+                                                @forelse ($labels as $label)
+                                                    <button wire:click="toggleLabel({{ $label->id }})" wire:key="label-{{ $label->id }}"
                                                             class="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-start hover:bg-accent/60">
-                                                        <span class="size-3 rounded-sm {{ $label['dot'] }}"></span>
-                                                        <span class="grow text-secondary-foreground">{{ $label['name'] }}</span>
-                                                        @if (in_array($key, $cardLabels, true))
+                                                        <span class="size-3 rounded-sm {{ $label->dotClass() }}"></span>
+                                                        <span class="grow text-secondary-foreground">{{ $label->name }}</span>
+                                                        @if (in_array($label->id, $cardLabelIds, true))
                                                             <i class="ki-filled ki-check text-sm text-primary"></i>
                                                         @endif
                                                     </button>
-                                                @endforeach
+                                                @empty
+                                                    <p class="text-xs text-muted-foreground px-2 py-3 text-center">This board has no labels yet.</p>
+                                                @endforelse
                                             </div>
-                                            <div class="border-t border-border p-2">
-                                                <a href="{{ route('projects.board-settings', ['board' => 'client-work']) }}" wire:navigate
-                                                   class="kt-btn kt-btn-ghost kt-btn-sm justify-start gap-2 w-full">
-                                                    <i class="ki-filled ki-setting-2 text-sm"></i> Manage board labels
-                                                </a>
-                                            </div>
+                                            @if ($card->list?->board)
+                                                <div class="border-t border-border p-2">
+                                                    <a href="{{ route('projects.board-settings', ['board' => $card->list->board->slug]) }}" wire:navigate
+                                                       class="kt-btn kt-btn-ghost kt-btn-sm justify-start gap-2 w-full">
+                                                        <i class="ki-filled ki-setting-2 text-sm"></i> Manage board labels
+                                                    </a>
+                                                </div>
+                                            @endif
                                         </div>
                                     </div>
                                 </div>
@@ -626,7 +963,7 @@ class extends Component
                                     <button wire:click="toggleDuePopover" class="kt-btn kt-btn-outline kt-btn-sm gap-2"
                                             aria-expanded="{{ $duePopoverOpen ? 'true' : 'false' }}">
                                         <i class="ki-filled ki-calendar text-sm"></i>
-                                        {{ $dueDate !== '' ? $dueDate : 'No due date' }}
+                                        {{ $card->due_on ? $card->due_on->format('j M Y') : 'No due date' }}
                                     </button>
 
                                     <div class="kt-dropdown absolute z-20 mt-1 start-0 w-[240px] p-4 flex flex-col gap-3 {{ $duePopoverOpen ? 'open' : '' }}">
@@ -647,9 +984,11 @@ class extends Component
                             <div class="flex flex-col gap-2">
                                 <span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Assignee</span>
                                 <div class="flex items-center gap-2">
-                                    @if ($assignee !== '' && isset($members[$assignee]))
-                                        <span class="size-7 rounded-full grid place-items-center text-[11px] font-semibold {{ $members[$assignee]['tone'] }}">
-                                            {{ $members[$assignee]['initials'] }}
+                                    @php($holder = $card->members->first())
+                                    @if ($holder)
+                                        <span class="size-7 rounded-full grid place-items-center text-[11px] font-semibold bg-primary/15 text-primary"
+                                              title="{{ $holder->name }}">
+                                            {{ $holder->initials() }}
                                         </span>
                                     @else
                                         <span class="size-7 rounded-full grid place-items-center bg-muted text-muted-foreground">
@@ -658,8 +997,8 @@ class extends Component
                                     @endif
                                     <select class="kt-select max-w-[190px]" aria-label="Assignee" wire:model.live="assignee">
                                         <option value="">Unassigned</option>
-                                        @foreach ($members as $key => $member)
-                                            <option value="{{ $key }}">{{ $member['name'] }}</option>
+                                        @foreach ($members as $member)
+                                            <option value="{{ $member->id }}">{{ $member->name }}</option>
                                         @endforeach
                                     </select>
                                 </div>
@@ -702,8 +1041,8 @@ class extends Component
                             @else
                                 <button wire:click="editDescription"
                                         class="text-start rounded-lg border border-border bg-muted/30 px-4 py-3 hover:border-primary/40 transition-colors">
-                                    @if (trim($description) !== '')
-                                        <div class="text-sm text-secondary-foreground whitespace-pre-line leading-relaxed">{{ $description }}</div>
+                                    @if (trim((string) $card->description) !== '')
+                                        <div class="text-sm text-secondary-foreground whitespace-pre-line leading-relaxed">{{ $card->description }}</div>
                                     @else
                                         <span class="text-sm text-muted-foreground">Add a more detailed description…</span>
                                     @endif
@@ -733,16 +1072,16 @@ class extends Component
 
                             <div class="flex flex-col gap-1">
                                 @forelse ($checklist as $item)
-                                    <div class="group flex items-start gap-2.5 rounded-md px-2 py-1.5 hover:bg-accent/60" wire:key="check-{{ $item['id'] }}">
+                                    <div class="group flex items-start gap-2.5 rounded-md px-2 py-1.5 hover:bg-accent/60" wire:key="check-{{ $item->id }}">
                                         <input type="checkbox" class="kt-checkbox mt-0.5"
-                                               id="check-{{ $item['id'] }}"
-                                               wire:click="toggleChecklistItem({{ $item['id'] }})"
-                                               @checked($item['done'])>
-                                        <label for="check-{{ $item['id'] }}"
-                                               class="grow text-sm cursor-pointer {{ $item['done'] ? 'text-muted-foreground line-through' : 'text-secondary-foreground' }}">
-                                            {{ $item['text'] }}
+                                               id="check-{{ $item->id }}"
+                                               wire:click="toggleChecklistItem({{ $item->id }})"
+                                               @checked($item->is_done)>
+                                        <label for="check-{{ $item->id }}"
+                                               class="grow text-sm cursor-pointer {{ $item->is_done ? 'text-muted-foreground line-through' : 'text-secondary-foreground' }}">
+                                            {{ $item->text }}
                                         </label>
-                                        <button wire:click="deleteChecklistItem({{ $item['id'] }})"
+                                        <button wire:click="deleteChecklistItem({{ $item->id }})"
                                                 class="kt-btn kt-btn-icon kt-btn-ghost size-6 shrink-0"
                                                 title="Delete item" aria-label="Delete checklist item">
                                             <i class="ki-filled ki-trash text-xs"></i>
@@ -766,42 +1105,22 @@ class extends Component
                             </div>
                         </div>
 
-                        {{-- Attachments --}}
+                        {{--
+                            Attachments. There is no attachments table yet: files
+                            land with the Data module, which owns the disk and the
+                            download route. The empty state is the honest render.
+                        --}}
                         <div class="flex flex-col gap-3">
-                            <div class="flex items-center justify-between gap-2">
-                                <div class="flex items-center gap-2">
-                                    <i class="ki-filled ki-paper-clip text-sm text-muted-foreground"></i>
-                                    <h3 class="text-sm font-semibold text-mono">Attachments</h3>
-                                </div>
-                                <button class="kt-btn kt-btn-sm kt-btn-ghost gap-1">
-                                    <i class="ki-filled ki-cloud-add text-sm"></i> Add
-                                </button>
+                            <div class="flex items-center gap-2">
+                                <i class="ki-filled ki-paper-clip text-sm text-muted-foreground"></i>
+                                <h3 class="text-sm font-semibold text-mono">Attachments</h3>
                             </div>
 
-                            @forelse ($card['attachments'] as $file)
-                                <div class="flex items-center gap-3 rounded-lg border border-border px-3 py-2">
-                                    <span class="size-9 rounded-md grid place-items-center bg-muted">
-                                        <i class="ki-filled {{ $file['icon'] }} text-base text-muted-foreground"></i>
-                                    </span>
-                                    <div class="min-w-0 grow">
-                                        <div class="text-sm text-mono truncate">{{ $file['name'] }}</div>
-                                        <div class="text-xs text-muted-foreground">{{ $file['size'] }} · added {{ $file['added'] }}</div>
-                                    </div>
-                                    <button class="kt-btn kt-btn-icon kt-btn-ghost size-7" title="Download" aria-label="Download attachment">
-                                        <i class="ki-filled ki-exit-down text-sm"></i>
-                                    </button>
-                                    <button wire:click="removeAttachment('{{ $file['name'] }}')"
-                                            class="kt-btn kt-btn-icon kt-btn-ghost size-7 text-destructive"
-                                            title="Remove" aria-label="Remove attachment">
-                                        <i class="ki-filled ki-trash text-sm"></i>
-                                    </button>
-                                </div>
-                            @empty
-                                <div class="rounded-lg border border-dashed border-border px-4 py-6 text-center">
-                                    <i class="ki-filled ki-cloud-add text-2xl text-muted-foreground"></i>
-                                    <p class="text-sm text-muted-foreground mt-2">Nothing attached to this card yet.</p>
-                                </div>
-                            @endforelse
+                            <div class="rounded-lg border border-dashed border-border px-4 py-6 text-center">
+                                <i class="ki-filled ki-cloud-add text-2xl text-muted-foreground"></i>
+                                <p class="text-sm text-muted-foreground mt-2">Nothing can be attached yet.</p>
+                                <p class="text-xs text-muted-foreground mt-1">File attachments arrive with the Data module.</p>
+                            </div>
                         </div>
 
                         {{-- Comments --}}
@@ -811,18 +1130,18 @@ class extends Component
                                 <h3 class="text-sm font-semibold text-mono">Activity</h3>
                             </div>
 
-                            @forelse ($card['comments'] as $comment)
-                                <div class="flex items-start gap-3">
-                                    <span class="size-8 rounded-full grid place-items-center text-[11px] font-semibold shrink-0 {{ $members[$comment['author']]['tone'] }}">
-                                        {{ $members[$comment['author']]['initials'] }}
+                            @forelse ($comments as $comment)
+                                <div class="flex items-start gap-3" wire:key="comment-{{ $comment->id }}">
+                                    <span class="size-8 rounded-full grid place-items-center text-[11px] font-semibold shrink-0 bg-primary/15 text-primary">
+                                        {{ $comment->author?->initials() ?? '—' }}
                                     </span>
                                     <div class="min-w-0 grow">
                                         <div class="flex items-baseline gap-2">
-                                            <span class="text-sm font-medium text-mono">{{ $members[$comment['author']]['name'] }}</span>
-                                            <span class="text-xs text-muted-foreground">{{ $comment['when'] }}</span>
+                                            <span class="text-sm font-medium text-mono">{{ $comment->author?->name ?? 'Someone no longer here' }}</span>
+                                            <span class="text-xs text-muted-foreground">{{ $comment->created_at?->format('j M, H:i') }}</span>
                                         </div>
-                                        <p class="text-sm text-secondary-foreground mt-1 rounded-lg bg-muted/40 border border-border px-3 py-2">
-                                            {{ $comment['body'] }}
+                                        <p class="text-sm text-secondary-foreground mt-1 rounded-lg bg-muted/40 border border-border px-3 py-2 whitespace-pre-line">
+                                            {{ $comment->body }}
                                         </p>
                                     </div>
                                 </div>
@@ -836,11 +1155,39 @@ class extends Component
                     <aside class="flex flex-col gap-2" aria-label="Card actions">
                         <span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Actions</span>
 
-                        <button wire:click="moveCard" class="kt-btn kt-btn-outline justify-start gap-2 w-full">
-                            <i class="ki-filled ki-arrow-right text-sm"></i> Move
-                        </button>
-                        <button wire:click="copyCard" class="kt-btn kt-btn-outline justify-start gap-2 w-full">
-                            <i class="ki-filled ki-copy text-sm"></i> Copy
+                        <div class="relative">
+                            <button wire:click="toggleMovePopover" class="kt-btn kt-btn-outline justify-start gap-2 w-full"
+                                    aria-expanded="{{ $movePopoverOpen ? 'true' : 'false' }}">
+                                <i class="ki-filled ki-arrow-right text-sm"></i> Move
+                            </button>
+
+                            <div class="kt-dropdown absolute z-20 mt-1 end-0 w-[240px] p-4 flex flex-col gap-3 {{ $movePopoverOpen ? 'open' : '' }}">
+                                <label class="kt-form-label text-xs" for="card-move-list">Move to list</label>
+                                <select id="card-move-list" class="kt-select" wire:model="moveToList">
+                                    @foreach ($lists as $option)
+                                        <option value="{{ $option->id }}">{{ $option->name }}</option>
+                                    @endforeach
+                                </select>
+                                <p class="text-[11px] text-muted-foreground">The card goes to the bottom of that list.</p>
+                                <div class="flex items-center gap-2">
+                                    <button wire:click="moveCard" wire:loading.attr="disabled" wire:target="moveCard"
+                                            class="kt-btn kt-btn-sm kt-btn-primary">
+                                        <span wire:loading.remove wire:target="moveCard">Move</span>
+                                        <span wire:loading wire:target="moveCard"><i class="ki-filled ki-loading animate-spin"></i> Moving…</span>
+                                    </button>
+                                    <button wire:click="toggleMovePopover" class="kt-btn kt-btn-sm kt-btn-ghost">Cancel</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <button wire:click="copyCard" wire:loading.attr="disabled" wire:target="copyCard"
+                                class="kt-btn kt-btn-outline justify-start gap-2 w-full">
+                            <span wire:loading.remove wire:target="copyCard" class="inline-flex items-center gap-2">
+                                <i class="ki-filled ki-copy text-sm"></i> Copy
+                            </span>
+                            <span wire:loading wire:target="copyCard" class="inline-flex items-center gap-2">
+                                <i class="ki-filled ki-loading animate-spin"></i> Copying…
+                            </span>
                         </button>
                         <button wire:click="archiveCard" wire:loading.attr="disabled" wire:target="archiveCard"
                                 class="kt-btn kt-btn-outline justify-start gap-2 w-full">
@@ -862,7 +1209,7 @@ class extends Component
                         </button>
 
                         <p class="text-[11px] text-muted-foreground mt-2 leading-relaxed">
-                            Archiving keeps the card readable from the archive. Deleting cannot be undone.
+                            Archiving keeps the card readable from the archive. Deleting takes it off the board for good.
                         </p>
                     </aside>
                 </div>
@@ -871,7 +1218,9 @@ class extends Component
             {{-- Comment composer --}}
             <div class="border-t border-border px-5 py-4">
                 <div class="flex items-start gap-3">
-                    <span class="size-8 rounded-full grid place-items-center text-[11px] font-semibold shrink-0 bg-primary/15 text-primary">NF</span>
+                    <span class="size-8 rounded-full grid place-items-center text-[11px] font-semibold shrink-0 bg-primary/15 text-primary">
+                        {{ auth()->user()?->initials() ?? '—' }}
+                    </span>
                     <div class="grow flex flex-col gap-2">
                         <textarea rows="2" class="kt-textarea" placeholder="Write a comment…"
                                   aria-label="New comment" wire:model="newComment"></textarea>
@@ -881,7 +1230,7 @@ class extends Component
                                 <span wire:loading.remove wire:target="addComment">Comment</span>
                                 <span wire:loading wire:target="addComment"><i class="ki-filled ki-loading animate-spin"></i> Posting…</span>
                             </button>
-                            <span class="text-[11px] text-muted-foreground">Everyone on the board is notified.</span>
+                            <span class="text-[11px] text-muted-foreground">It is posted as you, and stays on the card.</span>
                         </div>
                     </div>
                 </div>
