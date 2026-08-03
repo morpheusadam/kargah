@@ -123,8 +123,6 @@ class extends Component
         $this->reset('file', 'mapping', 'consentConfirmed');
 
         $this->step = 1;
-
-        $this->toastSuccess('File removed', 'Nothing was imported. Pick another CSV when you are ready.');
     }
 
     /**

@@ -355,11 +355,6 @@ class extends Component
         $this->category = $expense->category ?: $this->category;
         $this->currency = $expense->currency;
         $this->amount = $this->displayAmount((string) $expense->amount, $expense->currency);
-
-        $this->toastSuccess(
-            'Copied from '.$expense->spent_on->format('d M Y'),
-            $expense->vendor.', '.$expense->formattedAmount().'. Change the date and amount if this month differs.',
-        );
     }
 };
 

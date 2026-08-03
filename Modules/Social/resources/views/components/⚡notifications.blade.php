@@ -112,11 +112,6 @@ class extends Component
         $this->unreadOnly = ! $this->unreadOnly;
 
         $this->forget();
-
-        $this->toastSuccess(
-            $this->unreadOnly ? 'Showing unread only' : 'Showing everything',
-            $this->visible()->count().' in the feed.',
-        );
     }
 
     /** Mark one row read, or unread again if it was already. */

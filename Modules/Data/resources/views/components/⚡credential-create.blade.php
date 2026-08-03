@@ -111,13 +111,9 @@ class extends Component
             $this->avoidAmbiguous,
         );
 
+        // The secret lands in the field, revealed, with the strength meter under
+        // it. That is the whole result, so there is nothing left to announce.
         $this->secretRevealed = true;
-
-        // Length only — the generated value never goes into a toast.
-        $this->toastSuccess(
-            'Secret generated',
-            mb_strlen($this->secret).' characters, visible in the field. Nothing is stored until you save.'
-        );
     }
 
     public function save(): void

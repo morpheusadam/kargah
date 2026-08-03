@@ -132,17 +132,17 @@ class extends Component
         if (! in_array($accountId, $this->targetIds(), true)) {
             unset($this->overrides[$accountId]);
 
-            $this->toastSuccess($account->label().' removed', 'It is no longer a target for this post.');
-
             return;
         }
 
-        $account->isConnected()
-            ? $this->toastSuccess($account->label().' added', 'It is now a target for this post.')
-            : $this->toastWarning(
+        // Selecting is visible in the list and in the previews; the only thing
+        // worth saying is what the tick does not show.
+        if (! $account->isConnected()) {
+            $this->toastWarning(
                 $account->label().' credentials are not configured',
                 'It will be recorded as a failed target rather than published to.',
             );
+        }
     }
 
     /** Fork this account's copy off the shared text, or fold it back in. */
@@ -157,14 +157,10 @@ class extends Component
         if ($this->isOverridden($accountId)) {
             unset($this->overrides[$accountId]);
 
-            $this->toastSuccess($account->label().' follows the shared text again', 'Its own copy was discarded.');
-
             return;
         }
 
         $this->overrides[$accountId] = $this->body;
-
-        $this->toastSuccess($account->label().' now has its own copy', 'Editing it leaves the other networks alone.');
     }
 
     /** Cut the overridden copy down to whatever this network allows. */
@@ -177,22 +173,9 @@ class extends Component
         }
 
         $limit = $account->characterLimit();
-        $before = mb_strlen($this->textFor($accountId));
 
+        // The textarea and its counter show the result, so nothing is said.
         $this->overrides[$accountId] = rtrim(mb_substr($this->textFor($accountId), 0, $limit));
-
-        $cut = $before - mb_strlen($this->overrides[$accountId]);
-
-        if ($cut < 1) {
-            $this->toastSuccess($account->label().' copy already fits', 'Nothing needed trimming.');
-
-            return;
-        }
-
-        $this->toastSuccess(
-            'Trimmed '.number_format($cut).' '.($cut === 1 ? 'character' : 'characters'),
-            $account->label().' copy now fits its '.number_format($limit).'-character limit.',
-        );
     }
 
     /**

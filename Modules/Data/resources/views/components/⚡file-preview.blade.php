@@ -53,15 +53,13 @@ class extends Component
             default => now()->addDays(7),
         };
 
+        // Nothing is written anywhere: the signature is derived, not stored. The
+        // link appearing in the field is the whole outcome, so it announces
+        // itself.
         $this->shareUrl = URL::temporarySignedRoute(
             'data.file-share',
             $until,
             ['attachment' => $this->file['id']],
-        );
-
-        $this->toastSuccess(
-            'Link signed',
-            'It stops working '.$until->diffForHumans().'. Nothing else on the disk becomes reachable.'
         );
     }
 };

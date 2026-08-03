@@ -37,7 +37,12 @@
     };
 
     var MAX_VISIBLE = 4;
-    var DEFAULT_DURATION = 5000;
+
+    // Three seconds is long enough to notice a confirmation and short enough
+    // that a run of them does not queue up in front of the page. Errors ask for
+    // a longer life explicitly — see `InteractsWithToasts::toastError` — because
+    // an error that vanishes in three seconds is not a warning, it is a rumour.
+    var DEFAULT_DURATION = 3000;
 
     function host() {
         return document.getElementById('kargah-toasts');

@@ -506,7 +506,7 @@ class extends Component
         $this->draftNote = '';
         $this->resolvedCustomer = null;
 
-        $this->toastSuccess('Note saved', 'It is at the top of '.$customer->name.'\'s notes.');
+        $this->toastSuccess('Note saved');
     }
 
     /** Hides the client from pickers without deleting the history, or puts them back. */

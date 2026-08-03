@@ -553,13 +553,6 @@ class extends Component
         $this->resolvedInvoices = null;
         $this->resolvedExpenses = null;
         $this->resolvedPayments = null;
-
-        $this->toastSuccess(
-            'Period changed',
-            $this->invoices()->count().' issued '.($this->invoices()->count() === 1 ? 'invoice' : 'invoices')
-                .' and '.$this->expenses()->count().' '.($this->expenses()->count() === 1 ? 'expense' : 'expenses')
-                .' — '.$this->periodLabel().'.',
-        );
     }
 };
 

@@ -97,8 +97,6 @@ class extends Component
         }
 
         $this->confirming = null;
-
-        $this->toastSuccess('Left connected', 'Nothing was changed.');
     }
 
     /**

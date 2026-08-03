@@ -227,11 +227,6 @@ class extends Component
 
         $this->checkFailed = false;
         $this->checkResult = $chosen['label'].' answered as '.$who.'. Nothing was posted.';
-
-        $this->toastSuccess(
-            $chosen['label'].' answered as '.$who,
-            'The credentials work. Save the connection to start publishing to it.',
-        );
     }
 
     /**

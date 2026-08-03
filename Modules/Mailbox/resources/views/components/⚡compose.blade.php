@@ -342,8 +342,6 @@ class extends Component
 
         $this->open = false;
         $this->showSchedule = false;
-
-        $this->toastSuccess('Draft discarded', 'Nothing was sent.');
     }
 
     /**

@@ -215,22 +215,11 @@ class extends Component
         }
 
         $this->formOpen = true;
-
-        $this->toastSuccess(
-            $this->editingId === null ? 'New schedule' : 'Editing '.$this->formTitle,
-            'A schedule raises drafts. Nothing it raises is ever issued for you.',
-        );
     }
 
     public function closeForm(): void
     {
-        $wasOpen = $this->formOpen;
-
         $this->formOpen = false;
-
-        if ($wasOpen) {
-            $this->toastSuccess('Form closed', 'Nothing was saved.');
-        }
     }
 
     public function addFormLine(): void

@@ -403,11 +403,6 @@ class extends Component
         }
 
         $this->plainText = $text;
-
-        $this->toastSuccess(
-            'Plain-text part written',
-            'A message with only an HTML part is one of the cheapest spam signals there is.',
-        );
     }
 
     /* Saving ------------------------------------------------------------------ */

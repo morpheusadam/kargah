@@ -167,7 +167,9 @@ class InvoicePagesTest extends TestCase
             ->assertViewHas('invoices', fn ($invoices): bool => in_array('INV-0038', $numbers($invoices), true))
             ->call('filterBy', 'draft')
             ->assertViewHas('invoices', fn ($invoices): bool => $numbers($invoices) === ['INV-0044'])
-            ->assertDispatched('toast');
+            // Silent by design: the tab that changed and the rows under it are
+            // the whole of what happened, and both are on screen.
+            ->assertNotDispatched('toast');
 
         Livewire::test('accounting::invoices')
             ->set('search', 'Harbour')

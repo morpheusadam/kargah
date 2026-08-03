@@ -692,10 +692,6 @@ class extends Component
         if ($email->id === $this->selected) {
             $this->refreshPane();
         }
-
-        $email->is_starred
-            ? $this->toastSuccess('Starred', $email->subject ?: 'Message from '.$email->senderLabel())
-            : $this->toastSuccess('Star removed', $email->subject ?: 'Message from '.$email->senderLabel());
     }
 
     public function markUnread(int $id): void
@@ -715,8 +711,6 @@ class extends Component
         if ($email->id === $this->selected) {
             $this->refreshPane();
         }
-
-        $this->toastSuccess('Marked unread', 'It is back in the unread count.');
     }
 
     public function markRead(int $id): void
@@ -736,8 +730,6 @@ class extends Component
         if ($email->id === $this->selected) {
             $this->refreshPane();
         }
-
-        $this->toastSuccess('Marked read');
     }
 
     public function archive(int $id): void
@@ -803,10 +795,6 @@ class extends Component
         $this->checked = count(array_diff($ids, $this->checked)) === 0 ? [] : $ids;
 
         $this->refreshList();
-
-        $this->checked === []
-            ? $this->toastSuccess('Selection cleared')
-            : $this->toastSuccess(count($this->checked).' '.str('message')->plural(count($this->checked)).' selected');
     }
 
     public function clearChecked(): void
@@ -817,7 +805,6 @@ class extends Component
 
         if ($had) {
             $this->refreshList();
-            $this->toastSuccess('Selection cleared');
         }
     }
 
@@ -902,13 +889,6 @@ class extends Component
         $this->checked = [];
 
         $this->refreshList();
-
-        $count = $this->folderCounts()[$folder]['total'] ?? 0;
-
-        $this->toastSuccess(
-            (self::FOLDERS[$folder]['label'] ?? $folder),
-            $count === 0 ? 'This folder is empty.' : $count.' '.str('message')->plural($count).' in here.',
-        );
     }
 
     public function toggleUnreadOnly(): void
@@ -1073,7 +1053,6 @@ class extends Component
 
         if ($wasOpen) {
             $this->refreshPane();
-            $this->toastSuccess('Draft discarded', 'Nothing was sent.');
         }
     }
 

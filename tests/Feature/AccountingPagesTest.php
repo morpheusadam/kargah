@@ -286,7 +286,9 @@ class AccountingPagesTest extends TestCase
             ->assertDontSee('Retired Contact')
             ->call('setFilter', 'archived')
             ->assertSee('Retired Contact')
-            ->assertDontSee('Sam Okafor');
+            ->assertDontSee('Sam Okafor')
+            // Silent by design: the list the filter changed is the notification.
+            ->assertNotDispatched('toast');
     }
 
     public function test_adding_a_client_persists(): void

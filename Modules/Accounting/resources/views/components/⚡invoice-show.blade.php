@@ -255,22 +255,11 @@ class extends Component
         $this->paymentAmount = app(PaymentRecorder::class)->outstanding($invoice);
         $this->paymentCurrency = $invoice->currency;
         $this->paymentPaidAt = today()->toDateString();
-
-        $this->toastSuccess(
-            'Recording a payment',
-            'It defaults to the whole of what is outstanding, in the invoice currency.',
-        );
     }
 
     public function closePayment(): void
     {
-        $wasOpen = $this->paymentOpen;
-
         $this->paymentOpen = false;
-
-        if ($wasOpen) {
-            $this->toastSuccess('Payment form closed', 'Nothing was recorded.');
-        }
     }
 
     protected function rules(): array
@@ -385,19 +374,11 @@ class extends Component
     {
         $this->paymentOpen = false;
         $this->voidOpen = true;
-
-        $this->toastSuccess('Void this invoice?', 'Voiding keeps the document and everything recorded against it.');
     }
 
     public function closeVoid(): void
     {
-        $wasOpen = $this->voidOpen;
-
         $this->voidOpen = false;
-
-        if ($wasOpen) {
-            $this->toastSuccess('Void cancelled', 'The invoice still stands.');
-        }
     }
 
     /**

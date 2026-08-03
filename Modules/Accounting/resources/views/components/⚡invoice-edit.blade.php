@@ -319,8 +319,6 @@ class extends Component
         }
 
         $this->items[] = $this->blankLine();
-
-        $this->toastSuccess('Line added', 'The invoice now has '.count($this->items).' lines.');
     }
 
     public function removeLine(int $index): void
@@ -341,16 +339,9 @@ class extends Component
             return;
         }
 
-        $description = trim((string) $this->items[$index]['description']);
-
         unset($this->items[$index]);
 
         $this->items = array_values($this->items);
-
-        $this->toastSuccess(
-            $description === '' ? 'Line removed' : $description.' removed',
-            'The invoice now comes to '.$this->show($this->total()).'. Save to keep the change.',
-        );
     }
 
     public function moveLine(int $index, int $direction): void
@@ -371,8 +362,6 @@ class extends Component
         }
 
         [$this->items[$index], $this->items[$target]] = [$this->items[$target], $this->items[$index]];
-
-        $this->toastSuccess('Line moved', 'Now at position '.($target + 1).' of '.count($this->items).'.');
     }
 
     /* Saving and issuing --------------------------------------------------------- */
@@ -410,10 +399,7 @@ class extends Component
 
         $invoice = $this->persist();
 
-        $this->toastSuccess(
-            $invoice->number.' saved',
-            'Still a draft, and still editable. It comes to '.$invoice->formattedTotal().'.',
-        );
+        $this->toastSuccess($invoice->number.' saved', 'Still a draft, and still editable.');
     }
 
     /**

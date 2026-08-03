@@ -871,9 +871,49 @@ class SocialModuleTest extends TestCase
 
         $this->actingAs(User::factory()->create());
 
-        Livewire::test('social::notifications')->call('markAllRead');
+        Livewire::test('social::notifications')
+            ->call('markAllRead')
+            // A write nobody watched: the rows it cleared are the ones the
+            // filter may already have taken off the screen.
+            ->assertDispatched('toast');
 
         $this->assertSame(0, SocialNotification::query()->unread()->count());
+    }
+
+    /**
+     * An action whose whole effect is on screen says nothing.
+     *
+     * Picking an account, forking its copy and closing a confirmation are all
+     * things you are looking at while they happen, so a toast would only read
+     * the screen back to you. The assertions on state are what prove the
+     * action still ran — silence is only correct if the effect is real.
+     */
+    public function test_the_actions_you_can_see_happen_silently(): void
+    {
+        $account = $this->account(Networks::MASTODON);
+
+        $this->actingAs(User::factory()->create());
+
+        Livewire::test('social::publish')
+            ->set('body', 'Two networks, one thought.')
+            ->set('targets', [])
+            ->call('toggleTarget', $account->id)
+            ->assertNotDispatched('toast')
+            ->assertSet('targets', [$account->id])
+            ->call('toggleOverride', $account->id)
+            ->assertNotDispatched('toast')
+            ->assertSet('overrides.'.$account->id, 'Two networks, one thought.');
+
+        Livewire::test('social::accounts')
+            ->call('confirmDisconnect', $account->id)
+            ->call('cancelDisconnect')
+            ->assertNotDispatched('toast')
+            ->assertSet('confirming', null);
+
+        Livewire::test('social::notifications')
+            ->call('toggleUnreadOnly')
+            ->assertNotDispatched('toast')
+            ->assertSet('unreadOnly', true);
     }
 
     public function test_the_connect_page_stores_a_credential_encrypted(): void

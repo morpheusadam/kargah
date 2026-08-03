@@ -200,17 +200,6 @@ class extends Component
         $this->filter = in_array($filter, ['active', 'archived', 'all'], true) ? $filter : 'active';
         $this->resolvedCustomers = null;
         $this->resolvedInvoices = null;
-
-        $count = $this->customers()->count();
-
-        $this->toastSuccess(
-            match ($this->filter) {
-                'archived' => 'Archived clients',
-                'all' => 'Everyone',
-                default => 'Active clients',
-            },
-            $count.' '.($count === 1 ? 'client' : 'clients').' on screen.',
-        );
     }
 
     /* Adding a client ------------------------------------------------------------ */
@@ -218,21 +207,13 @@ class extends Component
     public function startAdding(): void
     {
         $this->creating = true;
-
-        $this->toastSuccess('Client form open', 'A name and an email address are enough to start.');
     }
 
     public function cancelAdding(): void
     {
-        $wasOpen = $this->creating;
-
         $this->creating = false;
         $this->reset(['newName', 'newEmail', 'newCompanyId']);
         $this->resetValidation();
-
-        if ($wasOpen) {
-            $this->toastSuccess('Client form closed', 'Nothing was added.');
-        }
     }
 
     public function addClient(): void

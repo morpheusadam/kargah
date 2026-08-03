@@ -52,9 +52,8 @@ class extends Component
 
     /**
      * Per-request memos. Private, so Livewire neither ships nor rehydrates
-     * them. Without these the page runs the same query four times: the table,
-     * the totals, the category panel and the filter toast each go looking
-     * independently.
+     * them. Without these the page runs the same query three times: the table,
+     * the totals and the category panel each go looking independently.
      */
     private ?Collection $resolvedExpenses = null;
 
@@ -301,39 +300,18 @@ class extends Component
             + ($this->billing === '' ? 0 : 1);
     }
 
-    /** What the filter left on screen, in one sentence. */
-    private function summary(): string
-    {
-        $rows = $this->expenses();
-
-        if ($rows->isEmpty()) {
-            return 'Nothing matches, out of '.$this->totalCount().' recorded.';
-        }
-
-        $totals = array_map(fn (array $total): string => $total['formatted'], $this->totalsByCurrency($rows));
-
-        return 'Showing '.$rows->count().' of '.$this->totalCount().' expenses, '.implode(' and ', $totals).'.';
-    }
-
     /* Filters ----------------------------------------------------------------- */
 
-    public function updatedCategory(): void
-    {
-        $this->toastSuccess(
-            $this->category === '' ? 'Every category' : $this->category.' only',
-            $this->summary(),
-        );
-    }
+    // The three `updated*` hooks below carried the old filter toasts and now have
+    // nothing left to do — a filter change is visible in the table it changed.
+    // They are left in place rather than deleted so removing them is a decision
+    // someone makes on purpose.
 
-    public function updatedPeriod(): void
-    {
-        $this->toastSuccess('Period changed', $this->summary());
-    }
+    public function updatedCategory(): void {}
 
-    public function updatedBilling(): void
-    {
-        $this->toastSuccess('Rebilling filter changed', $this->summary());
-    }
+    public function updatedPeriod(): void {}
+
+    public function updatedBilling(): void {}
 
     public function clearFilters(): void
     {
@@ -343,8 +321,6 @@ class extends Component
         $this->billing = '';
 
         $this->resolvedExpenses = null;
-
-        $this->toastSuccess('Filters cleared', $this->summary());
     }
 };
 

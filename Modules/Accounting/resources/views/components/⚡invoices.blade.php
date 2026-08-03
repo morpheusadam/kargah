@@ -323,15 +323,6 @@ class extends Component
         $this->cursor = '';
 
         $this->refreshTable();
-
-        $count = $this->counts()[$this->status];
-
-        $this->toastSuccess(
-            self::TABS[$this->status].' invoices',
-            $count === 0
-                ? 'Nothing in the book matches that.'
-                : $count.' '.str('invoice')->plural($count).' of '.$this->counts()['all'].'.',
-        );
     }
 
     public function updatedSearch(): void
