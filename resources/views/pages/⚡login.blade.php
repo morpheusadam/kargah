@@ -75,9 +75,8 @@ class extends Component
 
     <div class="relative w-full max-w-[420px]">
 
-        <div class="flex items-center justify-center gap-2.5 mb-8">
-            <span class="kargah-mark inline-flex items-center justify-center size-10 rounded-xl font-bold text-[15px]">K</span>
-            <span class="text-lg font-semibold text-mono tracking-tight">Kargah</span>
+        <div class="flex items-center justify-center mb-8">
+            <x-brand-mark :size="14" :glow="true" name-class="text-lg font-semibold text-mono tracking-tight" />
         </div>
 
         {{-- The glow ring lives on the wrapper so it can rotate behind the card. --}}
@@ -161,14 +160,6 @@ class extends Component
         </p>
     </div>
 
-    <button type="button"
-            class="kt-btn kt-btn-icon kt-btn-ghost size-9 absolute top-6 end-6 z-10"
-            data-kt-toggle="html"
-            data-kt-toggle-class="dark"
-            title="Switch theme"
-            aria-label="Switch theme">
-        <i class="ki-filled ki-moon text-base hidden dark:inline"></i>
-        <i class="ki-filled ki-sun text-base dark:hidden"></i>
-    </button>
+    {{-- No theme toggle here on purpose: the signed-out screens have one theme. --}}
 
 </div>

@@ -22,15 +22,15 @@
 </head>
 <body class="antialiased h-full text-base text-foreground bg-background">
 
-{{-- Applied before first paint so the page never flashes the wrong theme. --}}
+{{--
+    The signed-out screens are dark, full stop — the design is built around the
+    glow and there is no light variant of it. A stored preference from inside the
+    app must not leak out here, so this ignores localStorage rather than reading
+    it. Applied before first paint, so there is no flash.
+--}}
 <script>
-    (function () {
-        var mode = localStorage.getItem('kt-theme') || 'dark';
-        if (mode === 'system') {
-            mode = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-        }
-        document.documentElement.classList.add(mode);
-    })();
+    document.documentElement.classList.remove('light');
+    document.documentElement.classList.add('dark');
 </script>
 
 {{-- The guest shell is deliberately bare: each guest page owns its own staging. --}}

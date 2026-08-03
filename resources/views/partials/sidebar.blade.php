@@ -93,9 +93,8 @@
      id="sidebar">
 
     <div class="kt-sidebar-header hidden lg:flex items-center relative justify-between px-3 lg:px-6 shrink-0" id="sidebar_header">
-        <a href="{{ route('dashboard') }}" class="flex items-center gap-2">
-            <span class="inline-flex items-center justify-center size-8 rounded-lg bg-primary text-primary-foreground font-bold text-sm shrink-0">K</span>
-            <span class="kt-sidebar-collapse:hidden text-lg font-semibold text-mono tracking-tight">Kargah</span>
+        <a href="{{ route('dashboard') }}">
+            <x-brand-mark :size="8" name-class="kt-sidebar-collapse:hidden text-lg font-semibold text-mono tracking-tight" />
         </a>
         <button class="kt-btn kt-btn-outline kt-btn-icon size-[30px] absolute start-full top-2/4 -translate-x-2/4 -translate-y-2/4"
                 data-kt-toggle="body"

@@ -8,9 +8,8 @@
 
         {{-- Mobile: logo + drawer toggle --}}
         <div class="flex gap-1 items-center lg:hidden">
-            <a href="{{ route('dashboard') }}" class="flex items-center gap-2">
-                <span class="inline-flex items-center justify-center size-8 rounded-lg bg-primary text-primary-foreground font-bold text-sm">K</span>
-                <span class="text-base font-semibold text-mono">Kargah</span>
+            <a href="{{ route('dashboard') }}">
+                <x-brand-mark :size="8" name-class="text-base font-semibold text-mono" />
             </a>
             <button class="kt-btn kt-btn-icon kt-btn-ghost -ms-2" data-kt-drawer-toggle="#sidebar">
                 <i class="ki-filled ki-menu text-lg"></i>

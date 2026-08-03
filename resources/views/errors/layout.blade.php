@@ -23,9 +23,8 @@
 
 <div class="flex flex-col items-center justify-center grow w-full p-6 text-center">
 
-    <a href="/" class="flex items-center gap-2 mb-10">
-        <span class="inline-flex items-center justify-center size-9 rounded-lg bg-primary text-primary-foreground font-bold">K</span>
-        <span class="text-lg font-semibold text-mono">Kargah</span>
+    <a href="/" class="mb-10">
+        <x-brand-mark />
     </a>
 
     <div class="inline-flex items-center justify-center size-16 rounded-2xl bg-@yield('tone', 'muted-foreground')/10 mb-6">
