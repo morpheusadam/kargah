@@ -120,6 +120,14 @@ class extends Component
         })->values()->all();
     }
 
+    /**
+     * Whether the subscription link is currently on screen.
+     *
+     * It starts hidden and this never survives a navigation, so the link is on
+     * the page only for as long as somebody is looking at it.
+     */
+    public bool $feedRevealed = false;
+
     public function with(): array
     {
         $board = $this->board();
@@ -128,8 +136,49 @@ class extends Component
             'boards' => $this->allBoards(),
             'events' => $this->events(),
             'upcoming' => $this->datedCards()->take(8),
-            'icsUrl' => $board === null ? null : app(BoardCalendar::class)->feedUrl($board),
+            // Computed only once asked for. Rendering it unconditionally put a
+            // bearer capability into the page on every visit — see revealFeedLink().
+            'icsUrl' => $board !== null && $this->feedRevealed
+                ? app(BoardCalendar::class)->feedUrl($board)
+                : null,
         ];
+    }
+
+    /**
+     * Put the subscription link on screen, once, deliberately.
+     *
+     * The link is a **bearer capability**: anyone holding it can read this
+     * board's card titles and due dates without signing in, which is the whole
+     * point — a calendar client cannot log in. That also makes it a secret, and
+     * `tests/Feature/NoSecretsInHtmlTest.php` caught it being rendered into
+     * every visit to this page, which is exactly what that test is for.
+     *
+     * So it behaves like the vault: hidden until asked for, and the asking is
+     * on the record. Google Calendar hides its own iCal address behind the same
+     * gesture for the same reason.
+     */
+    public function revealFeedLink(): void
+    {
+        $board = $this->board();
+
+        if ($board === null) {
+            $this->toastError('No board is open', 'Pick a board first.');
+
+            return;
+        }
+
+        $this->feedRevealed = true;
+
+        activity('board')
+            ->performedOn($board)
+            ->causedBy(auth()->user())
+            ->event('board.feed_link_revealed')
+            ->log('revealed the calendar subscription link');
+    }
+
+    public function hideFeedLink(): void
+    {
+        $this->feedRevealed = false;
     }
 
     public function boardName(): string
@@ -321,6 +370,12 @@ class extends Component
                         this board's name and, for every active card with a due date, the card's title and due date —
                         nothing else. No session, no cookie, no login: the link itself is what proves it is allowed.
                     </p>
+                    {{--
+                        The link is hidden until asked for. Anyone holding it can
+                        read this board without signing in, so it is a secret
+                        that happens to be a URL — and a secret rendered on every
+                        visit ends up in browser history, caches and screenshots.
+                    --}}
                     @if ($icsUrl)
                         <div class="kt-input">
                             <input type="text" class="grow" readonly value="{{ $icsUrl }}" aria-label="Calendar subscription link">
@@ -330,11 +385,22 @@ class extends Component
                                     class="kt-btn kt-btn-sm kt-btn-outline gap-1.5">
                                 <i class="ki-filled ki-copy text-sm"></i> Copy link
                             </button>
+                            <button wire:click="hideFeedLink" class="kt-btn kt-btn-sm kt-btn-ghost gap-1.5">
+                                <i class="ki-filled ki-eye-slash text-sm"></i> Hide
+                            </button>
                             <button wire:click="regenerateFeedLink" wire:confirm="Anyone using the current link stops getting updates. Regenerate it?"
                                     class="kt-btn kt-btn-sm kt-btn-ghost gap-1.5">
                                 <i class="ki-filled ki-arrows-circle text-sm"></i> Regenerate
                             </button>
                         </div>
+                    @elseif ($this->board() !== null)
+                        <div class="kt-input">
+                            <input type="text" class="grow" readonly value="••••••••••••••••••••••••••••"
+                                   aria-label="Calendar subscription link, hidden">
+                        </div>
+                        <button wire:click="revealFeedLink" class="kt-btn kt-btn-sm kt-btn-outline gap-1.5 self-start">
+                            <i class="ki-filled ki-eye text-sm"></i> Show link
+                        </button>
                     @else
                         <p class="text-xs text-muted-foreground">Pick a board to get its link.</p>
                     @endif
