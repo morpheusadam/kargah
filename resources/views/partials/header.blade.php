@@ -42,7 +42,11 @@
                 <i class="ki-filled ki-magnifier text-lg"></i>
             </button>
 
-            <button class="kt-btn kt-btn-icon kt-btn-ghost size-9" data-kt-toggle="html" data-kt-toggle-class="dark" title="Toggle theme">
+            <button type="button"
+                    class="kt-btn kt-btn-icon kt-btn-ghost size-9"
+                    onclick="window.kargahTheme && window.kargahTheme.toggle()"
+                    title="Toggle theme"
+                    aria-label="Toggle theme">
                 <i class="ki-filled ki-moon text-lg dark:hidden"></i>
                 <i class="ki-filled ki-sun text-lg hidden dark:inline"></i>
             </button>

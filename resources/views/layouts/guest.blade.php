@@ -15,8 +15,9 @@
     <link href="/assets/css/styles.css" rel="stylesheet">
     <link href="/assets/css/kargah.css" rel="stylesheet">
     {{-- Login staging. A real file because Livewire carries neither a pushed
-         stack nor @assets from a component through to its layout. --}}
-    <link href="/css/login.css" rel="stylesheet">
+         stack nor @assets from a component through to its layout. The version
+         query is the file's own mtime, so an edit is never served from cache. --}}
+    <link href="/css/login.css?v={{ @filemtime(public_path('css/login.css')) ?: 1 }}" rel="stylesheet">
 
     @livewireStyles
 </head>

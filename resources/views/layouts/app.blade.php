@@ -18,22 +18,36 @@
 </head>
 <body class="antialiased flex h-full text-base text-foreground bg-background demo1 kt-sidebar-fixed kt-header-fixed">
 
+{{--
+    Theme, owned here rather than by the vendor bundle.
+
+    The previous version read Metronic's own `kt-theme` key, so a value left
+    behind by the template's demo scripts could pin the app to light with no way
+    to tell where it came from. This uses its own key, treats anything it does
+    not recognise as dark, and runs before first paint so there is no flash.
+--}}
 <script>
-    const defaultThemeMode = 'dark';
-    let themeMode;
-    if (document.documentElement) {
-        if (localStorage.getItem('kt-theme')) {
-            themeMode = localStorage.getItem('kt-theme');
-        } else if (document.documentElement.hasAttribute('data-kt-theme-mode')) {
-            themeMode = document.documentElement.getAttribute('data-kt-theme-mode');
-        } else {
-            themeMode = defaultThemeMode;
-        }
-        if (themeMode === 'system') {
-            themeMode = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-        }
-        document.documentElement.classList.add(themeMode);
-    }
+    (function () {
+        var stored = localStorage.getItem('kargah.theme');
+        var mode = (stored === 'light' || stored === 'dark') ? stored : 'dark';
+
+        document.documentElement.classList.remove('light', 'dark');
+        document.documentElement.classList.add(mode);
+
+        window.kargahTheme = {
+            current: function () {
+                return document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+            },
+            set: function (next) {
+                document.documentElement.classList.remove('light', 'dark');
+                document.documentElement.classList.add(next);
+                try { localStorage.setItem('kargah.theme', next); } catch (e) { /* private mode */ }
+            },
+            toggle: function () {
+                this.set(this.current() === 'dark' ? 'light' : 'dark');
+            }
+        };
+    })();
 </script>
 
 <div class="flex grow">
