@@ -14,6 +14,8 @@ use Modules\Project\Models\CardPlacement;
 use Modules\Project\Services\CardService;
 use Modules\Project\Services\PlacementConflict;
 use Modules\Project\Support\Position;
+use Modules\Project\Support\SearchCompiler;
+use Modules\Project\Support\SearchQuery;
 
 /**
  * Trello-style board, reading from the database.
@@ -101,6 +103,16 @@ class extends Component
     private ?Collection $resolvedMembers = null;
 
     /**
+     * Operator tokens from the last compiled search that could not be
+     * honoured — `has:cover`, for instance. Set every time `lists()` actually
+     * runs the query, read by `with()` so the toolbar can say so instead of
+     * quietly showing zero cards for a reason nobody typed.
+     *
+     * @var list<string>
+     */
+    private array $lastUnsupportedOperators = [];
+
+    /**
      * An `#[Url]` property is whatever the address bar says, which may be a
      * board that was archived, deleted, or never existed.
      */
@@ -129,10 +141,17 @@ class extends Component
     }
 
     /**
-     * Every list on the board with its placements, before filtering.
+     * Every list on the board with its placements that survive the current
+     * search and filter panel, in the order the query decides — position by
+     * default, or `sort:` when one was typed.
      *
      * One query per relation rather than one per card: the checklist chip is
-     * two `withCount` subqueries, not a load of every item on the board.
+     * two `withCount` subqueries, not a load of every item on the board. The
+     * search and filter conditions ride the same `placements` query — see
+     * `Modules\Project\Support\SearchCompiler` — rather than being tested in
+     * PHP afterwards, which is what lets `checklist:` and `comment:` search
+     * text this method has never had to load before without loading it for
+     * every card whether it matched or not.
      *
      * `onCanvas()` is what implements the archived-mirror rule: an archived card
      * leaves the list it lives in, and stays on the lists it was mirrored onto,
@@ -154,23 +173,54 @@ class extends Component
             return $this->resolvedLists = collect();
         }
 
+        $search = SearchQuery::parse($this->search);
+        $compiler = SearchCompiler::forUser(auth()->user());
+        $labelIds = $this->labelFilterIds();
+        $assigneeIds = $this->assigneeFilterIds();
+        $due = $this->filterDue;
+
         return $this->resolvedLists = BoardList::query()
             ->where('board_id', $board->id)
             ->active()
             ->orderBy('position')
-            ->with(['placements' => fn ($query) => $query
-                ->onCanvas()
-                ->orderBy('position')
-                ->with(['card' => fn ($card) => $card
+            ->with(['placements' => function ($query) use ($search, $compiler, $board, $labelIds, $assigneeIds, $due): void {
+                // `BoardList::placements()` already carries its own
+                // `orderBy('position')`. Without clearing it first, a
+                // `sort:-due` would land as a *second* order-by clause and
+                // lose every tie to the position order that came before it.
+                $query->reorder()->onCanvas();
+
+                $this->lastUnsupportedOperators = $compiler->apply($query, $search, $board, $labelIds, $assigneeIds, $due);
+
+                $query->with(['card' => fn ($card) => $card
                     ->with(['labels', 'members', 'originPlacement.list.board'])
                     ->withCount([
                         'comments',
                         'checklistItems as checklist_total',
                         'checklistItems as checklist_done' => fn ($q) => $q->where('is_done', true),
                     ]),
-                ]),
-            ])
+                ]);
+            }])
             ->get();
+    }
+
+    /**
+     * How many placements this board draws before any filter narrows them —
+     * a separate, unadorned count rather than a second full load of every
+     * card's labels, members and checklist counts just to discard them.
+     */
+    private function totalPlacementsCount(): int
+    {
+        $board = $this->board();
+
+        if ($board === null) {
+            return 0;
+        }
+
+        return CardPlacement::query()
+            ->onCanvas()
+            ->whereIn('board_list_id', BoardList::query()->where('board_id', $board->id)->active()->select('id'))
+            ->count();
     }
 
     /** @return Collection<int, \Modules\Project\Models\Label> */
@@ -210,40 +260,15 @@ class extends Component
         return array_map('intval', $this->filterAssignees);
     }
 
-    private function matches(Card $card): bool
-    {
-        $term = $this->searchTerm();
-
-        if ($term !== '' && stripos($card->title, $term) === false) {
-            return false;
-        }
-
-        $labelIds = $this->labelFilterIds();
-
-        if ($labelIds !== [] && $card->labels->pluck('id')->intersect($labelIds)->isEmpty()) {
-            return false;
-        }
-
-        $assigneeIds = $this->assigneeFilterIds();
-
-        if ($assigneeIds !== [] && $card->members->pluck('id')->intersect($assigneeIds)->isEmpty()) {
-            return false;
-        }
-
-        return match ($this->filterDue) {
-            'overdue' => $card->dueState() === 'overdue',
-            'soon' => in_array($card->dueState(), ['overdue', 'soon'], true),
-            'none' => $card->due_on === null,
-            default => true,
-        };
-    }
-
-    /** The placements of one list that survive the current filter, in order. */
+    /**
+     * The placements of one list that survive the current search and filter
+     * panel, in order. `lists()` already loaded only the matching rows —
+     * `SearchCompiler` filters and sorts in SQL, see its class docblock for
+     * why — so this is a name for what is already there, not a second pass.
+     */
     private function visiblePlacements(BoardList $list): Collection
     {
-        return $list->placements
-            ->filter(fn (CardPlacement $placement): bool => $placement->card !== null && $this->matches($placement->card))
-            ->values();
+        return $list->placements;
     }
 
     /**
@@ -260,18 +285,27 @@ class extends Component
         return $this->visiblePlacements($list)->pluck('id')->map(fn ($id): int => (int) $id)->all();
     }
 
-    private function countCards(bool $filtered): int
+    /**
+     * "has:cover isn't supported yet" — or null when there is nothing to say.
+     * Read after `lists()` has actually run the query, which is what fills
+     * `$lastUnsupportedOperators` in.
+     */
+    private function searchWarning(): ?string
     {
-        return $this->lists()->sum(
-            fn (BoardList $list): int => $filtered
-                ? $this->visiblePlacements($list)->count()
-                : $list->placements->count(),
-        );
+        if ($this->lastUnsupportedOperators === []) {
+            return null;
+        }
+
+        $tokens = implode(', ', $this->lastUnsupportedOperators);
+        $plural = count($this->lastUnsupportedOperators) > 1;
+
+        return $tokens.' '.($plural ? "aren't" : "isn't").' supported yet, so nothing can match.';
     }
 
     public function with(): array
     {
         $lists = $this->lists();
+        $visibleCards = $lists->sum(fn (BoardList $list): int => $this->visiblePlacements($list)->count());
 
         return [
             'boards' => $this->allBoards(),
@@ -281,12 +315,13 @@ class extends Component
                 'model' => $list,
                 'placements' => $this->visiblePlacements($list),
             ]),
-            'totalCards' => $this->countCards(false),
-            'visibleCards' => $this->countCards(true),
+            'totalCards' => $this->totalPlacementsCount(),
+            'visibleCards' => $visibleCards,
             'activeFilters' => count($this->filterLabels)
                 + count($this->filterAssignees)
                 + ($this->filterDue !== '' ? 1 : 0)
                 + ($this->searchTerm() !== '' ? 1 : 0),
+            'searchWarning' => $this->searchWarning(),
             'dueOptions' => [
                 'overdue' => ['label' => 'Overdue', 'icon' => 'ki-time', 'tone' => 'text-destructive'],
                 'soon' => ['label' => 'Due in the next week', 'icon' => 'ki-calendar', 'tone' => 'text-warning'],
@@ -789,9 +824,12 @@ class extends Component
                     <div class="flex flex-col gap-4 px-4 py-4 max-h-[420px] overflow-y-auto kt-scrollable-y">
 
                         <div class="flex flex-col gap-1.5">
-                            <label class="kt-form-label text-xs" for="filter-query">Card text</label>
-                            <input id="filter-query" type="text" class="kt-input" placeholder="Words in the card title"
+                            <label class="kt-form-label text-xs" for="filter-query">Search</label>
+                            <input id="filter-query" type="text" class="kt-input" placeholder="Words, or member: label: due:overdue sort:-due …"
                                    wire:model.live.debounce.300ms="search">
+                            @if ($searchWarning)
+                                <p class="text-xs text-destructive">{{ $searchWarning }}</p>
+                            @endif
                         </div>
 
                         <div class="flex flex-col gap-2">
@@ -960,8 +998,6 @@ class extends Component
 
                             <p class="text-sm text-mono leading-snug">{{ $card->title }}</p>
 
-                            @php($dueState = $card->dueState())
-
                             @if ($card->checklist_total > 0 || $card->due_on || $card->comments_count > 0 || $card->members->isNotEmpty())
                                 <div class="flex items-center gap-3 mt-2.5 text-xs text-muted-foreground">
                                     @if ($card->checklist_total > 0)
@@ -971,7 +1007,8 @@ class extends Component
                                         </span>
                                     @endif
                                     @if ($card->due_on)
-                                        <span class="inline-flex items-center gap-1 {{ $dueState === 'overdue' ? 'text-destructive' : ($dueState === 'soon' ? 'text-warning' : '') }}">
+                                        {{-- Five states, one badge: Card::dueBadgeColour() is the single mapping to a Palette key, so this and the card drawer read the same colour for the same date. --}}
+                                        <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded {{ \Modules\Project\Support\Palette::tone($card->dueBadgeColour()) }}">
                                             <i class="ki-filled ki-calendar text-sm"></i>{{ $card->due_on->format('M d') }}
                                         </span>
                                     @endif
