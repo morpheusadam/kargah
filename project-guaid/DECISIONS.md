@@ -251,6 +251,33 @@ Issuing freezes an exchange rate onto a legal document. That is a decision a per
 a cron job makes at 3am against whatever rate happened to be current.
 
 **A known environment problem, left alone deliberately.**
+(see below)
+
+---
+
+## Phase 4 — Mailbox, receiving
+
+**Attachment *metadata* is Mailbox's; attachment *bytes* are Data's.**
+05-build-order.md lists `attachments` under phase 4 and again under phase 6, and 02-data-model.md
+says plainly that Data owns storage and nothing else touches a disk. Both cannot be satisfied by
+putting the table in Mailbox. So phase 4 creates `email_attachments` — filename, mime, size,
+content id, part number — which is what the inbox needs to draw a paperclip and a filename without
+claiming to hold the file. It carries a nullable `attachment_id` for phase 6 to fill in when
+`AttachmentService` actually stores the bytes. Nothing in Mailbox writes to a disk.
+
+**Resumability rests on the unique index, not on the cursor.**
+`mail_accounts.sync_cursor` is an optimisation: it stops the job re-reading a mailbox from the
+start every five minutes. The *correctness* is `emails.message_id` being unique, because a cursor
+is bookkeeping and a hard kill can lose bookkeeping. Every write goes through the constraint, so
+the worst a kill costs is repeating one chunk. `uid_validity` is stored alongside because IMAP
+lets a server invalidate every UID it ever issued; when it changes, the cursor means nothing and
+the account has to resync from scratch.
+
+---
+
+## Environment
+
+**A known environment problem, left alone deliberately.**
 A real (non-test) rate fetch fails on this machine with `cURL error 60: unable to get local issuer
 certificate` — `C:\Users\morph\PHP\8.3\php.ini` sets neither `curl.cainfo` nor `openssl.cafile`
 and the install ships no `cacert.pem`. Tests never touch the network so nothing here is blocked,
