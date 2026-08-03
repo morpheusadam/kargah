@@ -1,40 +1,440 @@
 <?php
 
+use App\Models\User;
+use App\Support\Totp;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Validation\Rules\Password;
 use Livewire\Attributes\Title;
-use Livewire\Attributes\Validate;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
+/**
+ * Password, two-factor authentication and active sessions — all real.
+ *
+ * **Two-factor is enrolment only; nothing here enforces it at login.** A
+ * secret is generated, shown for manual entry (no QR image — no QR library is
+ * installed, and every authenticator app accepts a typed setup key), and is
+ * not trusted until a real code from it has been checked — `hasTwoFactorEnabled()`
+ * reads `two_factor_confirmed_at`, never merely "a secret exists". Wiring a
+ * confirmed second factor into the sign-in form is a separate change with its
+ * own lockout risk and is not part of this page.
+ *
+ * **Sessions are the real `sessions` table**, because `SESSION_DRIVER=database`
+ * on this install. A page that invents devices when the table is genuinely
+ * empty is worse than a page with no sessions panel at all — see
+ * `project-guaid/DECISIONS.md`.
+ *
+ * **API tokens are not here.** `/settings/application-passwords` is the real,
+ * hashed, scoped, revocable credential store; a second, fake token list next
+ * to it would tell an owner they hold a credential they do not.
+ */
 new
 #[Title('Security — Kargah')]
 class extends Component
 {
-    #[Validate('required|string')]
+    use InteractsWithToasts;
+
     public string $currentPassword = '';
 
-    #[Validate('required|string|min:12|confirmed')]
     public string $password = '';
 
     public string $password_confirmation = '';
 
-    public bool $twoFactor = false;
+    /** Whether the enrolment panel — secret, manual-entry key, code field — is open. */
+    public bool $enrolling2fa = false;
+
+    public string $totpCode = '';
+
+    /**
+     * Freshly generated recovery codes, shown once.
+     *
+     * Protected, the same reason `Modules\Platform`'s `$issuedSecret` is: a
+     * public property is serialised into the page and posted back on every
+     * round trip, so a value held in one would sit in the browser's memory
+     * and the back button for as long as the tab stayed open. This exists
+     * only for the request that generated it.
+     *
+     * @var list<string>|null
+     */
+    protected ?array $issuedRecoveryCodes = null;
 
     public function with(): array
     {
+        $user = auth()->user();
+
         return [
-            'sessions' => [
-                ['device' => 'Windows · Chrome', 'ip' => '81.***.***.42', 'location' => 'London, UK', 'last' => 'Active now', 'current' => true],
-                ['device' => 'Android · Chrome', 'ip' => '81.***.***.19', 'location' => 'London, UK', 'last' => '2 days ago', 'current' => false],
-            ],
-            'tokens' => [
-                ['name' => 'Deploy script', 'scopes' => 'read', 'created' => '2026-06-11', 'lastUsed' => '2026-07-30'],
-            ],
+            'twoFactorEnabled' => $user?->hasTwoFactorEnabled() ?? false,
+            'provisioningUri' => $this->enrolling2fa && $user?->two_factor_secret !== null
+                ? Totp::provisioningUri($user->two_factor_secret, $user->email)
+                : null,
+            'formattedSecret' => $this->enrolling2fa && $user?->two_factor_secret !== null
+                ? Totp::formatForDisplay($user->two_factor_secret)
+                : null,
+            'issuedRecoveryCodes' => $this->issuedRecoveryCodes,
+            'sessions' => $this->sessions($user),
+            'sessionsAvailable' => $this->sessionsAvailable(),
+            'applicationPasswordsRoute' => Route::has('platform.application-passwords') ? route('platform.application-passwords') : null,
         ];
     }
 
-    /** Persisted in the backend phase. */
+    /* Sessions ---------------------------------------------------------------- */
+
+    /**
+     * Whether there is a real `sessions` table to read. Only true when
+     * `SESSION_DRIVER=database` — anything else and this page shows one
+     * sentence explaining why there is nothing here, never an invented list.
+     */
+    private function sessionsAvailable(): bool
+    {
+        return config('session.driver') === 'database'
+            && Schema::hasTable(config('session.table', 'sessions'));
+    }
+
+    /**
+     * @return list<array{id: string, device: string, ip: ?string, last: string, current: bool}>
+     */
+    private function sessions(?User $user): array
+    {
+        if ($user === null || ! $this->sessionsAvailable()) {
+            return [];
+        }
+
+        $currentId = session()->getId();
+
+        return DB::table(config('session.table', 'sessions'))
+            ->where('user_id', $user->id)
+            ->orderByDesc('last_activity')
+            ->get()
+            ->map(fn (object $row): array => [
+                'id' => $row->id,
+                'device' => $this->describeUserAgent($row->user_agent),
+                'ip' => $row->ip_address,
+                'last' => $row->id === $currentId ? 'Active now' : now()->setTimestamp((int) $row->last_activity)->diffForHumans(),
+                'current' => $row->id === $currentId,
+            ])
+            ->all();
+    }
+
+    /** A rough, dependency-free "OS · Browser" label. Good enough to tell two rows apart. */
+    private function describeUserAgent(?string $userAgent): string
+    {
+        if ($userAgent === null || trim($userAgent) === '') {
+            return 'Unknown device';
+        }
+
+        $os = match (true) {
+            str_contains($userAgent, 'Windows') => 'Windows',
+            str_contains($userAgent, 'Android') => 'Android',
+            str_contains($userAgent, 'iPhone') => 'iPhone',
+            str_contains($userAgent, 'iPad') => 'iPad',
+            str_contains($userAgent, 'Macintosh') || str_contains($userAgent, 'Mac OS X') => 'macOS',
+            str_contains($userAgent, 'Linux') => 'Linux',
+            default => 'Unknown OS',
+        };
+
+        // Order matters: Edge and Chrome both carry a "Safari" token, and
+        // Chrome's user agent also carries "Edg" briefly during a rebrand
+        // check on some builds, so the more specific match has to come first.
+        $browser = match (true) {
+            str_contains($userAgent, 'Edg/') => 'Edge',
+            str_contains($userAgent, 'OPR/') || str_contains($userAgent, 'Opera') => 'Opera',
+            str_contains($userAgent, 'Firefox') => 'Firefox',
+            str_contains($userAgent, 'Chrome') => 'Chrome',
+            str_contains($userAgent, 'Safari') => 'Safari',
+            default => 'Unknown browser',
+        };
+
+        return $os.' · '.$browser;
+    }
+
+    public function signOutSession(string $sessionId): void
+    {
+        $user = auth()->user();
+
+        if ($user === null || $sessionId === session()->getId()) {
+            // Signing out the current session through this button would leave
+            // the page claiming success while the request that ran it is
+            // itself the thing it just destroyed. Use "log out" for that.
+            $this->toastError('Cannot sign that one out here', 'Use "Log out" to end your own session.');
+
+            return;
+        }
+
+        $deleted = DB::table(config('session.table', 'sessions'))
+            ->where('user_id', $user->id)
+            ->where('id', $sessionId)
+            ->delete();
+
+        if ($deleted === 0) {
+            $this->toastWarning('Already gone', 'That session had already ended.');
+
+            return;
+        }
+
+        activity('security')
+            ->performedOn($user)
+            ->causedBy($user)
+            ->event('security.session-revoked')
+            ->log('signed out a session');
+
+        $this->toastSuccess('Session signed out', 'That device will need to sign in again.');
+    }
+
+    public function signOutOtherSessions(): void
+    {
+        $user = auth()->user();
+
+        if ($user === null) {
+            return;
+        }
+
+        $deleted = DB::table(config('session.table', 'sessions'))
+            ->where('user_id', $user->id)
+            ->where('id', '!=', session()->getId())
+            ->delete();
+
+        if ($deleted === 0) {
+            $this->toastWarning('Nothing to sign out', 'This is the only active session.');
+
+            return;
+        }
+
+        activity('security')
+            ->performedOn($user)
+            ->causedBy($user)
+            ->event('security.sessions-revoked-others')
+            ->withProperties(['count' => $deleted])
+            ->log('signed out every other session');
+
+        $this->toastSuccess('Signed out everywhere else', $deleted.' '.($deleted === 1 ? 'session' : 'sessions').' ended.');
+    }
+
+    /* Password ------------------------------------------------------------------ */
+
     public function updatePassword(): void
     {
-        $this->validate();
+        $user = auth()->user();
+
+        if ($user === null) {
+            $this->toastError('You are not signed in', 'Sign in again and retry.');
+
+            return;
+        }
+
+        $this->validate([
+            'currentPassword' => 'required|string',
+            'password' => ['required', 'string', 'confirmed', Password::min(12)->letters()->mixedCase()->numbers()],
+        ]);
+
+        if (! Hash::check($this->currentPassword, $user->password)) {
+            $this->addError('currentPassword', 'That is not your current password.');
+
+            return;
+        }
+
+        // The plaintext the moment it exists, and no longer: it is spent on
+        // the very next two lines and never assigned anywhere else.
+        $newPassword = $this->password;
+
+        $user->forceFill(['password' => Hash::make($newPassword)])->save();
+
+        activity('security')
+            ->performedOn($user)
+            ->causedBy($user)
+            ->event('security.password-changed')
+            ->log('changed the account password');
+
+        // Auth::logoutOtherDevices() rotates the remember-me token and forces
+        // a fresh password hash the AuthenticateSession middleware compares
+        // against — but that middleware is not registered in this install
+        // (see the report), so the actual invalidation for a `database`
+        // session store is the row deletion right after it. Both run: the
+        // first is the idiomatic Laravel signal, the second is what actually
+        // ends the other sessions here today.
+        Auth::guard()->logoutOtherDevices($newPassword);
+
+        DB::table(config('session.table', 'sessions'))
+            ->where('user_id', $user->id)
+            ->where('id', '!=', session()->getId())
+            ->delete();
+
+        $this->currentPassword = '';
+        $this->password = '';
+        $this->password_confirmation = '';
+
+        $this->toastSuccess('Password changed', 'Every other session was signed out.');
+    }
+
+    /* Two-factor authentication --------------------------------------------------- */
+
+    /**
+     * Step one: generate a secret and show it for manual entry. Not trusted
+     * yet — `two_factor_confirmed_at` stays null, so `hasTwoFactorEnabled()`
+     * still reads false, until `confirmTwoFactor()` proves the owner's app
+     * actually has it.
+     */
+    public function startTwoFactorEnrollment(): void
+    {
+        $user = auth()->user();
+
+        if ($user === null || $user->hasTwoFactorEnabled()) {
+            return;
+        }
+
+        // Reuse a secret already pending from an earlier, unfinished attempt
+        // rather than mint a new one on every click — refreshing the page
+        // mid-setup must not invalidate the code the owner is about to type.
+        if ($user->two_factor_secret === null) {
+            $user->two_factor_secret = Totp::generateSecret();
+            $user->save();
+        }
+
+        $this->resetValidation();
+        $this->totpCode = '';
+        $this->enrolling2fa = true;
+    }
+
+    /** Closing the panel without confirming. Still off — visible in the panel closing. */
+    public function cancelTwoFactorEnrollment(): void
+    {
+        $user = auth()->user();
+
+        if ($user !== null && ! $user->hasTwoFactorEnabled()) {
+            $user->two_factor_secret = null;
+            $user->save();
+        }
+
+        $this->enrolling2fa = false;
+        $this->totpCode = '';
+        $this->resetValidation();
+    }
+
+    /** Step two: a real code from the owner's app, or the secret is never trusted. */
+    public function confirmTwoFactor(): void
+    {
+        $user = auth()->user();
+
+        if ($user === null || $user->two_factor_secret === null) {
+            $this->toastError('Nothing to confirm', 'Start setup again.');
+
+            return;
+        }
+
+        $this->validate(['totpCode' => 'required|string']);
+
+        $limiterKey = 'security:2fa-verify:'.$user->id;
+
+        if (RateLimiter::tooManyAttempts($limiterKey, 5)) {
+            $this->addError('totpCode', 'Too many attempts. Try again in '.RateLimiter::availableIn($limiterKey).' seconds.');
+
+            return;
+        }
+
+        RateLimiter::hit($limiterKey, 60);
+
+        if (! Totp::verify($user->two_factor_secret, $this->totpCode)) {
+            $this->addError('totpCode', 'That code is not correct, or it has already expired. Use the next one your app shows.');
+
+            return;
+        }
+
+        RateLimiter::clear($limiterKey);
+
+        $codes = User::generateRecoveryCodes();
+
+        $user->two_factor_recovery_codes = $codes['hashed'];
+        $user->two_factor_confirmed_at = now();
+        $user->save();
+
+        activity('security')
+            ->performedOn($user)
+            ->causedBy($user)
+            ->event('security.two-factor-enabled')
+            ->log('turned on two-factor authentication');
+
+        $this->issuedRecoveryCodes = $codes['plaintext'];
+        $this->enrolling2fa = false;
+        $this->totpCode = '';
+
+        $this->toastSuccess('Two-factor authentication is on', 'Save the recovery codes below — this is the only time they are shown.');
+    }
+
+    /**
+     * Dismiss the one-time recovery-code reveal.
+     *
+     * Empty body on purpose, the same idiom as
+     * `Modules\Platform`'s `dismissSecret()`: the codes only ever existed for
+     * the request that generated them, and this round trip re-renders
+     * without them. Nothing has to remember to clear it.
+     */
+    public function dismissRecoveryCodes(): void {}
+
+    public function disableTwoFactor(): void
+    {
+        $user = auth()->user();
+
+        if ($user === null) {
+            return;
+        }
+
+        // A conditional UPDATE, not an `if` on the model: two tabs racing to
+        // disable the same account must produce one write and one activity
+        // entry, not two. Raw column names, because both are being set to
+        // null — there is nothing to encrypt.
+        $changed = User::query()
+            ->whereKey($user->id)
+            ->whereNotNull('two_factor_confirmed_at')
+            ->update([
+                'two_factor_secret_encrypted' => null,
+                'two_factor_recovery_codes_encrypted' => null,
+                'two_factor_confirmed_at' => null,
+                'updated_at' => now(),
+            ]);
+
+        if ($changed === 0) {
+            $this->toastWarning('Already off', 'Two-factor authentication was already off.');
+
+            return;
+        }
+
+        activity('security')
+            ->performedOn($user)
+            ->causedBy($user)
+            ->event('security.two-factor-disabled')
+            ->log('turned off two-factor authentication');
+
+        $this->toastSuccess('Two-factor authentication is off', 'Sign-in no longer asks for a code.');
+    }
+
+    public function regenerateRecoveryCodes(): void
+    {
+        $user = auth()->user();
+
+        if ($user === null || ! $user->hasTwoFactorEnabled()) {
+            $this->toastError('Two-factor is off', 'Turn it on before generating recovery codes.');
+
+            return;
+        }
+
+        $codes = User::generateRecoveryCodes();
+
+        $user->two_factor_recovery_codes = $codes['hashed'];
+        $user->save();
+
+        activity('security')
+            ->performedOn($user)
+            ->causedBy($user)
+            ->event('security.two-factor-recovery-codes-regenerated')
+            ->log('regenerated their two-factor recovery codes');
+
+        $this->issuedRecoveryCodes = $codes['plaintext'];
+
+        $this->toastSuccess('New recovery codes generated', 'The old codes no longer work.');
     }
 };
 
@@ -70,7 +470,7 @@ class extends Component
                         <input type="password" autocomplete="new-password"
                                class="kt-input @error('password') border-destructive @enderror"
                                wire:model="password">
-                        <span class="text-xs text-muted-foreground mt-1">At least 12 characters.</span>
+                        <span class="text-xs text-muted-foreground mt-1">At least 12 characters, with letters in both cases and a number.</span>
                         @error('password')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
                     </div>
                     <div class="flex flex-col gap-1">
@@ -78,7 +478,7 @@ class extends Component
                         <input type="password" autocomplete="new-password" class="kt-input" wire:model="password_confirmation">
                     </div>
                     <div>
-                        <button class="kt-btn kt-btn-primary" wire:click="updatePassword" wire:loading.attr="disabled">
+                        <button class="kt-btn kt-btn-primary" wire:click="updatePassword" wire:loading.attr="disabled" wire:target="updatePassword">
                             <span wire:loading.remove wire:target="updatePassword">Update password</span>
                             <span wire:loading wire:target="updatePassword" class="inline-flex items-center gap-2">
                                 <i class="ki-filled ki-loading animate-spin"></i> Updating…
@@ -91,104 +491,172 @@ class extends Component
             <div class="kt-card">
                 <div class="kt-card-header">
                     <h3 class="kt-card-title">Two-factor authentication</h3>
-                    <label class="kt-switch">
-                        <input type="checkbox" wire:model.live="twoFactor">
-                    </label>
+                    @if ($twoFactorEnabled)
+                        <span class="kt-badge kt-badge-sm kt-badge-success">On</span>
+                    @endif
                 </div>
-                <div class="kt-card-content p-5">
-                    @if ($twoFactor)
-                        <div class="flex flex-col md:flex-row gap-6">
-                            <div class="size-40 rounded-lg bg-muted flex items-center justify-center shrink-0">
-                                <i class="ki-filled ki-scan-barcode text-4xl text-muted-foreground"></i>
+                <div class="kt-card-content p-5 flex flex-col gap-5">
+
+                    {{-- The one-time reveal for freshly generated recovery codes, shared
+                         by both "just confirmed" and "just regenerated". --}}
+                    @if ($issuedRecoveryCodes)
+                        <div class="rounded-lg border border-success/40 bg-success/5 p-4 flex flex-col gap-3">
+                            <h4 class="text-sm font-semibold text-mono flex items-center gap-2">
+                                <i class="ki-filled ki-check-circle text-success"></i> Recovery codes
+                            </h4>
+                            <p class="text-sm text-secondary-foreground">
+                                Each code signs you in once, if you lose access to your authenticator app. Kargah
+                                stores only a hash of each one, so this is the only time they are shown — save them
+                                somewhere safe now.
+                            </p>
+                            <div class="grid grid-cols-2 md:grid-cols-5 gap-2">
+                                @foreach ($issuedRecoveryCodes as $code)
+                                    <code class="text-xs px-2 py-1.5 rounded bg-muted text-mono text-center tracking-wide">{{ $code }}</code>
+                                @endforeach
                             </div>
-                            <div class="flex flex-col gap-3 min-w-0">
+                            <div>
+                                <button type="button" class="kt-btn kt-btn-sm kt-btn-ghost" wire:click="dismissRecoveryCodes">
+                                    Done, I have saved these
+                                </button>
+                            </div>
+                        </div>
+                    @endif
+
+                    @if ($twoFactorEnabled)
+                        <div class="flex flex-col gap-3">
+                            <p class="text-sm text-secondary-foreground">
+                                On. Sign-in asks for a six-digit code from your authenticator app.
+                            </p>
+                            <div class="flex flex-wrap gap-2">
+                                <button type="button" class="kt-btn kt-btn-sm kt-btn-outline gap-2" wire:click="regenerateRecoveryCodes"
+                                        wire:confirm="Generate new recovery codes? Your existing codes will stop working.">
+                                    <i class="ki-filled ki-arrows-circle text-sm"></i> New recovery codes
+                                </button>
+                                <button type="button" class="kt-btn kt-btn-sm kt-btn-outline text-destructive gap-2" wire:click="disableTwoFactor"
+                                        wire:confirm="Turn off two-factor authentication? Sign-in will no longer ask for a code.">
+                                    <i class="ki-filled ki-shield-cross text-sm"></i> Turn off
+                                </button>
+                            </div>
+                        </div>
+                    @elseif ($enrolling2fa)
+                        <div class="flex flex-col md:flex-row gap-6">
+                            <div class="flex flex-col gap-2 shrink-0">
+                                <span class="text-xs font-medium text-mono uppercase tracking-wide">Manual entry key</span>
+                                <code class="text-sm px-3 py-2 rounded bg-muted text-mono tracking-wide break-all max-w-[280px]">{{ $formattedSecret }}</code>
+                            </div>
+                            <div class="flex flex-col gap-3 min-w-0 flex-1">
                                 <p class="text-sm text-secondary-foreground">
-                                    Scan this code with an authenticator app, then enter the six-digit code to confirm.
+                                    Kargah has no QR scanner built in — add an account in your authenticator app and
+                                    enter the key on the left by hand, or paste this URI if your app accepts one:
                                 </p>
-                                <input type="text" inputmode="numeric" maxlength="6" placeholder="000000" class="kt-input max-w-[160px] tracking-widest text-center">
-                                <button class="kt-btn kt-btn-primary self-start">Confirm and enable</button>
+                                <code class="text-xs px-3 py-2 rounded bg-muted text-secondary-foreground break-all">{{ $provisioningUri }}</code>
+                                <p class="text-sm text-secondary-foreground">Then enter the six-digit code it shows to confirm.</p>
+                                <div class="flex flex-col gap-1 max-w-[200px]">
+                                    <input type="text" inputmode="numeric" maxlength="6" placeholder="000000"
+                                           class="kt-input tracking-widest text-center @error('totpCode') border-destructive @enderror"
+                                           wire:model="totpCode" wire:keydown.enter="confirmTwoFactor">
+                                    @error('totpCode')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <button type="button" class="kt-btn kt-btn-primary" wire:click="confirmTwoFactor" wire:loading.attr="disabled" wire:target="confirmTwoFactor">
+                                        <span wire:loading.remove wire:target="confirmTwoFactor">Confirm and enable</span>
+                                        <span wire:loading wire:target="confirmTwoFactor" class="inline-flex items-center gap-2">
+                                            <i class="ki-filled ki-loading animate-spin"></i> Checking…
+                                        </span>
+                                    </button>
+                                    <button type="button" class="kt-btn kt-btn-ghost" wire:click="cancelTwoFactorEnrollment">Cancel</button>
+                                </div>
                             </div>
                         </div>
                     @else
-                        <p class="text-sm text-secondary-foreground">
-                            Off. Turning this on requires a code from an authenticator app at every sign-in.
-                        </p>
+                        <div class="flex items-center justify-between gap-3 flex-wrap">
+                            <p class="text-sm text-secondary-foreground">
+                                Off. Turning this on requires a code from an authenticator app at every sign-in.
+                            </p>
+                            <button type="button" class="kt-btn kt-btn-primary gap-2" wire:click="startTwoFactorEnrollment">
+                                <i class="ki-filled ki-shield-tick"></i> Set up two-factor authentication
+                            </button>
+                        </div>
                     @endif
                 </div>
             </div>
 
-            <div class="kt-card">
-                <div class="kt-card-header"><h3 class="kt-card-title">Active sessions</h3></div>
-                <div class="kt-card-table">
-                    <div class="kt-scrollable-x-auto">
-                        <table class="kt-table align-middle text-sm">
-                            <thead>
-                                <tr>
-                                    <th class="min-w-[200px]">Device</th>
-                                    <th class="w-[160px]">Location</th>
-                                    <th class="w-[140px]">Last active</th>
-                                    <th class="w-[110px] text-end"></th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                @foreach ($sessions as $s)
+            @if ($sessionsAvailable)
+                <div class="kt-card">
+                    <div class="kt-card-header">
+                        <h3 class="kt-card-title">Active sessions</h3>
+                        @if (count($sessions) > 1)
+                            <button type="button" class="kt-btn kt-btn-sm kt-btn-outline text-destructive"
+                                    wire:click="signOutOtherSessions"
+                                    wire:confirm="Sign out every other session? Any other signed-in device will need to sign in again.">
+                                Sign out everywhere else
+                            </button>
+                        @endif
+                    </div>
+                    <div class="kt-card-table">
+                        <div class="kt-scrollable-x-auto">
+                            <table class="kt-table align-middle text-sm">
+                                <thead>
                                     <tr>
-                                        <td>
-                                            <div class="font-medium text-mono">{{ $s['device'] }}</div>
-                                            <div class="text-xs text-muted-foreground">{{ $s['ip'] }}</div>
-                                        </td>
-                                        <td class="text-secondary-foreground">{{ $s['location'] }}</td>
-                                        <td>
-                                            @if ($s['current'])
-                                                <span class="kt-badge kt-badge-sm kt-badge-success">{{ $s['last'] }}</span>
-                                            @else
-                                                <span class="text-secondary-foreground">{{ $s['last'] }}</span>
-                                            @endif
-                                        </td>
-                                        <td class="text-end">
-                                            @unless ($s['current'])
-                                                <button class="kt-btn kt-btn-sm kt-btn-ghost text-destructive">Revoke</button>
-                                            @endunless
-                                        </td>
+                                        <th class="min-w-[200px]">Device</th>
+                                        <th class="w-[160px]">IP address</th>
+                                        <th class="w-[140px]">Last active</th>
+                                        <th class="w-[110px] text-end"></th>
                                     </tr>
-                                @endforeach
-                            </tbody>
-                        </table>
+                                </thead>
+                                <tbody>
+                                    @foreach ($sessions as $s)
+                                        <tr wire:key="session-{{ $s['id'] }}">
+                                            <td>
+                                                <div class="font-medium text-mono">{{ $s['device'] }}</div>
+                                            </td>
+                                            <td class="text-secondary-foreground">{{ $s['ip'] ?? '—' }}</td>
+                                            <td>
+                                                @if ($s['current'])
+                                                    <span class="kt-badge kt-badge-sm kt-badge-success">{{ $s['last'] }}</span>
+                                                @else
+                                                    <span class="text-secondary-foreground">{{ $s['last'] }}</span>
+                                                @endif
+                                            </td>
+                                            <td class="text-end">
+                                                @unless ($s['current'])
+                                                    <button type="button" class="kt-btn kt-btn-sm kt-btn-ghost text-destructive"
+                                                            wire:click="signOutSession('{{ $s['id'] }}')"
+                                                            wire:confirm="Sign out this session?">
+                                                        Sign out
+                                                    </button>
+                                                @endunless
+                                            </td>
+                                        </tr>
+                                    @endforeach
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
-            </div>
-
-            <div class="kt-card">
-                <div class="kt-card-header">
-                    <h3 class="kt-card-title">API tokens</h3>
-                    <button class="kt-btn kt-btn-sm kt-btn-outline gap-2"><i class="ki-filled ki-plus text-sm"></i> New token</button>
+            @else
+                <div class="kt-card">
+                    <div class="kt-card-header"><h3 class="kt-card-title">Active sessions</h3></div>
+                    <div class="kt-card-content p-5">
+                        <p class="text-sm text-secondary-foreground">
+                            This install stores sessions in {{ config('session.driver') }}, not the database, so
+                            Kargah has no per-device record to list here.
+                        </p>
+                    </div>
                 </div>
-                <div class="kt-card-table">
-                    <div class="kt-scrollable-x-auto">
-                        <table class="kt-table align-middle text-sm">
-                            <thead>
-                                <tr>
-                                    <th class="min-w-[180px]">Name</th>
-                                    <th class="w-[120px]">Scopes</th>
-                                    <th class="w-[120px]">Created</th>
-                                    <th class="w-[130px]">Last used</th>
-                                    <th class="w-[100px] text-end"></th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                @forelse ($tokens as $t)
-                                    <tr>
-                                        <td class="font-medium text-mono">{{ $t['name'] }}</td>
-                                        <td><span class="kt-badge kt-badge-sm kt-badge-outline">{{ $t['scopes'] }}</span></td>
-                                        <td class="text-secondary-foreground">{{ $t['created'] }}</td>
-                                        <td class="text-secondary-foreground">{{ $t['lastUsed'] }}</td>
-                                        <td class="text-end"><button class="kt-btn kt-btn-sm kt-btn-ghost text-destructive">Revoke</button></td>
-                                    </tr>
-                                @empty
-                                    <tr><td colspan="5" class="text-center py-10 text-secondary-foreground">No tokens issued.</td></tr>
-                                @endforelse
-                            </tbody>
-                        </table>
+            @endif
+
+            <div class="kt-card bg-info/5 border-info/30">
+                <div class="kt-card-content flex items-start gap-3 p-4">
+                    <i class="ki-filled ki-key text-info text-lg mt-0.5 shrink-0"></i>
+                    <div class="text-sm text-secondary-foreground">
+                        <strong class="text-mono">Looking for API tokens?</strong>
+                        Credentials for scripts and the API live on their own page, hashed and individually revocable.
+                        @if ($applicationPasswordsRoute)
+                            <a href="{{ $applicationPasswordsRoute }}" class="text-primary hover:underline">Manage application passwords</a>.
+                        @else
+                            That page is unavailable — the Platform module is not enabled on this install.
+                        @endif
                     </div>
                 </div>
             </div>

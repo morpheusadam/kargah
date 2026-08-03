@@ -5,6 +5,7 @@
         ['route' => 'settings.appearance',    'label' => 'Appearance',    'icon' => 'ki-color-swatch',   'hint' => 'Theme and density'],
         ['route' => 'settings.notifications', 'label' => 'Notifications', 'icon' => 'ki-notification-status', 'hint' => 'What reaches you, and how'],
         ['route' => 'platform.application-passwords', 'label' => 'Application passwords', 'icon' => 'ki-key', 'hint' => 'Credentials for scripts and the API'],
+        ['route' => 'platform.assistant', 'label' => 'Assistant', 'icon' => 'ki-message-programming', 'hint' => 'AI provider, model and API key'],
     ];
 
     // Drop anything whose module has been disabled, rather than blowing up on

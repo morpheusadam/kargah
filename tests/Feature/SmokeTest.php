@@ -82,6 +82,8 @@ class SmokeTest extends TestCase
             'accounts' => ['/social/accounts'],
             'account connect' => ['/social/accounts/connect'],
             'application passwords' => ['/settings/application-passwords'],
+            'assistant settings' => ['/settings/assistant'],
+            'settings notifications' => ['/settings/notifications'],
         ];
     }
 

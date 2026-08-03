@@ -1,17 +1,18 @@
 <?php
 
+use Illuminate\Validation\Rule;
 use Livewire\Attributes\Title;
-use Livewire\Attributes\Validate;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 new
 #[Title('Profile — Kargah')]
 class extends Component
 {
-    #[Validate('required|string|max:120')]
+    use InteractsWithToasts;
+
     public string $name = '';
 
-    #[Validate('required|email|max:190')]
     public string $email = '';
 
     public string $timezone = 'Europe/London';
@@ -27,6 +28,10 @@ class extends Component
         $user = auth()->user();
         $this->name = $user?->name ?? '';
         $this->email = $user?->email ?? '';
+        $this->timezone = $user?->timezone ?? 'Europe/London';
+        $this->locale = $user?->locale ?? 'en';
+        $this->dateFormat = $user?->date_format ?? 'Y-m-d';
+        $this->bio = $user?->bio ?? '';
     }
 
     public function with(): array
@@ -50,10 +55,66 @@ class extends Component
         ];
     }
 
-    /** Persisted in the backend phase. */
+    /**
+     * The one-user-per-install rule this page follows for the email field:
+     * there is no mail-sending re-confirmation flow anywhere in Kargah, and
+     * building one for a single self-hosted admin account is ceremony this
+     * install does not need. Changing the address updates it immediately, but
+     * honestly — `email_verified_at` is cleared, because the new address
+     * genuinely has not been verified, even though nothing in this
+     * application currently enforces that.
+     */
     public function save(): void
     {
-        $this->validate();
+        $user = auth()->user();
+
+        if ($user === null) {
+            $this->toastError('You are not signed in', 'Sign in again and retry.');
+
+            return;
+        }
+
+        $this->validate([
+            'name' => 'required|string|max:120',
+            'email' => ['required', 'email', 'max:190', Rule::unique('users', 'email')->ignore($user->id)],
+            'timezone' => 'required|string|max:64',
+            'locale' => 'required|string|max:5',
+            'dateFormat' => 'required|string|max:10',
+            'bio' => 'nullable|string|max:2000',
+        ]);
+
+        $emailChanged = $this->email !== $user->email;
+
+        $user->fill([
+            'name' => $this->name,
+            'email' => $this->email,
+            'timezone' => $this->timezone,
+            'locale' => $this->locale,
+            'date_format' => $this->dateFormat,
+            'bio' => $this->bio,
+        ]);
+
+        if (! $user->isDirty()) {
+            // Nothing changed. A save that writes nothing must not claim it did.
+            $this->toastInfo('Nothing to save', 'The form matches what is already stored.');
+
+            return;
+        }
+
+        if ($emailChanged) {
+            $user->email_verified_at = null;
+        }
+
+        $user->save();
+
+        activity('profile')
+            ->performedOn($user)
+            ->causedBy($user)
+            ->event('profile.updated')
+            ->withProperties(['fields' => array_keys($user->getChanges())])
+            ->log('updated their profile');
+
+        $this->toastSuccess('Profile saved', 'Your details have been updated.');
     }
 };
 
