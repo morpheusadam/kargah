@@ -313,16 +313,252 @@ target — there is no stable public URL to register.
 
 ---
 
+## Platform — application passwords
+
+**A new module, and the dependency arrow points the other way.**
+`Platform` is an edge module: it may depend on any other module's `Contracts` namespace and on no
+module's `Models`, and nothing may depend on it. That is what an API gateway is, and it is the
+only module allowed to see all the others. Priority is `10` like every feature module, because it
+depends on Core's schema and on nothing else's. Two dependencies on Core that are not `Contracts`
+and are deliberate: `Core\Support\MorphMap`, which every module calls to register its aliases, and
+`Core\Concerns\InteractsWithToasts`, which is presentation plumbing with no domain in it. Neither
+is a model and neither carries a fact about the business.
+
+**The secret is a `protected` property on the Livewire component, not a public one.**
+This is the single load-bearing line on the settings page. A public property is serialised into
+the page and posted back on every round trip, so a freshly issued secret held in one would sit in
+the browser's memory, in the back button and in any proxy in between for as long as the tab stayed
+open. Livewire does not serialise protected properties, so `$issuedSecret` exists only for the
+request that created it and the very next interaction comes back without it. Nothing has to
+remember to clear it, which is exactly why it cannot be forgotten. `dismissSecret()` has an empty
+body on purpose: its whole job is to cause a render that does not contain the secret.
+
+**`token_hash` is not in `$fillable`, and there is no factory.**
+The issuer writes it with `forceFill`, which makes `ApplicationPasswordIssuer::issue()` the one
+creation path in the application — a settings page, an artisan command and a future API all come
+through the same generator, the same `Hash::make`, and the same activity entry. A factory would be
+a second way to make one of these, which is a second way to make one wrongly; the tests use the
+issuer and `forceFill` for the expired and revoked states.
+
+**Never `where('token_hash', …)`.**
+The lookup is `user_id` + `prefix`, then a real `Hash::check` over the handful of rows that come
+back. Querying by hash would make the database answer "does this hash exist" for anyone who can
+ask, and it only works at all with an unsalted digest, which is the wrong kind of hash for a
+credential. `ApplicationPasswordTest` watches the query log during a real authentication and fails
+if `token_hash` appears in any SQL, so the shortcut cannot be reintroduced quietly.
+
+**A miss costs the same as a hit.**
+No such account, no candidate row and a wrong secret all spend one hash operation — the decoy is a
+`Hash::make` on a fixed string. Without it, an unknown email address returns measurably faster
+than a known one, which is an account enumeration oracle sitting on the only endpoint in Kargah
+reachable without a session. Revoked and expired are checked *after* the hash for the same reason.
+
+**Revocation is a conditional `UPDATE`, not an `if` on the model.**
+`whereKey(...)->whereNull('revoked_at')->update(...)` returns the row count, and a zero means
+somebody else got there first. An `if ($credential->revoked_at === null)` read from a stale
+instance lets two callers through and writes two entries into an append-only table. Same rule as
+every job here: the second run changes nothing, and the test asserts `revoked_at` does not move
+and no second activity entry appears.
+
+**`/api/v1/whoami` requires `core:read`, and yes, that is slightly circular.**
+The rule from `07-platform.md` is that no endpoint is reachable without a scope, and exempting the
+discovery endpoint would make it the one credential-free surface in the API. The circle is closed
+from both ends instead: the settings page ticks `core:read` by default, and a 403 names the scope
+it wanted and lists the ones the credential has — so a client that cannot reach `whoami` is still
+told what it is missing.
+
+**Middleware aliases are registered by the module, not in `bootstrap/app.php`.**
+`PlatformServiceProvider::boot()` calls `aliasMiddleware('app-password', …)` and
+`aliasMiddleware('scope', …)`. A module that needs a middleware should be able to declare one, and
+the app shell should not have to know Platform exists — the same argument that put Data's backup
+disk in `DataServiceProvider` rather than in `config/filesystems.php`.
+
+**`07-platform.md` was wrong that `NoSecretsInHtmlTest` would pick the new table up on its own.**
+It says the table "will be picked up automatically because the column will be named `*_hash` and
+`token`". The test's pattern was `/(_encrypted|^secret|_secret|password|_token$|credentials)/i`,
+and `token_hash` matches none of it. `token_hash$` was added — deliberately not the broader
+`_hash$`, because `crypto_payments.tx_hash` is a blockchain transaction reference that is public by
+construction and is printed on the invoice page on purpose. A pattern that cannot tell those two
+apart would fail the test for doing the right thing.
+
+**`NoDeadEndpointsTest` gained an allowlist rather than losing its assertion.**
+It asserted that *no* route starts with `api/v1/`, which was exactly right while Kargah had no
+API. `/api/v1/whoami` is real, so the assertion now skips a named list of endpoints somebody wrote
+— and a second test asserts every entry on that list is actually routed, so the allowlist cannot
+quietly keep excusing a URI after the route behind it has gone.
+
+**Sanctum was not installed, and should not be.**
+The spec says Sanctum "can back this". It cannot back it usefully: Sanctum's model is a bearer
+token, and the interface here has to be Basic auth so that `curl -u` works in one line. Adding a
+package to reimplement its interface is a dependency for nothing.
+
+**`settings-nav.blade.php` gained the same `Route::has` guard the sidebar already had.**
+Its first four tabs are application routes and always exist; the fifth belongs to a module, and
+`route()` on a disabled module throws rather than degrading.
+
+---
+
+## The toast layer
+
+**"Only report what the user cannot already see" is the whole rule, and it decided fifty call
+sites.**
+The front end toasted on everything, which was right while every page was a fixture and an
+interaction had no other way to prove it had happened. Once the pages did real work it became
+noise, and noise is where a genuine failure goes to hide. A panel opening is visible — the panel is
+open. A write, a dispatch, an export, a clipboard copy, or a row that leaves the screen is not.
+
+**Every error and warning survived untouched.**
+A failure is never otherwise visible, so the rule cannot reach it. This also means the cleanup
+could be applied mechanically without anyone having to judge, per call site, how bad a failure was.
+
+**A success toast on a branch that deliberately does nothing was kept, not deleted.**
+"Nothing to archive", "already there", "nothing needed sending" — these look like the forbidden
+case and are its opposite. The user clicked something and *no write happened*; the absence is
+precisely what they cannot see. The forbidden case is a method that does nothing and claims it
+did something.
+
+**Three `updated*` hooks in Accounting's expenses page were left empty rather than deleted.**
+Their entire bodies were a toast. The selects are `wire:model.live`, so the round trip happens
+without them, but deleting a Livewire lifecycle hook is a behavioural decision rather than a toast
+one and it was left for a human.
+
+---
+
+## Testing — measuring performance inside a test suite
+
+**A wall-clock budget asserted in the suite measures the machine, not the page.**
+`InboxPageTest`'s "renders in under 200 ms with 10,000 messages" came back at 93 ms run alone,
+255 ms under the full suite, and 533 ms with several agents working in parallel. The assertion was
+load-sensitive, which makes it a source of false red and — worse — of false green, because the
+ceiling that stops failing under load is one a real regression can also pass.
+
+Raising the number was the wrong fix. The property the timing stood in for is *the page does not
+scale with the table*, and that has two load-invariant forms, both now asserted: a bounded query
+count with `limit 26` on the list query, and a companion test that renders the same page with 25
+messages and with 10,000 and asserts the cost does not track the row count. A generous 2 s ceiling
+remains as a pathology detector — a query that grew with the table does not come back marginally
+late, it comes back in seconds — and it is commented as such so nobody reads it as the budget.
+
+The real budget lives where the number means something: `php timing-probe.php`, warm, against the
+dev database.
+
+---
+
+## Search operators
+
+**An unknown operator becomes free text; it is never dropped.**
+`colour:red` is not a key the grammar knows. Dropping it silently means a search box that ignores
+what someone typed and returns results that do not match what they asked for. Searching for the
+literal string is wrong in a different, *visible* way, and visible is better.
+
+**Dates are recorded, never resolved.**
+`created:week` is stored as the string `week`. The parser has no clock and never calls `now()`, so
+the compiler decides what a week means against the request's timezone — baking it in would freeze
+one timezone into a saved filter.
+
+**Quotes are metacharacters everywhere, with no escape.**
+The cost is that a literal double quote cannot be searched for. The gain is that `toString()` is
+lossless and the round trip closes, which is what lets a saved filter survive being re-parsed.
+`parse(parse($s)->toString())` is asserted stable — the same "runs twice, changes nothing" rule
+the project holds jobs to, applied to a serialiser.
+
+**An unterminated quote runs to the end of the input instead of throwing.**
+A search box is typed live. Half a quoted phrase is a normal intermediate state, not an error.
+
+**PHPUnit 12 no longer reads the `@dataProvider` doc annotation.**
+It silently runs the test with no arguments and errors. `#[DataProvider]` is required. Worth
+knowing before writing the next table-driven test.
+
+---
+
+## The ICS feed
+
+**`DTEND` for an all-day event is exclusive, and the caller is not asked to know that.**
+RFC 5545 says a card due on 31 July is `20260731` to `20260801`. `IcsEvent` takes the last day the
+card covers and adds the day itself. Putting the exclusive end in the constructor would have pushed
+the classic off-by-one onto every call site instead of solving it once.
+
+**An all-day date is read in its own timezone and never converted.**
+Converting midnight in Istanbul to UTC moves the card to the 30th — the same off-by-one by another
+road. Timed events *are* converted to UTC, because a feed consumed by an external client is exactly
+the case where UTC on the wire is right.
+
+**Line folding counts octets, not characters.**
+75 octets is what the RFC says. Counting characters splits a codepoint in a Turkish title or an em
+dash, and the client renders mojibake. A fold also never separates a backslash from the character
+it escapes — legal either way, since unfolding precedes unescaping, but enough readers get that
+order wrong that one retreating octet is cheap insurance.
+
+**`DTSTAMP` is a parameter, not a call to `now()`.**
+It is the one field that legitimately moves between generations, so taking it as an argument makes
+the output byte-identical for the same input — which is both testable and the thing that lets the
+HTTP layer send a real `ETag` instead of regenerating an unchanged feed on every poll.
+
+**The control-character strip is byte-wise, not `/u`.**
+A `/u` pattern returns null on the first malformed byte, which would blank the whole value rather
+than clean it. A tab survives: RFC 5545 §3.1 lists HTAB as legal.
+
+**An empty feed emits a bare `VCALENDAR` with no component, which §3.6 does not allow.**
+A knowing deviation. The alternatives were a synthetic placeholder event, which is a lie in
+somebody's calendar, or a 404 for an empty board, which presents as a broken subscription.
+
+---
+
+## Core — notifications
+
+**The table is `user_notifications`, because `notifications` is Laravel's.**
+`App\Models\User` uses `Notifiable`, whose `notifications()` relation targets
+`Illuminate\Notifications\DatabaseNotification` — a uuid primary key and `type` /
+`notifiable_type` / `data` columns, irreconcilable with this shape. Nothing calls it today, so the
+collision is latent rather than live, which is the kind that fails confusingly six months later.
+
+Dropping `Notifiable` from `User` was the other option and was rejected:
+`CanResetPassword::sendPasswordResetNotification()` calls `$this->notify()`, so removing the trait
+would quietly break password reset. Renaming is safe unconditionally. A test pins all three facts —
+the table name, that `notifications` does not exist, and that `Notifiable` is still on `User` — so
+nobody renames it back on the grounds that nothing currently breaks.
+
+**`title`, `body` and `url` are denormalised, exactly as `searchables` is.**
+The alternative is Core resolving a polymorphic subject to a display string, which means Core
+knowing about every module. It also means a notification about a deleted card still renders instead
+of 500ing the feed, and that an old row keeps the name the card had when it happened — which is what
+you want in a list of things that already occurred.
+
+**`notify()` reads before it writes *and* catches the unique violation.**
+The `SELECT` is the fast path for the ordinary second cron tick; the catch is what makes a genuine
+overlap correct. The index is the authority, not the read. Verified on SQLite that NULL dedupe keys
+do not collide, by an insert that bypasses the service entirely.
+
+**A matched `dedupe_key` returns the existing row completely unchanged.**
+It does not update the title to a newer render. A feed of things that already happened keeps what
+it said at the time.
+
+**`markRead()` scopes by user in the query rather than checking after loading.**
+A notification id is not a capability, and the cheapest way to keep that true is never to load a
+row belonging to someone else.
+
+**A too-long `url` throws; a too-long `title` is truncated.**
+Truncating a URL stores a link that goes somewhere else, which is worse than refusing it. A
+truncated title is still the right notification.
+
+---
+
 ## Cross-cutting
 
 **Thirty scaffolded API endpoints were removed.**
 `nwidart/laravel-modules` scaffolds an `apiResource` and a placeholder controller into every new
 module, and Core additionally got a `Route::resource('cores', …)` in its web routes. All of them
 pointed at controllers whose `index`, `create`, `show` and `edit` rendered views that were never
-written, so a signed-in request got a 500. Kargah has no API. Dead surface area is worse than
-missing surface area — undocumented, untested, and the first thing anyone poking at the
-application finds — so they are gone, and `tests/Feature/NoDeadEndpointsTest.php` walks the real
-routing table to stop `module:make` quietly putting them back.
+written, so a signed-in request got a 500. Dead surface area is worse than missing surface area —
+undocumented, untested, and the first thing anyone poking at the application finds — so they are
+gone, and `tests/Feature/NoDeadEndpointsTest.php` walks the real routing table to stop
+`module:make` quietly putting them back.
+
+That test said "no route may begin with `api/v1/`", which was true when Kargah had no API and
+became a contradiction the moment `07-platform.md` asked for one. It now carries a short allowlist
+of URIs that are genuinely written, plus a second test asserting every allowlisted URI is actually
+routed — so a line added to the allowlist cannot quietly excuse a URI nobody built. Adding to it is
+a deliberate act; weakening it is not.
 
 ---
 
