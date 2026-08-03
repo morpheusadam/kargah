@@ -1,11 +1,11 @@
 {
-    "name": "Accounting",
-    "alias": "accounting",
-    "description": "",
-    "keywords": [],
-    "priority": 0,
-    "providers": [
-        "Modules\\Accounting\\Providers\\AccountingServiceProvider"
-    ],
-    "files": []
+  "name": "Accounting",
+  "alias": "accounting",
+  "description": "",
+  "keywords": [],
+  "priority": 10,
+  "providers": [
+    "Modules\\Accounting\\Providers\\AccountingServiceProvider"
+  ],
+  "files": []
 }

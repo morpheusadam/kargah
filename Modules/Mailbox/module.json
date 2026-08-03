@@ -1,11 +1,11 @@
 {
-    "name": "Mailbox",
-    "alias": "mailbox",
-    "description": "",
-    "keywords": [],
-    "priority": 0,
-    "providers": [
-        "Modules\\Mailbox\\Providers\\MailboxServiceProvider"
-    ],
-    "files": []
+  "name": "Mailbox",
+  "alias": "mailbox",
+  "description": "",
+  "keywords": [],
+  "priority": 10,
+  "providers": [
+    "Modules\\Mailbox\\Providers\\MailboxServiceProvider"
+  ],
+  "files": []
 }

@@ -3,5 +3,6 @@
     "Accounting": true,
     "Mailbox": true,
     "Data": true,
-    "Social": true
+    "Social": true,
+    "Core": true
 }

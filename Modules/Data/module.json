@@ -1,11 +1,11 @@
 {
-    "name": "Data",
-    "alias": "data",
-    "description": "",
-    "keywords": [],
-    "priority": 0,
-    "providers": [
-        "Modules\\Data\\Providers\\DataServiceProvider"
-    ],
-    "files": []
+  "name": "Data",
+  "alias": "data",
+  "description": "",
+  "keywords": [],
+  "priority": 10,
+  "providers": [
+    "Modules\\Data\\Providers\\DataServiceProvider"
+  ],
+  "files": []
 }
