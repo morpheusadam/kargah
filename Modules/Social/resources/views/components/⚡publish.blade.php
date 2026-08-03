@@ -3,7 +3,9 @@
 use Illuminate\Support\Collection;
 use Livewire\Attributes\Title;
 use Livewire\Component;
+use Livewire\WithFileUploads;
 use Modules\Core\Concerns\InteractsWithToasts;
+use Modules\Data\Contracts\AttachmentService;
 use Modules\Social\Models\Post;
 use Modules\Social\Models\PostTarget;
 use Modules\Social\Models\SocialAccount;
@@ -27,12 +29,41 @@ use Modules\Social\Support\Networks;
  * The toast says what actually happened, per network. 'Published' is not a
  * truthful summary of a post that reached two networks out of three, and the
  * person's next action depends on which.
+ *
+ * ## Pictures
+ *
+ * Images are held as temporary uploads in component state and only become
+ * attachment rows in `submit()`, after the post exists — a file has to be
+ * attached *to* something and there is nothing to attach it to until the row is
+ * written. They go through `Modules\Data\Contracts\AttachmentService` like every
+ * other upload in Kargah; this page never opens a file handle.
+ *
+ * **Every limit is checked here, while a person is looking at the screen.**
+ * Count, byte size, MIME type and — where a network has them — pixel and aspect
+ * rules all come from `Modules\Social\Support\Networks` and are evaluated
+ * against each selected account before anything is written, let alone queued.
+ * The alternative is a red target row an hour later saying a network answered
+ * 422, at which point the file is on a disk, the post is half-sent, and the
+ * person has gone home. A limit discovered at the point of attaching is a
+ * sentence; the same limit discovered by a failed job is an incident.
+ *
+ * The checks are per *selected account*, not global, because the networks
+ * disagree so sharply — Bluesky refuses anything over a million bytes,
+ * Telegram refuses a GIF and shortens the copy to a caption's 1,024 characters,
+ * LinkedIn refuses WebP. A picture is therefore not simply valid or invalid: it
+ * is fine for three of the four networks ticked, and the message has to say
+ * which one it is not fine for, or the only available fix is guessing.
+ *
+ * **Images only.** There is no video path and there should not be one here: a
+ * chunked, resumable upload spans minutes and this publishes inside one
+ * request. See `Networks` and `project-guaid/spec/08-postiz-parity.md`.
  */
 new
 #[Title('Publish — Kargah')]
 class extends Component
 {
     use InteractsWithToasts;
+    use WithFileUploads;
 
     public string $body = '';
 
@@ -47,8 +78,31 @@ class extends Component
 
     public string $scheduledAt = '';
 
+    /**
+     * Pictures queued for this post, in the order they will be sent.
+     *
+     * Temporary uploads, not attachments: nothing is attached until `submit()`
+     * has written the post. Reordering here is reordering this array, which is
+     * why it is cheap enough to have at all.
+     *
+     * @var array<int, \Livewire\Features\SupportFileUploads\TemporaryUploadedFile>
+     */
+    public array $uploads = [];
+
     /** Per-request memo; see the note on ⚡boards about why these are private. */
     private ?Collection $resolvedAccounts = null;
+
+    /**
+     * `getimagesize()` results, per request, keyed by upload index.
+     *
+     * Geometry is read from the temporary file on disk and the validation pass
+     * walks every upload against every selected network, so without this a post
+     * with four images going to four networks would stat and parse each file
+     * sixteen times on every keystroke that re-renders the page.
+     *
+     * @var array<int, array{0: int, 1: int}|null>
+     */
+    private array $dimensions = [];
 
     /**
      * Start with every account that could actually receive a post ticked.
@@ -94,7 +148,224 @@ class extends Component
             'selected' => $selected,
             'catalogue' => Networks::all(),
             'connectedCount' => $selected->filter(fn (SocialAccount $a): bool => $a->isConnected())->count(),
+            'mediaProblems' => $this->mediaProblems(),
+            'hasMedia' => $this->uploads !== [],
         ];
+    }
+
+    /* Pictures ------------------------------------------------------------- */
+
+    /**
+     * The gate that runs the moment a file lands, before any network is asked.
+     *
+     * Two rules, both about the file rather than about any particular network:
+     * it has to be a still image of a type at least one network here can use,
+     * and it has to be under the largest ceiling any network allows. A file
+     * that fails either is rejected outright, because there is no combination
+     * of ticked accounts that would make it publishable. Everything narrower
+     * than that — Bluesky's million bytes, Telegram's refusal of GIFs — is a
+     * per-account judgement and belongs in `mediaProblems()`, where it can name
+     * the network and offer unticking it as the fix.
+     */
+    public function updatedUploads(): void
+    {
+        $this->dimensions = [];
+
+        $this->validate([
+            'uploads.*' => [
+                'file',
+                'mimetypes:'.implode(',', Networks::acceptedImageMimes()),
+                // Kilobytes. Ten megabytes is the most generous ceiling in the
+                // catalogue, so nothing larger can reach any network.
+                'max:10240',
+            ],
+        ], [
+            'uploads.*.mimetypes' => 'Kargah publishes still images only — JPEG, PNG, GIF or WebP. Video needs an upload that can span minutes, which a scheduled post cannot.',
+            'uploads.*.max' => 'No network here takes an image over 10 MB.',
+        ]);
+
+        $this->uploads = array_values($this->uploads);
+    }
+
+    public function removeUpload(int $index): void
+    {
+        unset($this->uploads[$index]);
+
+        $this->uploads = array_values($this->uploads);
+        $this->dimensions = [];
+    }
+
+    /**
+     * Move one picture earlier or later in the sequence.
+     *
+     * Order is not decoration: a carousel is a sequence, the first image is the
+     * one that appears in a timeline preview, and Telegram captions the first
+     * item of an album and no other. A swap on an array is the whole
+     * implementation, which is what makes this worth having rather than a
+     * drag-and-drop library.
+     */
+    public function moveUpload(int $index, int $by): void
+    {
+        $to = $index + $by;
+
+        if (! isset($this->uploads[$index], $this->uploads[$to])) {
+            return;
+        }
+
+        [$this->uploads[$index], $this->uploads[$to]] = [$this->uploads[$to], $this->uploads[$index]];
+
+        $this->uploads = array_values($this->uploads);
+        $this->dimensions = [];
+    }
+
+    /**
+     * Every reason the attached pictures will not go out as they stand.
+     *
+     * Phrased per network and per file, because that is the granularity of the
+     * fix — 'too big' is not actionable when four networks are ticked and one
+     * of them is the one complaining. Deduplicated, because four images that
+     * are each too large for Bluesky is one sentence about Bluesky's limit
+     * repeated, not four findings.
+     *
+     * @return list<string>
+     */
+    public function mediaProblems(): array
+    {
+        if ($this->uploads === []) {
+            return [];
+        }
+
+        $problems = [];
+
+        foreach ($this->selected() as $account) {
+            foreach ($this->problemsFor($account) as $problem) {
+                $problems[$problem] = true;
+            }
+        }
+
+        return array_keys($problems);
+    }
+
+    /**
+     * What one network makes of what is currently attached.
+     *
+     * @return list<string>
+     */
+    private function problemsFor(SocialAccount $account): array
+    {
+        $rules = $account->mediaRules();
+        $label = $account->label();
+        $found = [];
+
+        if (count($this->uploads) > $rules['max_count']) {
+            $found[] = $label.' takes at most '.$rules['max_count'].' '
+                .($rules['max_count'] === 1 ? 'image' : 'images').', and there are '.count($this->uploads).'.';
+        }
+
+        $captionLimit = $account->characterLimitWith(true);
+
+        if (mb_strlen($this->textFor($account->id)) > $captionLimit) {
+            $found[] = $label.' allows '.number_format($captionLimit)
+                .' characters once an image is attached, and this copy is '
+                .number_format(mb_strlen($this->textFor($account->id))).'.';
+        }
+
+        foreach ($this->uploads as $index => $upload) {
+            $name = $upload->getClientOriginalName();
+            $mime = (string) $upload->getMimeType();
+
+            if (! in_array($mime, $rules['mimes'], true)) {
+                $found[] = $label.' does not accept '.$mime.', so “'.$name.'” cannot go to it.';
+
+                // Nothing further to say about a file this network will not
+                // take at all; its size and shape are beside the point.
+                continue;
+            }
+
+            if ($upload->getSize() > $rules['max_bytes']) {
+                $found[] = '“'.$name.'” is '.$this->megabytes((int) $upload->getSize())
+                    .' and '.$label.' accepts up to '.$this->megabytes((int) $rules['max_bytes']).'.';
+            }
+
+            $found = [...$found, ...$this->geometryProblems($index, $name, $label, $rules)];
+        }
+
+        return $found;
+    }
+
+    /**
+     * The rules that need the picture's actual pixels.
+     *
+     * Only two networks have any: Mastodon re-encodes above a total pixel count
+     * and refuses what it cannot re-encode, and Telegram refuses a photo whose
+     * sides sum past 10,000 or whose longer side is more than twenty times its
+     * shorter. Both are refusals rather than resizes, which is why they are
+     * worth reading a file header for.
+     *
+     * @param  array<string, mixed>  $rules
+     * @return list<string>
+     */
+    private function geometryProblems(int $index, string $name, string $label, array $rules): array
+    {
+        if ($rules['max_pixels'] === null && $rules['max_dimension_sum'] === null && $rules['max_aspect_ratio'] === null) {
+            return [];
+        }
+
+        $size = $this->dimensionsOf($index);
+
+        // A file whose header will not parse is not reported here. The type
+        // check has already passed, so this is a truncated or unusual encoding
+        // rather than a wrong file, and the network is a better judge of it
+        // than a guess made from a partial read.
+        if ($size === null) {
+            return [];
+        }
+
+        [$width, $height] = $size;
+        $found = [];
+
+        if ($rules['max_pixels'] !== null && $width * $height > $rules['max_pixels']) {
+            $found[] = '“'.$name.'” is '.$width.'×'.$height.', which is more than '.$label
+                .' will re-encode. Scale it down before attaching it.';
+        }
+
+        if ($rules['max_dimension_sum'] !== null && $width + $height > $rules['max_dimension_sum']) {
+            $found[] = '“'.$name.'” is '.$width.'×'.$height.' and '.$label
+                .' refuses a photo whose sides add up to more than '.number_format($rules['max_dimension_sum']).'.';
+        }
+
+        if ($rules['max_aspect_ratio'] !== null && $width > 0 && $height > 0) {
+            $ratio = max($width / $height, $height / $width);
+
+            if ($ratio > $rules['max_aspect_ratio']) {
+                $found[] = '“'.$name.'” is '.$width.'×'.$height.', which is too long and thin for '.$label
+                    .' — it refuses anything past '.$rules['max_aspect_ratio'].':1.';
+            }
+        }
+
+        return $found;
+    }
+
+    /** @return array{0: int, 1: int}|null */
+    private function dimensionsOf(int $index): ?array
+    {
+        if (array_key_exists($index, $this->dimensions)) {
+            return $this->dimensions[$index];
+        }
+
+        $path = $this->uploads[$index]->getRealPath();
+
+        $size = is_string($path) && $path !== '' && is_readable($path) ? @getimagesize($path) : false;
+
+        return $this->dimensions[$index] = $size === false ? null : [(int) $size[0], (int) $size[1]];
+    }
+
+    /** Bytes as something a person can compare against a network's stated limit. */
+    private function megabytes(int $bytes): string
+    {
+        return $bytes < 1048576
+            ? max(1, (int) round($bytes / 1024)).' KB'
+            : round($bytes / 1048576, 1).' MB';
     }
 
     /** The copy a given account will actually receive. */
@@ -172,7 +443,10 @@ class extends Component
             return;
         }
 
-        $limit = $account->characterLimit();
+        // Asked with the pictures in mind: Telegram's allowance drops from
+        // 4,096 to 1,024 the moment one is attached, and trimming to the
+        // message limit would leave the caption still over its own.
+        $limit = $account->characterLimitWith($this->uploads !== []);
 
         // The textarea and its counter show the result, so nothing is said.
         $this->overrides[$accountId] = rtrim(mb_substr($this->textFor($accountId), 0, $limit));
@@ -203,6 +477,21 @@ class extends Component
             return;
         }
 
+        // Checked here as well as on the page, because the page is advisory and
+        // this is the last point at which nothing has been written. A post row
+        // and four attachment rows are a great deal harder to take back than a
+        // refusal.
+        $problems = $this->mediaProblems();
+
+        if ($problems !== []) {
+            $this->toastError(
+                count($problems) === 1 ? 'That image will not go out as attached' : 'Those images will not go out as attached',
+                $problems[0].' Nothing was written.',
+            );
+
+            return;
+        }
+
         $when = $this->scheduledFor();
 
         if ($this->schedule === 'later' && $when === null) {
@@ -219,7 +508,6 @@ class extends Component
 
         $post = Post::query()->create([
             'body' => $body,
-            'media' => null,
             'status' => match ($this->schedule) {
                 'later' => Post::SCHEDULED,
                 default => Post::DRAFT,
@@ -227,6 +515,13 @@ class extends Component
             'scheduled_for' => $when,
             'created_by' => auth()->id(),
         ]);
+
+        // Attached before the targets exist, and certainly before anything is
+        // published: `PostPublisher` resolves a post's images from these rows,
+        // so a target claimed before they are written would send the text on
+        // its own. There is no `posts.media` to keep in step — see the docblock
+        // on Modules\Social\Models\Post for why that column is dead.
+        $this->attachTo($post);
 
         foreach ($accounts as $account) {
             PostTarget::query()->create([
@@ -278,6 +573,32 @@ class extends Component
         }
 
         $this->redirectRoute('social.post-show', ['post' => $post->id], navigate: true);
+    }
+
+    /**
+     * Turn the queued uploads into attachment rows on the new post.
+     *
+     * In array order, because attachment ids ascend and
+     * `Modules\Social\Services\PostMedia` reads them back oldest first — so the
+     * sequence the person arranged on this page is the sequence the network
+     * receives.
+     */
+    private function attachTo(Post $post): void
+    {
+        if ($this->uploads === []) {
+            return;
+        }
+
+        $attachments = app(AttachmentService::class);
+
+        foreach ($this->uploads as $upload) {
+            $attachments->attach($post, $upload, auth()->id());
+        }
+
+        // Cleared so that the redirect cannot leave temporary files pointed at
+        // a post that already owns copies of them.
+        $this->uploads = [];
+        $this->dimensions = [];
     }
 
     /**
@@ -339,6 +660,95 @@ class extends Component
                         </span>
                     </div>
 
+                    {{-- Images --}}
+                    <div class="border-t border-border pt-4 flex flex-col gap-3">
+
+                        <div class="flex flex-wrap items-center justify-between gap-2">
+                            <span class="text-xs font-medium text-mono">Images</span>
+                            <span class="text-xs text-muted-foreground">
+                                Still images only — video needs an upload that can span minutes
+                            </span>
+                        </div>
+
+                        @if (count($uploads) > 0)
+                            <div class="flex flex-wrap gap-3">
+                                @foreach ($uploads as $index => $upload)
+                                    <div class="relative w-28" wire:key="upload-{{ $index }}-{{ $upload->getFilename() }}">
+                                        {{-- `temporaryUrl()` throws for anything Livewire will not preview, and a
+                                             file that failed validation is still sitting in this array when the
+                                             page re-renders — so the guard is what keeps a rejected upload from
+                                             turning an error message into a 500. --}}
+                                        @if ($upload->isPreviewable())
+                                            <img src="{{ $upload->temporaryUrl() }}"
+                                                 alt="{{ $upload->getClientOriginalName() }}"
+                                                 class="h-28 w-28 rounded-lg border border-border object-cover">
+                                        @else
+                                            <div class="h-28 w-28 rounded-lg border border-dashed border-destructive flex flex-col items-center justify-center gap-1 text-center px-2">
+                                                <i class="ki-filled ki-picture text-xl text-destructive"></i>
+                                                <span class="text-[11px] text-destructive">Not an image Kargah can send</span>
+                                            </div>
+                                        @endif
+                                        <span class="absolute top-1 start-1 kt-badge kt-badge-sm kt-badge-outline bg-background">
+                                            {{ $index + 1 }}
+                                        </span>
+                                        <button type="button" wire:click="removeUpload({{ $index }})"
+                                                aria-label="Remove {{ $upload->getClientOriginalName() }}"
+                                                class="absolute top-1 end-1 kt-btn kt-btn-icon kt-btn-sm kt-btn-ghost bg-background">
+                                            <i class="ki-filled ki-cross text-xs"></i>
+                                        </button>
+                                        <div class="flex items-center justify-between gap-1 mt-1">
+                                            <button type="button" wire:click="moveUpload({{ $index }}, -1)"
+                                                    aria-label="Move {{ $upload->getClientOriginalName() }} earlier"
+                                                    class="kt-btn kt-btn-icon kt-btn-sm kt-btn-ghost"
+                                                    @disabled($index === 0)>
+                                                <i class="ki-filled ki-left text-xs"></i>
+                                            </button>
+                                            <span class="text-[11px] text-muted-foreground truncate" title="{{ $upload->getClientOriginalName() }}">
+                                                {{ $upload->getClientOriginalName() }}
+                                            </span>
+                                            <button type="button" wire:click="moveUpload({{ $index }}, 1)"
+                                                    aria-label="Move {{ $upload->getClientOriginalName() }} later"
+                                                    class="kt-btn kt-btn-icon kt-btn-sm kt-btn-ghost"
+                                                    @disabled($index === count($uploads) - 1)>
+                                                <i class="ki-filled ki-right text-xs"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                @endforeach
+                            </div>
+                        @endif
+
+                        <label class="rounded-lg border border-dashed border-border bg-accent/60 px-5 py-4 flex flex-col items-center gap-1 text-center cursor-pointer">
+                            <i class="ki-filled ki-picture text-xl text-muted-foreground"></i>
+                            <span class="text-sm text-secondary-foreground">
+                                {{ count($uploads) > 0 ? 'Add another image' : 'Attach an image' }}
+                            </span>
+                            <input type="file" multiple accept="image/jpeg,image/png,image/gif,image/webp"
+                                   class="hidden" wire:model="uploads">
+                            <span class="text-[11px] text-muted-foreground">
+                                JPEG, PNG, GIF or WebP. Each network has its own ceiling and Kargah checks against the ones you have ticked.
+                            </span>
+                        </label>
+
+                        <div wire:loading wire:target="uploads" class="text-xs text-secondary-foreground">
+                            <i class="ki-filled ki-loading animate-spin"></i> Receiving…
+                        </div>
+
+                        @error('uploads.*')<span class="text-xs text-destructive">{{ $message }}</span>@enderror
+
+                        @if ($mediaProblems !== [])
+                            <ul class="flex flex-col gap-1 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2">
+                                @foreach ($mediaProblems as $problem)
+                                    <li class="text-xs text-destructive flex items-start gap-2">
+                                        <i class="ki-filled ki-information-2 text-sm shrink-0 mt-px"></i>
+                                        <span>{{ $problem }}</span>
+                                    </li>
+                                @endforeach
+                            </ul>
+                        @endif
+
+                    </div>
+
                     <div class="border-t border-border pt-4 flex flex-wrap items-end justify-between gap-3">
                         <div class="flex flex-wrap items-end gap-2">
                             <div class="flex flex-col gap-1">
@@ -359,7 +769,7 @@ class extends Component
 
                         <button wire:click="submit" wire:loading.attr="disabled"
                                 class="kt-btn kt-btn-primary gap-2"
-                                @disabled(empty($targets) || trim($body) === '')>
+                                @disabled(empty($targets) || trim($body) === '' || $mediaProblems !== [])>
                             <span wire:loading.remove wire:target="submit" class="inline-flex items-center gap-2">
                                 <i class="ki-filled ki-paper-plane"></i>
                                 {{ $schedule === 'now' ? 'Publish' : ($schedule === 'later' ? 'Schedule' : 'Save draft') }}
@@ -384,7 +794,10 @@ class extends Component
                         @php
                             $text = $this->textFor($account->id);
                             $forked = $this->isOverridden($account->id);
-                            $limit = $account->characterLimit();
+                            // Telegram's allowance drops to a caption's 1,024
+                            // once a picture is attached, so the counter has to
+                            // move with the images rather than sit on 4,096.
+                            $limit = $account->characterLimitWith($hasMedia);
                             $over = mb_strlen($text) - $limit;
                         @endphp
                         <div class="p-4 flex flex-col gap-3" wire:key="override-{{ $account->id }}">
@@ -440,7 +853,8 @@ class extends Component
                         @php
                             $active = in_array($account->id, array_map('intval', $targets), true);
                             $length = mb_strlen($this->textFor($account->id));
-                            $over = $length > $account->characterLimit();
+                            $accountLimit = $account->characterLimitWith($hasMedia);
+                            $over = $length > $accountLimit;
                         @endphp
                         <button wire:click="toggleTarget({{ $account->id }})" wire:key="target-{{ $account->id }}"
                                 class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-start transition-colors
@@ -451,7 +865,7 @@ class extends Component
                                 <span class="block text-xs text-muted-foreground truncate">{{ $account->handle }}</span>
                                 <span class="block text-xs {{ $over ? 'text-destructive' : 'text-muted-foreground' }}">
                                     {{ $account->isConnected()
-                                        ? $length . ' / ' . number_format($account->characterLimit())
+                                        ? $length . ' / ' . number_format($accountLimit)
                                         : 'Credentials not configured' }}
                                 </span>
                             </span>

@@ -19,6 +19,26 @@ use Modules\Social\Support\Networks;
  * second copy on the timeline when the stale claim is picked up again. The
  * database claim is still the primary guarantee; this closes the window the
  * database cannot see into.
+ *
+ * **Pictures: upload each, then quote the ids.** `POST /api/v2/media` takes one
+ * file per call as multipart and answers with an attachment that has an id;
+ * `media_ids` on the status is what turns those ids into a post. Four images
+ * therefore cost five requests, which is why the count is capped in the
+ * catalogue rather than left open.
+ *
+ * The v2 endpoint answers **202** rather than 200 when it has accepted a file
+ * it has not finished processing, and an id from a 202 is still valid — posting
+ * a status that names it makes Mastodon wait for processing before publishing.
+ * For a still image that wait is imperceptible. For a video it is not, and that
+ * is one of the concrete reasons video is out of scope here: doing it properly
+ * means polling `/api/v1/media/:id` until it stops answering 206, inside a job
+ * that has a `max_execution_time` to answer to.
+ *
+ * The idempotency key covers the text, not the pictures. Two runs of the same
+ * post therefore re-upload the images and then collapse onto the same status,
+ * which wastes an upload in a case that only happens when a worker was killed —
+ * a good trade against keying on bytes and having an edited image silently
+ * publish the old one.
  */
 class MastodonPublisher extends HttpPublisher implements IngestsNotifications
 {
@@ -30,6 +50,16 @@ class MastodonPublisher extends HttpPublisher implements IngestsNotifications
     public function publish(SocialAccount $account, string $body, array $media = []): PublishedPost
     {
         $token = $this->require($account, 'access_token');
+        $media = $this->acceptableMedia($media);
+        $body = $this->bodyWithin($body, $media);
+
+        $payload = ['status' => $body];
+
+        $mediaIds = $this->uploadAll($account, $token, $media);
+
+        if ($mediaIds !== []) {
+            $payload['media_ids'] = $mediaIds;
+        }
 
         $response = $this->send(
             $this->request()->withToken($token)->withHeaders([
@@ -37,7 +67,7 @@ class MastodonPublisher extends HttpPublisher implements IngestsNotifications
             ]),
             'post',
             $this->endpoint($account, '/api/v1/statuses'),
-            ['status' => $body],
+            $payload,
         );
 
         $id = $response['id'] ?? null;
@@ -105,6 +135,44 @@ class MastodonPublisher extends HttpPublisher implements IngestsNotifications
         }
 
         return $items;
+    }
+
+    /**
+     * Every image, uploaded one call at a time, in order.
+     *
+     * Order is the whole reason this is a loop rather than anything cleverer:
+     * `media_ids` is a sequence and the timeline renders it in the order given,
+     * so the ids have to come back in the order the pictures were attached.
+     *
+     * @param  list<MediaItem>  $media
+     * @return list<string>
+     *
+     * @throws PublishFailed
+     */
+    private function uploadAll(SocialAccount $account, string $token, array $media): array
+    {
+        $ids = [];
+
+        foreach ($media as $item) {
+            $response = $this->sendMultipart(
+                $this->uploadRequest()->withToken($token),
+                $this->endpoint($account, '/api/v2/media'),
+                ['file' => [$item->filename(), $item->contents(), $item->mime]],
+            );
+
+            $id = $response['id'] ?? null;
+
+            if (! is_scalar($id) || (string) $id === '') {
+                throw PublishFailed::malformed(
+                    $this->network(),
+                    'the upload of “'.$item->name.'” carried no media id, so the post was not created',
+                );
+            }
+
+            $ids[] = (string) $id;
+        }
+
+        return $ids;
     }
 
     /**

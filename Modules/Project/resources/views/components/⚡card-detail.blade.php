@@ -20,6 +20,7 @@ use Modules\Project\Models\ChecklistItem;
 use Modules\Project\Models\CommentReaction;
 use Modules\Project\Services\CardService;
 use Modules\Project\Services\Watching;
+use Modules\Project\Support\Mentions;
 use Modules\Project\Support\Palette;
 use Modules\Project\Support\Position;
 use Modules\Project\Support\Reactions;
@@ -113,6 +114,21 @@ class extends Component
 
     /** The comment whose emoji picker is open, or null when none is. */
     public ?int $reactionPickerFor = null;
+
+    /**
+     * Whether the `@` autocomplete is showing under the comment box.
+     *
+     * Server-driven, and deliberately so: the people list is a handful of rows
+     * on a self-hosted install, so a JSON endpoint plus a client-side filter
+     * would be more moving parts than the feature is worth. The cost is one
+     * debounced round trip per keystroke *while an `@` is open* — the textarea
+     * is `.live.debounce`, and `updatedNewComment()` closes the list the moment
+     * the token stops looking like a mention.
+     */
+    public bool $mentionOpen = false;
+
+    /** The checklist item whose assignee/date row is expanded, or null. */
+    public ?int $itemEditing = null;
 
     /** The board the mirror picker is showing lists from, as a string id. */
     public string $mirrorBoard = '';
@@ -318,15 +334,68 @@ class extends Component
             ->all();
     }
 
+    /**
+     * The `@…` currently being typed at the end of the comment box, or null
+     * when there is not one.
+     *
+     * Anchored to the end of the string on purpose. Livewire knows what is in
+     * the textarea but not where the caret is, so "the token being typed" can
+     * only mean "the token the text ends with" — which is where somebody typing
+     * a mention actually is. Editing an `@` back in the middle of a written
+     * paragraph simply does not open the list; the mention still resolves when
+     * the comment is posted, because resolution never depended on this.
+     */
+    private function mentionPartial(): ?string
+    {
+        return preg_match('/(?:^|\s)@([A-Za-z0-9._-]*)$/u', $this->newComment, $matches) === 1
+            ? $matches[1]
+            : null;
+    }
+
+    /** Typing closes or opens the list; nothing else has to be tracked. */
+    public function updatedNewComment(): void
+    {
+        $this->mentionOpen = $this->mentionPartial() !== null;
+    }
+
+    /**
+     * Finish the half-typed mention with the person who was clicked.
+     *
+     * Replaces the trailing token rather than appending, so `@ni` + a click on
+     * Nima leaves `@nima ` and not `@ni@nima `.
+     */
+    public function insertMention(int $userId): void
+    {
+        $user = User::query()->find($userId);
+
+        if ($user === null) {
+            $this->toastError('That person could not be found', 'Reload the page and try again.');
+
+            return;
+        }
+
+        $handle = Mentions::handleFor($user);
+
+        $this->newComment = preg_match('/@[A-Za-z0-9._-]*$/u', $this->newComment) === 1
+            ? (string) preg_replace('/@[A-Za-z0-9._-]*$/u', '@'.$handle.' ', $this->newComment)
+            : rtrim($this->newComment).' @'.$handle.' ';
+
+        $this->mentionOpen = false;
+    }
+
     public function with(): array
     {
         $card = $this->card();
         $items = $this->items();
         $done = $items->where('is_done', true)->count();
         $total = $items->count();
+        $partial = $this->mentionPartial();
 
         return [
             'card' => $card,
+            'mentionSuggestions' => $this->mentionOpen && $partial !== null
+                ? Mentions::suggest($partial)
+                : collect(),
             'labels' => $card?->list?->board?->labels ?? collect(),
             'cardLabelIds' => $card?->labels->pluck('id')->all() ?? [],
             'members' => User::query()->orderBy('name')->get(),
@@ -397,6 +466,8 @@ class extends Component
         $this->coverPopoverOpen = false;
         $this->votersPopoverOpen = false;
         $this->reactionPickerFor = null;
+        $this->mentionOpen = false;
+        $this->itemEditing = null;
         $this->mirrorBoard = (string) ($card->list?->board_id ?? '');
         $this->mirrorList = '';
         $this->newComment = '';
@@ -437,6 +508,8 @@ class extends Component
         $this->coverPopoverOpen = false;
         $this->votersPopoverOpen = false;
         $this->reactionPickerFor = null;
+        $this->mentionOpen = false;
+        $this->itemEditing = null;
     }
 
     /* Title and description ---------------------------------------------- */
@@ -937,6 +1010,195 @@ class extends Component
         $this->toastSuccess('Item deleted', $text.' is off the checklist.');
     }
 
+    /* Advanced checklist items ---------------------------------------------
+     *
+     * An assignee and a due date per *item*, not just per card. Both are
+     * columns on `checklist_items`, both are optional, and both survive the
+     * item being converted into a card of its own — which is the whole reason
+     * Trello calls this "advanced" rather than "another checkbox".
+     */
+
+    /** Expand or fold the assignee/date row under one item. */
+    public function toggleItemEditor(int $itemId): void
+    {
+        $this->itemEditing = $this->itemEditing === $itemId ? null : $itemId;
+    }
+
+    /**
+     * Put a person on one line of the checklist, or take them off it with an
+     * empty value.
+     *
+     * Deliberately not restricted to the card's own members: a checklist item
+     * is often the one piece of a card somebody else is carrying, and making
+     * them join the card first would be a step with no purpose.
+     */
+    public function assignItem(int $itemId, string $userId): void
+    {
+        $item = $this->itemOnThisCard($itemId);
+
+        if ($item === null) {
+            $this->toastError('That item is gone', 'It was deleted while the drawer was open.');
+            $this->forgetCard();
+
+            return;
+        }
+
+        $user = trim($userId) === '' ? null : User::query()->find((int) $userId);
+
+        if (trim($userId) !== '' && $user === null) {
+            $this->toastError('That person could not be found', 'Reload the page and try again.');
+
+            return;
+        }
+
+        $item->update(['assigned_to' => $user?->id]);
+
+        // The item row redraws with the new avatar in front of the person who
+        // clicked, so there is nothing a toast would add. The card face does
+        // not show item assignees, so no `card-changed` either.
+        $this->forgetCard();
+    }
+
+    /**
+     * Set one item's own due date.
+     *
+     * A date, never an instant — `checklist_items.due_on` is a `date` column
+     * for the same reason `cards.due_on` is, so an item due on 31 July is due
+     * on 31 July wherever it is read.
+     */
+    public function setItemDue(int $itemId, string $date): void
+    {
+        $item = $this->itemOnThisCard($itemId);
+
+        if ($item === null) {
+            $this->toastError('That item is gone', 'It was deleted while the drawer was open.');
+            $this->forgetCard();
+
+            return;
+        }
+
+        $typed = trim($date);
+
+        if ($typed === '') {
+            $this->clearItemDue($itemId);
+
+            return;
+        }
+
+        try {
+            $due = Carbon::parse($typed)->startOfDay();
+        } catch (\Throwable) {
+            $this->toastError('That date could not be read', 'Use the picker rather than typing the day in.');
+
+            return;
+        }
+
+        $item->update(['due_on' => $due->toDateString()]);
+
+        $this->forgetCard();
+
+        // Worth saying: an item date shows on the calendar and on the ICS feed,
+        // neither of which is on screen here.
+        $this->toastSuccess(
+            'Item due '.$due->format('j M Y'),
+            $item->text.' now appears on the board calendar and its subscription feed.',
+        );
+    }
+
+    public function clearItemDue(int $itemId): void
+    {
+        $item = $this->itemOnThisCard($itemId);
+
+        if ($item === null) {
+            $this->toastError('That item is gone', 'It was deleted while the drawer was open.');
+            $this->forgetCard();
+
+            return;
+        }
+
+        if ($item->due_on === null) {
+            return;
+        }
+
+        $item->update(['due_on' => null]);
+
+        $this->forgetCard();
+
+        $this->toastSuccess('Item date removed', $item->text.' is off the calendar.');
+    }
+
+    /**
+     * Turn a checklist item into a card of its own, in the same list.
+     *
+     * **The assignee and the due date come across.** That is the sentence in
+     * 06 that makes this method worth having rather than "type it again as a
+     * card": an item that somebody is carrying, due on a day, becomes a card
+     * that the same somebody is carrying, due on the same day. Losing either
+     * on the way over would make the convert button something people learn not
+     * to trust.
+     *
+     * The item is removed once the card exists, the way Trello's own convert
+     * behaves — leaving both would give the board two live copies of one piece
+     * of work, and the checklist tally would go on counting something that has
+     * become a card in its own right.
+     */
+    public function convertItemToCard(int $itemId): void
+    {
+        $card = $this->card();
+
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        $item = $this->itemOnThisCard($itemId);
+
+        if ($item === null) {
+            $this->toastError('That item is gone', 'It was deleted while the drawer was open.');
+            $this->forgetCard();
+
+            return;
+        }
+
+        $list = $card->list;
+
+        if ($list === null) {
+            $this->toastError('That card has no list', 'There is nowhere to put the new card. Reload the page and try again.');
+
+            return;
+        }
+
+        // `cards.title` is 255 and `checklist_items.text` is 255, so the two
+        // fit — but the trim is kept explicit rather than assumed from the
+        // column widths agreeing today.
+        $new = app(CardService::class)->append($list, mb_substr($item->text, 0, 255), [
+            'due_on' => $item->due_on?->toDateString(),
+        ]);
+
+        if ($item->assigned_to !== null) {
+            $new->members()->attach($item->assigned_to);
+
+            // Being added to a card always notifies, watch state or not — the
+            // same rule and the same call `toggleMember()` makes, because a
+            // pivot attach fires no model event for an observer to hear.
+            app(Watching::class)->notifyMemberAdded($new, $item->assigned_to, auth()->id());
+        }
+
+        $text = $item->text;
+
+        $item->delete();
+
+        $this->itemEditing = null;
+
+        $this->cardChanged();
+
+        $this->toastSuccess(
+            'Converted to a card',
+            $text.' is at the bottom of '.$list->name.', carrying its assignee and its due date. It is off the checklist.',
+        );
+    }
+
     /* Attachments and comments -------------------------------------------- */
 
     /**
@@ -1090,11 +1352,22 @@ class extends Component
             ->event('card.commented')
             ->log('was commented on');
 
+        // Who was named, worked out before the box is emptied. The notifying
+        // itself is `CardCommentObserver`'s job — this is only so the toast can
+        // say it happened, which is otherwise invisible to the person posting.
+        $named = Mentions::resolve($body)->reject(fn (User $u): bool => $u->id === auth()->id());
+
         $this->newComment = '';
+        $this->mentionOpen = false;
 
         $this->cardChanged();
 
-        $this->toastSuccess('Comment posted', 'It is at the bottom of the thread on '.$card->title.'.');
+        $this->toastSuccess(
+            'Comment posted',
+            $named->isEmpty()
+                ? 'It is at the bottom of the thread on '.$card->title.'.'
+                : $named->pluck('name')->join(', ', ' and ').' '.($named->count() === 1 ? 'was' : 'were').' notified.',
+        );
     }
 
     /* Votes and reactions -------------------------------------------------- */
@@ -1593,6 +1866,12 @@ class extends Component
                     'position' => Position::format((string) $item->position),
                     'completed_at' => $item->completed_at,
                     'created_by' => auth()->id(),
+                    // The advanced pair travels with the item, the same as it
+                    // does through a conversion: a copied checklist that lost
+                    // who was carrying each line would be a worse copy than no
+                    // copy at all.
+                    'assigned_to' => $item->assigned_to,
+                    'due_on' => $item->due_on?->toDateString(),
                 ]);
             }
         }
@@ -2082,13 +2361,15 @@ class extends Component
                                         class="text-start rounded-lg border border-border bg-muted/30 px-4 py-3 hover:border-primary/40 transition-colors">
                                     @if (trim((string) $card->description) !== '')
                                         {{--
-                                            The one place in this file that echoes unescaped: markdown
-                                            rendered through `Support\Markdown`, which strips raw HTML
-                                            and refuses unsafe link schemes before this ever runs. A
-                                            description is user input; nothing else in this file uses
-                                            `{!! !!}` and it should stay that way.
+                                            One of two places in this file that echo unescaped, and
+                                            both go through the same sanitiser. `Support\Mentions`
+                                            runs the text through `Support\Markdown` unchanged —
+                                            raw HTML stripped, unsafe link schemes refused — and
+                                            only then swaps its own placeholders for chip markup it
+                                            built out of `e()`-escaped names. No user byte reaches
+                                            the page without passing the converter.
                                         --}}
-                                        <div class="text-sm text-secondary-foreground leading-relaxed [&_p]:mb-2 last:[&_p]:mb-0">{!! \Modules\Project\Support\Markdown::toHtml($card->description) !!}</div>
+                                        <div class="text-sm text-secondary-foreground leading-relaxed [&_p]:mb-2 last:[&_p]:mb-0">{!! \Modules\Project\Support\Mentions::toHtml($card->description, $members) !!}</div>
                                     @else
                                         <span class="text-sm text-muted-foreground">Add a more detailed description…</span>
                                     @endif
@@ -2135,20 +2416,86 @@ class extends Component
 
                             <div class="flex flex-col gap-1">
                                 @forelse ($checklist as $item)
-                                    <div class="group flex items-start gap-2.5 rounded-md px-2 py-1.5 hover:bg-accent/60" wire:key="check-{{ $item->id }}">
-                                        <input type="checkbox" class="kt-checkbox mt-0.5"
-                                               id="check-{{ $item->id }}"
-                                               wire:click="toggleChecklistItem({{ $item->id }})"
-                                               @checked($item->is_done)>
-                                        <label for="check-{{ $item->id }}"
-                                               class="grow text-sm cursor-pointer {{ $item->is_done ? 'text-muted-foreground line-through' : 'text-secondary-foreground' }}">
-                                            {{ $item->text }}
-                                        </label>
-                                        <button wire:click="deleteChecklistItem({{ $item->id }})"
-                                                class="kt-btn kt-btn-icon kt-btn-ghost size-6 shrink-0"
-                                                title="Delete item" aria-label="Delete checklist item">
-                                            <i class="ki-filled ki-trash text-xs"></i>
-                                        </button>
+                                    <div class="rounded-md px-2 py-1.5 hover:bg-accent/60" wire:key="check-{{ $item->id }}">
+                                        <div class="group flex items-start gap-2.5">
+                                            <input type="checkbox" class="kt-checkbox mt-0.5"
+                                                   id="check-{{ $item->id }}"
+                                                   wire:click="toggleChecklistItem({{ $item->id }})"
+                                                   @checked($item->is_done)>
+                                            <label for="check-{{ $item->id }}"
+                                                   class="grow text-sm cursor-pointer {{ $item->is_done ? 'text-muted-foreground line-through' : 'text-secondary-foreground' }}">
+                                                {{ $item->text }}
+                                            </label>
+
+                                            {{--
+                                                The two advanced columns, drawn only when they carry
+                                                something. An item with neither reads exactly as it
+                                                did before the feature existed.
+                                            --}}
+                                            @if ($item->assignee)
+                                                <span class="size-5 rounded-full grid place-items-center text-[9px] font-semibold shrink-0 bg-primary/15 text-primary"
+                                                      title="{{ $item->assignee->name }}">{{ $item->assignee->initials() }}</span>
+                                            @endif
+
+                                            @if ($item->due_on)
+                                                <span class="kt-badge kt-badge-sm shrink-0 {{ \Modules\Project\Support\Palette::tone($item->dueBadgeColour() ?? 'neutral') }}"
+                                                      title="This item is due on {{ $item->due_on->format('j M Y') }}">
+                                                    <i class="ki-filled ki-calendar text-[10px]"></i>
+                                                    {{ $item->due_on->format('j M') }}
+                                                </span>
+                                            @endif
+
+                                            <button wire:click="toggleItemEditor({{ $item->id }})"
+                                                    class="kt-btn kt-btn-icon kt-btn-ghost size-6 shrink-0"
+                                                    title="Assignee and due date" aria-label="Assignee and due date for this item"
+                                                    aria-expanded="{{ $itemEditing === $item->id ? 'true' : 'false' }}">
+                                                <i class="ki-filled ki-dots-horizontal text-xs"></i>
+                                            </button>
+                                            <button wire:click="deleteChecklistItem({{ $item->id }})"
+                                                    class="kt-btn kt-btn-icon kt-btn-ghost size-6 shrink-0"
+                                                    title="Delete item" aria-label="Delete checklist item">
+                                                <i class="ki-filled ki-trash text-xs"></i>
+                                            </button>
+                                        </div>
+
+                                        @if ($itemEditing === $item->id)
+                                            <div class="mt-2 ms-7 flex flex-wrap items-end gap-2 rounded-lg border border-border bg-muted/30 p-2.5">
+                                                <div class="flex flex-col gap-1 min-w-[150px]">
+                                                    <label class="kt-form-label text-[11px]" for="item-assignee-{{ $item->id }}">Assignee</label>
+                                                    <select id="item-assignee-{{ $item->id }}" class="kt-select kt-select-sm"
+                                                            wire:change="assignItem({{ $item->id }}, $event.target.value)">
+                                                        <option value="">Nobody</option>
+                                                        @foreach ($members as $person)
+                                                            <option value="{{ $person->id }}" @selected($item->assigned_to === $person->id)>{{ $person->name }}</option>
+                                                        @endforeach
+                                                    </select>
+                                                </div>
+
+                                                <div class="flex flex-col gap-1">
+                                                    <label class="kt-form-label text-[11px]" for="item-due-{{ $item->id }}">Due</label>
+                                                    <input type="date" id="item-due-{{ $item->id }}" class="kt-input kt-input-sm"
+                                                           value="{{ $item->due_on?->toDateString() }}"
+                                                           wire:change="setItemDue({{ $item->id }}, $event.target.value)">
+                                                </div>
+
+                                                @if ($item->due_on)
+                                                    <button wire:click="clearItemDue({{ $item->id }})" class="kt-btn kt-btn-sm kt-btn-ghost">
+                                                        Clear date
+                                                    </button>
+                                                @endif
+
+                                                {{--
+                                                    Convert takes the assignee and the date with it —
+                                                    see `convertItemToCard()`. The item leaves the
+                                                    checklist, so the confirm says so.
+                                                --}}
+                                                <button wire:click="convertItemToCard({{ $item->id }})"
+                                                        wire:confirm="Make this a card in the same list? It comes off the checklist, keeping its assignee and due date."
+                                                        class="kt-btn kt-btn-sm kt-btn-outline gap-1.5 ms-auto">
+                                                    <i class="ki-filled ki-exit-up text-sm"></i> Convert to card
+                                                </button>
+                                            </div>
+                                        @endif
                                     </div>
                                 @empty
                                     <p class="text-sm text-muted-foreground px-2 py-1.5">No checklist on this card yet.</p>
@@ -2252,7 +2599,7 @@ class extends Component
                                         </div>
                                         {{-- The same sanitising renderer as the description, for the same reason: a comment is user input too. --}}
                                         <div class="text-sm text-secondary-foreground mt-1 rounded-lg bg-muted/40 border border-border px-3 py-2 [&_p]:mb-2 last:[&_p]:mb-0">
-                                            {!! \Modules\Project\Support\Markdown::toHtml($comment->body) !!}
+                                            {!! \Modules\Project\Support\Mentions::toHtml($comment->body, $members) !!}
                                         </div>
 
                                         {{--
@@ -2434,16 +2781,42 @@ class extends Component
                     <span class="size-8 rounded-full grid place-items-center text-[11px] font-semibold shrink-0 bg-primary/15 text-primary">
                         {{ auth()->user()?->initials() ?? '—' }}
                     </span>
-                    <div class="grow flex flex-col gap-2">
-                        <textarea rows="2" class="kt-textarea" placeholder="Write a comment…"
-                                  aria-label="New comment" wire:model="newComment"></textarea>
+                    <div class="grow flex flex-col gap-2 relative">
+                        {{--
+                            `.live.debounce` rather than a plain bind: the `@`
+                            autocomplete is server-driven, so the server has to
+                            see what is being typed. The debounce is what keeps
+                            that to one round trip per pause rather than one per
+                            keystroke, and the list closes itself the moment the
+                            trailing token stops looking like a mention.
+                        --}}
+                        <textarea rows="2" class="kt-textarea" placeholder="Write a comment… type @ to mention somebody"
+                                  aria-label="New comment" wire:model.live.debounce.400ms="newComment"></textarea>
+
+                        @if ($mentionSuggestions->isNotEmpty())
+                            <div class="kt-dropdown open absolute z-30 bottom-full mb-1 start-0 w-[260px] p-1"
+                                 role="listbox" aria-label="People you can mention">
+                                @foreach ($mentionSuggestions as $person)
+                                    <button wire:click="insertMention({{ $person->id }})" wire:key="mention-{{ $person->id }}"
+                                            class="kt-btn kt-btn-ghost justify-start gap-2 w-full" role="option">
+                                        <span class="size-6 rounded-full grid place-items-center text-[10px] font-semibold bg-primary/15 text-primary">
+                                            {{ $person->initials() }}
+                                        </span>
+                                        <span class="text-sm text-mono">{{ $person->name }}</span>
+                                        {{-- `'@'.` inside the expression, never a literal `@{{` — Blade reads that as an escaped brace pair and prints the braces. --}}
+                                        <span class="text-[11px] text-muted-foreground ms-auto">{{ '@'.\Modules\Project\Support\Mentions::handleFor($person) }}</span>
+                                    </button>
+                                @endforeach
+                            </div>
+                        @endif
+
                         <div class="flex items-center gap-2">
                             <button wire:click="addComment" wire:loading.attr="disabled" wire:target="addComment"
                                     class="kt-btn kt-btn-sm kt-btn-primary gap-1">
                                 <span wire:loading.remove wire:target="addComment">Comment</span>
                                 <span wire:loading wire:target="addComment"><i class="ki-filled ki-loading animate-spin"></i> Posting…</span>
                             </button>
-                            <span class="text-[11px] text-muted-foreground">It is posted as you, and stays on the card.</span>
+                            <span class="text-[11px] text-muted-foreground">It is posted as you, and stays on the card. Anyone you name with an at-sign is told, whether or not they watch this card.</span>
                         </div>
                     </div>
                 </div>

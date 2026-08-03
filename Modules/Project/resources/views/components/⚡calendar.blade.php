@@ -8,6 +8,7 @@ use Livewire\Component;
 use Modules\Core\Concerns\InteractsWithToasts;
 use Modules\Project\Models\Board;
 use Modules\Project\Models\Card;
+use Modules\Project\Models\ChecklistItem;
 use Modules\Project\Services\BoardCalendar;
 use Modules\Project\Support\Palette;
 
@@ -26,6 +27,15 @@ use Modules\Project\Support\Palette;
  * single day. Dragging a bar moves the whole range by the number of days it
  * was dropped; there is no edge-resize here, only the move the brief asks
  * for.
+ *
+ * **Advanced checklist items are drawn here too.** An item can carry a due
+ * date of its own, and 06 says those belong on the calendar. They are a second
+ * source of events rather than a second calendar: one month grid, with item
+ * events carrying an `item-` prefixed id so a drag can tell which table it is
+ * about to write to. The prefix is load-bearing — an item id and a card id
+ * collide numerically, and `parseInt` on a bare id would reschedule the wrong
+ * row. `BoardCalendar` puts the same items on the `.ics` feed, so the page and
+ * a subscriber's client agree.
  *
  * **The drag has no local echo to protect.** Every request from this
  * component re-renders the whole page — there are no islands here — so
@@ -51,6 +61,8 @@ class extends Component
     private ?Collection $resolvedBoards = null;
 
     private ?Collection $resolvedCards = null;
+
+    private ?Collection $resolvedItems = null;
 
     public function mount(): void
     {
@@ -94,8 +106,71 @@ class extends Component
             ->get(['id', 'title', 'start_on', 'due_on', 'completed_at']);
     }
 
+    /**
+     * Every dated, unticked checklist item on an active card on this board.
+     *
+     * A ticked item is left off for the same reason a completed card keeps its
+     * green badge but an archived one disappears: the calendar is what is still
+     * owed, and a done item is not.
+     */
+    private function datedItems(): Collection
+    {
+        if ($this->resolvedItems !== null) {
+            return $this->resolvedItems;
+        }
+
+        $board = $this->board();
+
+        if ($board === null) {
+            return $this->resolvedItems = collect();
+        }
+
+        return $this->resolvedItems = ChecklistItem::query()
+            ->whereNotNull('due_on')
+            ->where('is_done', false)
+            ->whereIn('checklist_id', fn ($q) => $q
+                ->select('id')
+                ->from('checklists')
+                ->whereIn('card_id', $board->cards()->active()->select('cards.id')))
+            ->with('checklist:id,card_id')
+            ->orderBy('due_on')
+            ->get();
+    }
+
     /** @return list<array<string, mixed>> */
     private function events(): array
+    {
+        return [...$this->cardEvents(), ...$this->itemEvents()];
+    }
+
+    /**
+     * An item event is a single day, never a bar: an item has one date, and
+     * dragging it moves that one date.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function itemEvents(): array
+    {
+        return $this->datedItems()->map(fn (ChecklistItem $item): array => [
+            // `item-` rather than a bare id. A card and an item can share the
+            // number 7, and the drag handler has to know which one it holds.
+            'id' => 'item-'.$item->id,
+            'title' => '☑ '.$item->text,
+            'start' => $item->due_on->toDateString(),
+            'end' => null,
+            'allDay' => true,
+            'backgroundColor' => 'transparent',
+            'borderColor' => 'transparent',
+            'textColor' => 'inherit',
+            'classNames' => [
+                ...explode(' ', Palette::tone($item->dueBadgeColour() ?? 'neutral')),
+                'rounded', 'px-1', 'border', 'border-dashed',
+            ],
+        ])->values()->all();
+    }
+
+    /** @return list<array<string, mixed>> */
+    private function cardEvents(): array
     {
         return $this->datedCards()->map(function (Card $card): array {
             $start = $card->start_on ?? $card->due_on;
@@ -191,6 +266,7 @@ class extends Component
         $this->activeBoard = $this->resolveBoard($slug);
         $this->resolvedBoard = null;
         $this->resolvedCards = null;
+        $this->resolvedItems = null;
         $this->boardPickerOpen = false;
     }
 
@@ -232,6 +308,30 @@ class extends Component
         $this->resolvedCards = null;
     }
 
+    /**
+     * Move one checklist item's own due date. Same shape as `reschedule()`
+     * above, against `checklist_items` rather than `cards`, and scoped through
+     * the board so an id typed into the wire cannot reach another board's work.
+     */
+    public function rescheduleItem(int $itemId, int $deltaDays): void
+    {
+        if ($deltaDays === 0) {
+            return;
+        }
+
+        $item = $this->datedItems()->firstWhere('id', $itemId);
+
+        if ($item === null) {
+            $this->toastError('That item is gone', 'It was deleted, ticked, or moved off this board while the page was open.');
+
+            return;
+        }
+
+        $item->update(['due_on' => $item->due_on->copy()->addDays($deltaDays)]);
+
+        $this->resolvedItems = null;
+    }
+
     /** Invalidate every ICS URL issued before now. A real write: it toasts. */
     public function regenerateFeedLink(): void
     {
@@ -269,6 +369,7 @@ class extends Component
     public function cardChanged(): void
     {
         $this->resolvedCards = null;
+        $this->resolvedItems = null;
     }
 };
 
@@ -527,7 +628,18 @@ class extends Component
 
                 if (! days) return;
 
-                $wire.reschedule(parseInt(info.event.id, 10), days);
+                // A card and a checklist item can share an id, so the prefix
+                // decides the table, not the number. Without it parseInt would
+                // happily move card 7 when item 7 was dragged.
+                var id = String(info.event.id || '');
+
+                if (id.indexOf('item-') === 0) {
+                    $wire.rescheduleItem(parseInt(id.slice(5), 10), days);
+
+                    return;
+                }
+
+                $wire.reschedule(parseInt(id, 10), days);
             },
         });
 

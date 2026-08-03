@@ -20,7 +20,16 @@ use Modules\Social\Models\SocialAccount;
  */
 class FakePublisher implements IngestsNotifications, Publisher
 {
-    /** @var list<array{handle: string, body: string}> Every send, in order. */
+    /**
+     * Every send, in order.
+     *
+     * `media` holds the attachment ids rather than the items, so a test can
+     * assert *which* pictures a network was given and in what order without
+     * touching a disk — the one property the real drivers differ on that a
+     * recorded `post_targets` row cannot show.
+     *
+     * @var list<array{handle: string, body: string, media: list<int>}>
+     */
     public array $sent = [];
 
     /** @var list<string> Every account the notification sync asked about. */
@@ -85,7 +94,11 @@ class FakePublisher implements IngestsNotifications, Publisher
             throw PublishFailed::rejected($this->network, $this->failWith);
         }
 
-        $this->sent[] = ['handle' => $account->handle, 'body' => $body];
+        $this->sent[] = [
+            'handle' => $account->handle,
+            'body' => $body,
+            'media' => array_map(fn (MediaItem $item): int => $item->id, $media),
+        ];
 
         // Distinct per send on purpose: a test that retries has to be able to
         // tell a preserved remote id from a freshly issued one.

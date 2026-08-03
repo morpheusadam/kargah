@@ -18,6 +18,25 @@ use Modules\Social\Support\Networks;
  * Only an app password is accepted, and the connect page says so. A Bluesky
  * account password grants everything including deleting the account; an app
  * password can be revoked on its own and is the only credential worth storing.
+ *
+ * **Pictures: upload a blob, embed what comes back.** `uploadBlob` takes the
+ * raw file as the entire request body — no multipart, no field name, the MIME
+ * type in the `Content-Type` header — and answers with a blob reference. That
+ * reference, verbatim, goes into an `app.bsky.embed.images` embed on the record.
+ * Sending the file as multipart instead uploads perfectly and stores the
+ * multipart framing as the image, which renders as a broken picture rather than
+ * as an error, so the raw-body transport here is load bearing.
+ *
+ * The blob reference is passed through untouched rather than reassembled from
+ * its `$type`, `ref` and `size` fields. It is a content-addressed structure the
+ * server built and will verify; rebuilding it in PHP would be four chances to
+ * change one byte for no benefit.
+ *
+ * **`alt` is sent empty and that is a known gap.** The lexicon requires the key,
+ * Kargah has nowhere to type alt text yet, and a filename is not a description —
+ * `screenshot-2026-08-04.png` read aloud is worse than silence. A per-image alt
+ * field in the composer is the fix, and it is a composer feature rather than a
+ * driver one.
  */
 class BlueskyPublisher extends HttpPublisher implements IngestsNotifications
 {
@@ -28,6 +47,8 @@ class BlueskyPublisher extends HttpPublisher implements IngestsNotifications
 
     private const POST_COLLECTION = 'app.bsky.feed.post';
 
+    private const IMAGES_EMBED = 'app.bsky.embed.images';
+
     public function network(): string
     {
         return Networks::BLUESKY;
@@ -35,7 +56,27 @@ class BlueskyPublisher extends HttpPublisher implements IngestsNotifications
 
     public function publish(SocialAccount $account, string $body, array $media = []): PublishedPost
     {
+        $media = $this->acceptableMedia($media);
+        $body = $this->bodyWithin($body, $media);
+
         $session = $this->session($account);
+
+        $record = [
+            '$type' => self::POST_COLLECTION,
+            'text' => $body,
+            // The protocol wants an ISO timestamp on the record itself;
+            // it is what the client sorts by, not the server's receipt.
+            'createdAt' => now()->toIso8601ZuluString(),
+        ];
+
+        $images = $this->uploadAll($session['token'], $media);
+
+        if ($images !== []) {
+            $record['embed'] = [
+                '$type' => self::IMAGES_EMBED,
+                'images' => $images,
+            ];
+        }
 
         $response = $this->send(
             $this->request()->withToken($session['token']),
@@ -44,13 +85,7 @@ class BlueskyPublisher extends HttpPublisher implements IngestsNotifications
             [
                 'repo' => $session['did'],
                 'collection' => self::POST_COLLECTION,
-                'record' => [
-                    '$type' => self::POST_COLLECTION,
-                    'text' => $body,
-                    // The protocol wants an ISO timestamp on the record itself;
-                    // it is what the client sorts by, not the server's receipt.
-                    'createdAt' => now()->toIso8601ZuluString(),
-                ],
+                'record' => $record,
             ],
         );
 
@@ -114,6 +149,51 @@ class BlueskyPublisher extends HttpPublisher implements IngestsNotifications
         }
 
         return $items;
+    }
+
+    /**
+     * Every image, as blobs the record can embed.
+     *
+     * The session is already open when this runs, so each upload reuses the
+     * token rather than signing in again per picture — four images on a post
+     * would otherwise cost four extra `createSession` calls, and Bluesky rate
+     * limits those far more tightly than uploads.
+     *
+     * @param  list<MediaItem>  $media
+     * @return list<array{alt: string, image: array<array-key, mixed>}>
+     *
+     * @throws PublishFailed
+     */
+    private function uploadAll(string $token, array $media): array
+    {
+        $images = [];
+
+        foreach ($media as $item) {
+            $response = $this->sendBytes(
+                $this->uploadRequest()->withToken($token),
+                self::HOST.'/xrpc/com.atproto.repo.uploadBlob',
+                $item->contents(),
+                $item->mime,
+            );
+
+            $blob = $response['blob'] ?? null;
+
+            if (! is_array($blob) || $blob === []) {
+                throw PublishFailed::malformed(
+                    $this->network(),
+                    'the upload of “'.$item->name.'” carried no blob reference, so the post was not created',
+                );
+            }
+
+            $images[] = [
+                // Required by the lexicon and empty until the composer has an
+                // alt-text field — see the class docblock.
+                'alt' => '',
+                'image' => $blob,
+            ];
+        }
+
+        return $images;
     }
 
     /**

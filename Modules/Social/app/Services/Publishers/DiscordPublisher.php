@@ -45,6 +45,20 @@ use Modules\Social\Support\Networks;
  * read side whatsoever. `social:sync-notifications` skips this network by name,
  * the same as LinkedIn and Telegram.
  *
+ * **Pictures: the same endpoint, a different body.** Discord is the only network
+ * here where attaching an image changes neither the URL nor the number of calls
+ * — the webhook execute simply stops being JSON and becomes multipart, with the
+ * message that was the whole JSON body moving into a single `payload_json` part
+ * and each file arriving as `files[0]`, `files[1]` and so on. All ten go up in
+ * one request, which makes this the cheapest media path of the five and the only
+ * one where a failure is genuinely all-or-nothing rather than leaving orphaned
+ * uploads behind.
+ *
+ * The part names are not decorative. Discord matches `files[n]` against the
+ * `attachments` array by index when one is supplied, and rejects parts it cannot
+ * place; naming them `file` or `image` produces a 400 that reads like the
+ * message was refused.
+ *
  * `allowed_mentions` is deliberately left at Discord's default, which honours
  * whatever the body says. Quietly stripping an `@everyone` somebody typed would
  * be Kargah overruling the author of the post, and the composer's per-network
@@ -76,12 +90,17 @@ class DiscordPublisher extends HttpPublisher
 
     public function publish(SocialAccount $account, string $body, array $media = []): PublishedPost
     {
-        $response = $this->send(
-            $this->request(),
-            'post',
-            $this->endpoint($account).'?wait=true',
-            ['content' => $body],
-        );
+        $media = $this->acceptableMedia($media);
+        $body = $this->bodyWithin($body, $media);
+
+        // `?wait=true` matters just as much on the multipart path: without it
+        // Discord answers 204 with no body, and there would be no message id to
+        // record against the target. See the class docblock.
+        $url = $this->endpoint($account).'?wait=true';
+
+        $response = $media === []
+            ? $this->send($this->request(), 'post', $url, ['content' => $body])
+            : $this->sendWithFiles($url, $body, $media);
 
         $id = $response['id'] ?? null;
 
@@ -90,6 +109,33 @@ class DiscordPublisher extends HttpPublisher
         }
 
         return new PublishedPost((string) $id, $this->webUrl($response, (string) $id));
+    }
+
+    /**
+     * The message and every file, in one multipart request.
+     *
+     * `payload_json` carries what would otherwise be the whole JSON body. It is
+     * one field holding an encoded object rather than flattened form fields,
+     * because Discord's webhook execute has no form representation — the
+     * multipart shape is the JSON shape with the files bolted alongside it.
+     *
+     * @param  list<MediaItem>  $media
+     * @return array<array-key, mixed>
+     */
+    private function sendWithFiles(string $url, string $body, array $media): array
+    {
+        $files = [];
+
+        foreach ($media as $index => $item) {
+            $files['files['.$index.']'] = [$item->filename(), $item->contents(), $item->mime];
+        }
+
+        return $this->sendMultipart(
+            $this->uploadRequest(),
+            $url,
+            $files,
+            ['payload_json' => (string) json_encode(['content' => $body])],
+        );
     }
 
     /**

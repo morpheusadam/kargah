@@ -178,6 +178,30 @@ class SocialAccount extends Model
         return Networks::limit($this->network);
     }
 
+    /**
+     * The character limit that applies once pictures are attached.
+     *
+     * Telegram is the only network where this differs from `characterLimit()`,
+     * and it differs by a factor of four — a caption is 1,024 characters where
+     * a message is 4,096. The composer's counters ask this rather than
+     * `characterLimit()` so that attaching an image visibly shortens the
+     * allowance instead of the post failing at send time.
+     */
+    public function characterLimitWith(bool $hasMedia): int
+    {
+        return Networks::limitWithMedia($this->network, $hasMedia);
+    }
+
+    /**
+     * What this network accepts as a picture: count, bytes, types, geometry.
+     *
+     * @return array<string, mixed>
+     */
+    public function mediaRules(): array
+    {
+        return Networks::media($this->network);
+    }
+
     public function targets(): HasMany
     {
         return $this->hasMany(PostTarget::class);

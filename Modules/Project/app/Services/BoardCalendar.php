@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 use Modules\Project\Models\Board;
 use Modules\Project\Models\Card;
+use Modules\Project\Models\ChecklistItem;
 use Modules\Project\Support\IcsCalendar;
 use Modules\Project\Support\IcsEvent;
 
@@ -34,6 +35,14 @@ use Modules\Project\Support\IcsEvent;
  * keep the same UID across every regeneration — see `IcsEvent`'s own docblock
  * — and since this maps one event per *card*, the id that has to stay stable
  * is the card's.
+ *
+ * **Advanced checklist items are on the feed too.** An item can carry a due
+ * date of its own, and 06 says those appear on the calendar; there is no
+ * separate ICS path, so putting them in `events()` is what puts them in the
+ * feed as well. They get their own UID space — `checklist-item-{id}@{host}` —
+ * because an item id and a card id collide numerically and would otherwise
+ * overwrite each other in a subscriber's calendar. A ticked item is left off
+ * for the same reason an archived card is: it is no longer owed.
  */
 class BoardCalendar
 {
@@ -48,9 +57,10 @@ class BoardCalendar
     /** @return list<IcsEvent> */
     public function events(Board $board): array
     {
-        return $this->dueCards($board)
-            ->map(fn (Card $card): IcsEvent => $this->toEvent($card, $board))
-            ->all();
+        return [
+            ...$this->dueCards($board)->map(fn (Card $card): IcsEvent => $this->toEvent($card, $board))->all(),
+            ...$this->dueItems($board)->map(fn (ChecklistItem $item): IcsEvent => $this->toItemEvent($item, $board))->all(),
+        ];
     }
 
     /**
@@ -67,14 +77,14 @@ class BoardCalendar
     {
         /** @var ?Carbon $latestCard */
         $latestCard = $this->dueCards($board)->max('updated_at');
+        /** @var ?Carbon $latestItem */
+        $latestItem = $this->dueItems($board)->max('updated_at');
         $boardUpdated = $board->updated_at;
 
-        $moment = match (true) {
-            $latestCard !== null && $boardUpdated !== null => $latestCard->greaterThan($boardUpdated) ? $latestCard : $boardUpdated,
-            $latestCard !== null => $latestCard,
-            $boardUpdated !== null => $boardUpdated,
-            default => now(),
-        };
+        $moment = collect([$latestCard, $latestItem, $boardUpdated])
+            ->filter()
+            ->sort()
+            ->last() ?? now();
 
         return DateTimeImmutable::createFromInterface($moment);
     }
@@ -94,6 +104,30 @@ class BoardCalendar
             ->get(['id', 'title', 'due_on', 'updated_at']);
     }
 
+    /**
+     * Every dated, unticked checklist item on an active card on the board.
+     *
+     * Scoped through the card ids `Board::cards()` already resolves, so a
+     * mirrored card's items appear once — the same deduplication the cards
+     * themselves get, for the same reason.
+     *
+     * @return Collection<int, ChecklistItem>
+     */
+    private function dueItems(Board $board): Collection
+    {
+        return ChecklistItem::query()
+            ->whereNotNull('due_on')
+            ->where('is_done', false)
+            ->whereIn('checklist_id', fn ($q) => $q
+                ->select('id')
+                ->from('checklists')
+                ->whereIn('card_id', $board->cards()->active()->select('cards.id')))
+            ->with('checklist.card:id,title')
+            ->orderBy('due_on')
+            ->orderBy('id')
+            ->get();
+    }
+
     private function toEvent(Card $card, Board $board): IcsEvent
     {
         return new IcsEvent(
@@ -104,6 +138,31 @@ class BoardCalendar
             url: route('projects.boards', ['board' => $board->slug]),
             lastModified: $card->updated_at !== null
                 ? DateTimeImmutable::createFromInterface($card->updated_at)
+                : null,
+        );
+    }
+
+    /**
+     * A checklist item as an event.
+     *
+     * The summary is the item's own text, and the card it belongs to goes in
+     * the description rather than the title — a subscriber's month view shows
+     * summaries and nothing else, and prefixing every item with its card would
+     * make eight items on one card read as eight copies of the same line.
+     */
+    private function toItemEvent(ChecklistItem $item, Board $board): IcsEvent
+    {
+        $cardTitle = $item->checklist?->card?->title;
+
+        return new IcsEvent(
+            uid: 'checklist-item-'.$item->id.'@'.$this->host(),
+            summary: $item->text,
+            start: DateTimeImmutable::createFromInterface($item->due_on),
+            allDay: true,
+            description: $cardTitle === null ? null : 'Checklist item on '.$cardTitle,
+            url: route('projects.boards', ['board' => $board->slug]),
+            lastModified: $item->updated_at !== null
+                ? DateTimeImmutable::createFromInterface($item->updated_at)
                 : null,
         );
     }

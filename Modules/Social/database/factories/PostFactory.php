@@ -22,7 +22,8 @@ class PostFactory extends Factory
     {
         return [
             'body' => $this->faker->randomElement($this->bodies()),
-            'media' => null,
+            // No `media` key. The column is dead and images are attachment
+            // rows — see the docblock on Post.
             'status' => Post::DRAFT,
             'scheduled_for' => null,
             'published_at' => null,

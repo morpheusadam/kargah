@@ -38,6 +38,27 @@ namespace Modules\Social\Support;
  * is the same shortcut the constraint that ruled out OAuth (see
  * `08-postiz-parity.md`) makes unavoidable: a value that reads slightly early
  * beats a column that never gets a value at all.
+ *
+ * `media` is the picture pipeline's half of the same idea: a network's own
+ * limits, written down here rather than discovered from a 422 an hour after the
+ * person walked away from the composer. The composer checks an image against
+ * every selected network's entry **before** a post row exists, so an oversized
+ * file is a sentence on the page rather than a red target row later.
+ *
+ * **Images only, deliberately.** Every `mimes` list here is a still-image list,
+ * and nothing in Kargah uploads video. That is not an omission: X's 1 MB
+ * chunks, LinkedIn's 2 MB and YouTube's 8 MB resumable protocol all describe an
+ * upload that can span minutes, and a Kargah publish is one HTTP job bounded by
+ * `max_execution_time` on shared hosting. An image fits in that budget; a
+ * chunked video does not, and pretending otherwise would produce a job that is
+ * killed halfway with the post half-sent. Video is real, separate future work —
+ * see `project-guaid/spec/08-postiz-parity.md`, *Media*.
+ *
+ * The numbers are the network's, not Kargah's, and they are deliberately the
+ * conservative reading where a network's own documentation and its running
+ * instances disagree — Mastodon most of all, where the size ceiling is an
+ * instance setting rather than a protocol constant. Being told 8 MB and finding
+ * an instance accepts 16 costs nothing; the reverse costs a failed post.
  */
 final class Networks
 {
@@ -64,6 +85,16 @@ final class Networks
      *     requirement: string,
      *     ingests: bool,
      *     token_lifetime_days: int|null,
+     *     media: array{
+     *         max_count: int,
+     *         max_bytes: int,
+     *         mimes: list<string>,
+     *         max_pixels: int|null,
+     *         max_dimension_sum: int|null,
+     *         max_aspect_ratio: int|null,
+     *         caption_limit: int|null,
+     *         note: string
+     *     },
      *     credentials: array<string, array{label: string, secret: bool, placeholder: string, hint: string}>,
      *     permissions: list<array{allowed: bool, text: string}>
      * }>
@@ -83,6 +114,25 @@ final class Networks
                 'requirement' => 'Create an application under Preferences → Development on your instance, tick write:statuses and read:notifications, then paste the access token here.',
                 'ingests' => true,
                 'token_lifetime_days' => null,
+                'media' => [
+                    'max_count' => 4,
+                    // An instance setting, not a protocol constant. Eight
+                    // megabytes is the value a stock install ships with; a
+                    // large instance often raises it and a small one sometimes
+                    // lowers it. Kargah checks against the stock number because
+                    // there is no endpoint that reports the instance's own
+                    // without a second round trip on every attach.
+                    'max_bytes' => 8 * 1024 * 1024,
+                    'mimes' => ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
+                    // 3840 × 2160. Mastodon re-encodes anything larger and
+                    // rejects what it cannot re-encode, so this is the number
+                    // worth warning about rather than the width alone.
+                    'max_pixels' => 8294400,
+                    'max_dimension_sum' => null,
+                    'max_aspect_ratio' => null,
+                    'caption_limit' => null,
+                    'note' => 'Up to four images. The size ceiling is set per instance; eight megabytes is what a stock install allows.',
+                ],
                 'credentials' => [
                     'instance' => [
                         'label' => 'Instance URL',
@@ -115,6 +165,21 @@ final class Networks
                 'requirement' => 'Create an app password under Settings → App passwords. Your account password is not accepted and should not be pasted here.',
                 'ingests' => true,
                 'token_lifetime_days' => null,
+                'media' => [
+                    'max_count' => 4,
+                    // One million bytes, and it is the lexicon's own number
+                    // rather than a server policy — `app.bsky.embed.images`
+                    // declares maxSize on the blob. The official client resizes
+                    // before uploading, which is why a photo straight off a
+                    // phone is refused here and appears to work there.
+                    'max_bytes' => 1000000,
+                    'mimes' => ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
+                    'max_pixels' => null,
+                    'max_dimension_sum' => null,
+                    'max_aspect_ratio' => null,
+                    'caption_limit' => null,
+                    'note' => 'Up to four images, each under one million bytes — the protocol refuses a larger blob outright, so resize before attaching.',
+                ],
                 'credentials' => [
                     'identifier' => [
                         'label' => 'Handle',
@@ -152,6 +217,20 @@ final class Networks
                 // it — see the class docblock above for why that is the best
                 // available approximation under the pasted-token model.
                 'token_lifetime_days' => 60,
+                'media' => [
+                    'max_count' => 9,
+                    'max_bytes' => 10 * 1024 * 1024,
+                    // No WebP. LinkedIn's feedshare-image recipe accepts JPEG,
+                    // PNG and GIF; a WebP upload registers, transfers, and then
+                    // fails processing after the share has already been created,
+                    // which is the worst shape of failure available here.
+                    'mimes' => ['image/jpeg', 'image/png', 'image/gif'],
+                    'max_pixels' => null,
+                    'max_dimension_sum' => null,
+                    'max_aspect_ratio' => null,
+                    'caption_limit' => null,
+                    'note' => 'Up to nine images. LinkedIn takes JPEG, PNG and GIF only — a WebP is accepted for upload and then fails processing.',
+                ],
                 'credentials' => [
                     'member_urn' => [
                         'label' => 'Member URN',
@@ -184,6 +263,31 @@ final class Networks
                 'requirement' => 'Create a bot with @BotFather, add it to the channel as an administrator, then paste its token and the chat it should post to.',
                 'ingests' => false,
                 'token_lifetime_days' => null,
+                'media' => [
+                    // One photo is `sendPhoto`; two to ten is `sendMediaGroup`.
+                    // Eleven is not a bigger album, it is a different request
+                    // the Bot API does not have.
+                    'max_count' => 10,
+                    'max_bytes' => 10 * 1024 * 1024,
+                    // No GIF. `sendPhoto` treats an animated GIF as a still and
+                    // usually refuses it; an animation is `sendAnimation`, a
+                    // different endpoint with a different payload, and quietly
+                    // sending a frozen first frame would be worse than saying so.
+                    'mimes' => ['image/jpeg', 'image/png', 'image/webp'],
+                    'max_pixels' => null,
+                    // The Bot API's two documented geometry rules, and both are
+                    // refusals rather than re-encodes: width plus height must
+                    // not exceed 10000, and neither side may be more than
+                    // twenty times the other.
+                    'max_dimension_sum' => 10000,
+                    'max_aspect_ratio' => 20,
+                    // The whole reason this key exists. A Telegram *message* is
+                    // 4096 characters; a photo *caption* is 1024, and attaching
+                    // an image therefore shortens the post rather than leaving
+                    // it alone. Discovered as a 400 at send time otherwise.
+                    'caption_limit' => 1024,
+                    'note' => 'Up to ten photos. Attaching one caps the copy at 1,024 characters rather than 4,096, because a caption is not a message.',
+                ],
                 'credentials' => [
                     'bot_token' => [
                         'label' => 'Bot token',
@@ -218,6 +322,20 @@ final class Networks
                 'requirement' => 'Open the channel in Discord, then Edit Channel → Integrations → Webhooks → New Webhook, and copy its URL. No bot and no server invite is needed; one webhook posts to one channel.',
                 'ingests' => false,
                 'token_lifetime_days' => null,
+                'media' => [
+                    'max_count' => 10,
+                    // The per-file ceiling for a server with no boost. A
+                    // boosted server allows more, and there is no way to ask a
+                    // webhook which kind it is attached to, so the floor is the
+                    // only number that is safe to check against.
+                    'max_bytes' => 10 * 1024 * 1024,
+                    'mimes' => ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
+                    'max_pixels' => null,
+                    'max_dimension_sum' => null,
+                    'max_aspect_ratio' => null,
+                    'caption_limit' => null,
+                    'note' => 'Up to ten images. Ten megabytes each is what an unboosted server allows, and a webhook cannot ask whether this one is boosted.',
+                ],
                 'credentials' => [
                     // One field, because the URL already carries both halves of
                     // the credential — the webhook id and its token. Marked
@@ -300,5 +418,75 @@ final class Networks
     public static function tokenLifetimeDays(string $network): ?int
     {
         return self::all()[$network]['token_lifetime_days'] ?? null;
+    }
+
+    /**
+     * What this network will accept as a picture.
+     *
+     * Falls back to a shape rather than to null, so a caller that walks the
+     * keys does not have to guard every one of them. The fallback is
+     * deliberately restrictive — an unknown network gets one small JPEG or PNG
+     * rather than a free pass — because the only way to reach it is a row whose
+     * `network` value this catalogue does not describe, and guessing generously
+     * on behalf of an API nobody has read is how a post fails at send time.
+     *
+     * @return array{
+     *     max_count: int, max_bytes: int, mimes: list<string>, max_pixels: int|null,
+     *     max_dimension_sum: int|null, max_aspect_ratio: int|null,
+     *     caption_limit: int|null, note: string
+     * }
+     */
+    public static function media(string $network): array
+    {
+        return self::all()[$network]['media'] ?? [
+            'max_count' => 1,
+            'max_bytes' => 1024 * 1024,
+            'mimes' => ['image/jpeg', 'image/png'],
+            'max_pixels' => null,
+            'max_dimension_sum' => null,
+            'max_aspect_ratio' => null,
+            'caption_limit' => null,
+            'note' => 'Kargah does not know this network’s media rules, so it assumes the smallest ones that are likely to work.',
+        ];
+    }
+
+    /**
+     * How many characters this network allows *given* what is attached.
+     *
+     * Telegram is the only network here where the two numbers differ, and they
+     * differ by a factor of four: a message is 4,096 characters and a photo
+     * caption is 1,024. Everything that counts characters — the composer's live
+     * counter, `trimToLimit()`, the driver itself — has to ask this rather than
+     * `limit()`, or a post that fit while it was text stops fitting the moment
+     * a picture is attached and nothing says so until Telegram answers 400.
+     */
+    public static function limitWithMedia(string $network, bool $hasMedia): int
+    {
+        $caption = self::media($network)['caption_limit'] ?? null;
+
+        return $hasMedia && is_int($caption) ? $caption : self::limit($network);
+    }
+
+    /**
+     * Every image type any network here will take.
+     *
+     * The union, not the intersection: the composer accepts a file that at
+     * least one selected network can use and then names the ones that cannot,
+     * which is more useful than a file picker that silently refuses a GIF
+     * because Telegram is ticked.
+     *
+     * @return list<string>
+     */
+    public static function acceptedImageMimes(): array
+    {
+        $mimes = [];
+
+        foreach (self::all() as $entry) {
+            foreach ($entry['media']['mimes'] ?? [] as $mime) {
+                $mimes[$mime] = true;
+            }
+        }
+
+        return array_keys($mimes);
     }
 }

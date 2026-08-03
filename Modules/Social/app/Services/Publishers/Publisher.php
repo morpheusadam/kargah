@@ -44,7 +44,25 @@ interface Publisher
      * up. Nothing here loops or waits: this runs on shared hosting where a job
      * that will not finish is a job that gets the account suspended.
      *
-     * @param  list<array<string, mixed>>  $media  Attachments, in the order they were added.
+     * **`$media` is where the drivers stop resembling each other.** Every one of
+     * them takes the same list of images and does something structurally
+     * different with it: Mastodon uploads each file and quotes the ids back in
+     * the status, Bluesky uploads a blob and embeds the returned reference in
+     * the record, LinkedIn registers an upload, PUTs to the URL that comes back
+     * and then names the resulting asset URN, Telegram stops calling
+     * `sendMessage` altogether and calls `sendPhoto` or `sendMediaGroup`
+     * instead, and Discord keeps the same endpoint but changes the body from
+     * JSON to multipart. There is no shared upload step to factor out, and an
+     * abstraction that pretended otherwise would have five special cases inside
+     * it — `HttpPublisher` therefore offers the *transports* (multipart, raw
+     * bytes, a raw `PUT`) and each driver spends them its own way.
+     *
+     * The list is images and images only; anything else attached to the post is
+     * filtered out before it reaches here. Video is deliberately absent: a
+     * chunked, resumable upload can span minutes and this runs inside one PHP
+     * request's `max_execution_time`. See `Modules\Social\Support\Networks`.
+     *
+     * @param  list<MediaItem>  $media  Images, in the order they were attached.
      *
      * @throws PublishFailed when the network is unreachable, errors, or answers
      *                       with something that is not a published post

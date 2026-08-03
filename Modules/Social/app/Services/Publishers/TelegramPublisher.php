@@ -17,6 +17,28 @@ use Modules\Social\Support\Networks;
  * The Bot API answers HTTP 200 with `ok: false` for a refused send, so a
  * successful status code is not evidence the message went anywhere and the body
  * is checked as well.
+ *
+ * **Pictures: a different endpoint, not an extra field.** Telegram is the one
+ * network here where attaching an image stops `publish()` calling the method it
+ * otherwise calls. There are three shapes and the count decides which:
+ *
+ * - none — `sendMessage`, as before;
+ * - one — `sendPhoto`, multipart, the copy travelling as `caption`;
+ * - two to ten — `sendMediaGroup`, multipart, every file attached under its own
+ *   part name and a JSON `media` array referring to them by `attach://<part>`.
+ *   The caption belongs on the **first** item only; repeating it captions every
+ *   photo in the album.
+ *
+ * Two consequences worth having in one place. `sendMediaGroup` answers with an
+ * *array* of messages rather than one, so the id recorded against the target is
+ * the first of them — the album's anchor, and the message a `t.me` link opens.
+ * And a caption is 1,024 characters where a message is 4,096, so attaching a
+ * picture shortens the post; that number lives in the catalogue as
+ * `caption_limit` and `HttpPublisher::bodyWithin()` enforces it rather than
+ * truncating somebody's last sentence at send time.
+ *
+ * Eleven images is not a bigger album; it is a request the Bot API does not
+ * have. The catalogue caps it at ten and the composer says so while attaching.
  */
 class TelegramPublisher extends HttpPublisher
 {
@@ -31,13 +53,14 @@ class TelegramPublisher extends HttpPublisher
     {
         $token = $this->require($account, 'bot_token');
         $chat = $this->require($account, 'chat_id');
+        $media = $this->acceptableMedia($media);
+        $body = $this->bodyWithin($body, $media);
 
-        $response = $this->send(
-            $this->request(),
-            'post',
-            self::HOST.'/bot'.$token.'/sendMessage',
-            ['chat_id' => $chat, 'text' => $body, 'disable_web_page_preview' => false],
-        );
+        $response = match (true) {
+            $media === [] => $this->sendText($token, $chat, $body),
+            count($media) === 1 => $this->sendPhoto($token, $chat, $body, $media[0]),
+            default => $this->sendAlbum($token, $chat, $body, $media),
+        };
 
         if (($response['ok'] ?? false) !== true) {
             $reason = $response['description'] ?? 'the Bot API answered ok: false without saying why';
@@ -45,13 +68,95 @@ class TelegramPublisher extends HttpPublisher
             throw PublishFailed::rejected($this->network(), is_string($reason) ? $reason : 'the send was refused');
         }
 
-        $messageId = $response['result']['message_id'] ?? null;
+        // `sendMediaGroup` answers with a list of messages and the other two
+        // with one. The album's first message is its anchor — the one a t.me
+        // link opens — so both shapes reduce to a single result here.
+        $result = $response['result'] ?? null;
+        $result = is_array($result) && array_is_list($result) ? ($result[0] ?? null) : $result;
+
+        $messageId = is_array($result) ? ($result['message_id'] ?? null) : null;
 
         if (! is_scalar($messageId) || (string) $messageId === '') {
             throw PublishFailed::malformed($this->network(), 'the response carried no message id');
         }
 
-        return new PublishedPost((string) $messageId, $this->webUrl($response, $chat, (string) $messageId));
+        return new PublishedPost(
+            (string) $messageId,
+            $this->webUrl(is_array($result) ? $result : [], $chat, (string) $messageId),
+        );
+    }
+
+    /**
+     * The text-only send, unchanged from before pictures existed.
+     *
+     * @return array<array-key, mixed>
+     */
+    private function sendText(string $token, string $chat, string $body): array
+    {
+        return $this->send(
+            $this->request(),
+            'post',
+            self::HOST.'/bot'.$token.'/sendMessage',
+            ['chat_id' => $chat, 'text' => $body, 'disable_web_page_preview' => false],
+        );
+    }
+
+    /**
+     * One picture, captioned.
+     *
+     * @return array<array-key, mixed>
+     */
+    private function sendPhoto(string $token, string $chat, string $body, MediaItem $item): array
+    {
+        return $this->sendMultipart(
+            $this->uploadRequest(),
+            self::HOST.'/bot'.$token.'/sendPhoto',
+            ['photo' => [$item->filename(), $item->contents(), $item->mime]],
+            ['chat_id' => $chat, 'caption' => $body],
+        );
+    }
+
+    /**
+     * Two to ten pictures as one album.
+     *
+     * The files are parts of the request and the `media` field is a JSON string
+     * that points at them by part name — `attach://file0`. Both halves have to
+     * agree, which is why the loop builds them together rather than in two
+     * passes.
+     *
+     * @param  list<MediaItem>  $media
+     * @return array<array-key, mixed>
+     */
+    private function sendAlbum(string $token, string $chat, string $body, array $media): array
+    {
+        $files = [];
+        $descriptors = [];
+
+        foreach ($media as $index => $item) {
+            $part = 'file'.$index;
+
+            $files[$part] = [$item->filename(), $item->contents(), $item->mime];
+
+            $descriptors[] = [
+                'type' => 'photo',
+                'media' => 'attach://'.$part,
+            ]
+                // The caption goes on the first item and nowhere else: repeated,
+                // Telegram captions every photo in the album with it.
+                + ($index === 0 ? ['caption' => $body] : []);
+        }
+
+        return $this->sendMultipart(
+            $this->uploadRequest(),
+            self::HOST.'/bot'.$token.'/sendMediaGroup',
+            $files,
+            [
+                'chat_id' => $chat,
+                // A JSON string in a multipart field, which is what the Bot API
+                // documents for this parameter — not a nested form array.
+                'media' => (string) json_encode($descriptors),
+            ],
+        );
     }
 
     /**
@@ -89,11 +194,15 @@ class TelegramPublisher extends HttpPublisher
      * message. A private group has neither, and the honest answer there is no
      * url at all — the page renders an em dash rather than a link that 404s.
      *
-     * @param  array<array-key, mixed>  $response
+     * Takes the message itself rather than the whole envelope, because
+     * `sendMediaGroup` has no single `result` to reach into — the caller has
+     * already picked the album's first message out of the list.
+     *
+     * @param  array<array-key, mixed>  $message
      */
-    private function webUrl(array $response, string $chat, string $messageId): ?string
+    private function webUrl(array $message, string $chat, string $messageId): ?string
     {
-        $username = $response['result']['chat']['username'] ?? null;
+        $username = $message['chat']['username'] ?? null;
 
         if (! is_string($username) || $username === '') {
             $username = str_starts_with($chat, '@') ? ltrim($chat, '@') : null;

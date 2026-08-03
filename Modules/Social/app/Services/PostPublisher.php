@@ -34,7 +34,25 @@ use Modules\Social\Services\Publishers\PublishFailed;
  */
 class PostPublisher
 {
-    public function __construct(private readonly Publishing $publishing) {}
+    /**
+     * Images per post id, for the length of one publish run.
+     *
+     * `publishPost()` walks a post's targets and every one of them wants the
+     * same pictures. Resolving per target would be one attachment query per
+     * network and — worse — each `MediaItem` would memo its bytes separately,
+     * so a four-megabyte photo going to four networks would be read off the
+     * disk four times. Keyed by post id rather than held as one field because
+     * `publishTarget()` is public and the posts page calls it directly for a
+     * single retry.
+     *
+     * @var array<int, list<\Modules\Social\Services\Publishers\MediaItem>>
+     */
+    private array $mediaByPost = [];
+
+    public function __construct(
+        private readonly Publishing $publishing,
+        private readonly PostMedia $media,
+    ) {}
 
     /**
      * Publish everything still outstanding on a post.
@@ -105,7 +123,7 @@ class PostPublisher
         }
 
         try {
-            $result = $driver->publish($account, $target->text(), $target->post?->media ?? []);
+            $result = $driver->publish($account, $target->text(), $this->mediaFor($target));
         } catch (PublishFailed $e) {
             return $this->fail($target, $report, $e->getMessage());
         } catch (\Throwable $e) {
@@ -132,6 +150,31 @@ class PostPublisher
         $report->recordPublished();
 
         return true;
+    }
+
+    /**
+     * The pictures this target should carry.
+     *
+     * **Resolved from the attachment rows, never from `posts.media`.** That
+     * column is dead — see the note on `Modules\Social\Models\Post` — and this
+     * is the reason it had to become dead rather than merely unused: a JSON
+     * copy of what is attached and a table of what is attached will agree right
+     * up until somebody deletes a file from the Files page, at which point one
+     * of them says the post has three images and the other says two, and
+     * whichever the publisher happens to read decides what the world sees.
+     * There is one source and it is the one the delete button writes to.
+     *
+     * @return list<\Modules\Social\Services\Publishers\MediaItem>
+     */
+    private function mediaFor(PostTarget $target): array
+    {
+        $post = $target->post;
+
+        if ($post === null) {
+            return [];
+        }
+
+        return $this->mediaByPost[$post->getKey()] ??= $this->media->forPost($post);
     }
 
     /**

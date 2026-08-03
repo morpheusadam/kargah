@@ -94,7 +94,6 @@ class SocialDatabaseSeeder extends Seeder
             $post = Post::query()->updateOrCreate(
                 ['body' => $data['body']],
                 [
-                    'media' => null,
                     'status' => $data['status'],
                     'scheduled_for' => $this->at($data['scheduled_for'] ?? null),
                     'published_at' => $this->at($data['published_at'] ?? null),

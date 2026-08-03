@@ -5,6 +5,7 @@ use Livewire\Component;
 use Modules\Core\Concerns\InteractsWithToasts;
 use Modules\Social\Models\Post;
 use Modules\Social\Models\PostTarget;
+use Modules\Social\Services\PostMedia;
 use Modules\Social\Services\PostPublisher;
 
 /**
@@ -60,6 +61,11 @@ class extends Component
         return [
             'record' => $post,
             'targets' => $post?->targets ?? collect(),
+            // Resolved from the attachment rows, which are the only record of
+            // what this post carries — `posts.media` is dead, see the docblock
+            // on Modules\Social\Models\Post. Listed in the order the networks
+            // received them, oldest first.
+            'media' => $post === null ? [] : app(PostMedia::class)->attachmentsFor($post),
             'states' => [
                 PostTarget::PUBLISHED => ['label' => 'Delivered', 'badge' => 'kt-badge-success'],
                 PostTarget::PENDING => ['label' => 'Queued', 'badge' => 'kt-badge-warning'],
@@ -177,8 +183,33 @@ class extends Component
                 <h3 class="kt-card-title">The post as written</h3>
                 <span class="text-xs text-muted-foreground">{{ mb_strlen($record->body) }} characters</span>
             </div>
-            <div class="kt-card-content p-5">
+            <div class="kt-card-content p-5 flex flex-col gap-4">
                 <p class="text-sm text-mono whitespace-pre-wrap leading-relaxed">{{ $record->body }}</p>
+
+                @if ($media !== [])
+                    <div class="flex flex-wrap gap-3 border-t border-border pt-4">
+                        @foreach ($media as $index => $file)
+                            <div class="w-32" wire:key="media-{{ $file['id'] }}">
+                                @if (str_starts_with((string) $file['mime'], 'image/'))
+                                    {{-- `inline_url`, never `download_url`: the download variant sends
+                                         Content-Disposition: attachment, which asks the browser to save a
+                                         picture it was only meant to show. --}}
+                                    <img src="{{ $file['inline_url'] }}" alt="{{ $file['name'] }}"
+                                         class="h-32 w-32 rounded-lg border border-border object-cover">
+                                @else
+                                    <a href="{{ $file['download_url'] }}"
+                                       class="h-32 w-32 rounded-lg border border-border flex flex-col items-center justify-center gap-1 text-center">
+                                        <i class="ki-filled ki-document text-2xl text-muted-foreground"></i>
+                                        <span class="text-[11px] text-muted-foreground">Not sent — not an image</span>
+                                    </a>
+                                @endif
+                                <p class="text-[11px] text-muted-foreground mt-1 truncate" title="{{ $file['name'] }}">
+                                    {{ $index + 1 }}. {{ $file['name'] }} · {{ $file['size'] }}
+                                </p>
+                            </div>
+                        @endforeach
+                    </div>
+                @endif
             </div>
         </div>
 

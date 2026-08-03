@@ -25,6 +25,41 @@ use Modules\Social\Database\Factories\PostFactory;
  * The one thing this column *is* load bearing for is the scheduler: `due()`
  * asks for posts whose `scheduled_for` has passed and which are still waiting,
  * and `status` is the cheap half of the index that answers it.
+ *
+ * ---
+ *
+ * ## `posts.media` is dead. Do not read it and do not write it.
+ *
+ * The column exists in the table and is deliberately absent from `$fillable`
+ * and from `casts()`, which is the whole of the decision: it cannot be filled
+ * by accident, it does not appear on a model instance as an array waiting to be
+ * used, and anything that wants it has to go out of its way — at which point
+ * this paragraph is the thing it finds.
+ *
+ * **What replaced it.** A post's images are attachment rows, reached through
+ * `Modules\Data\Contracts\AttachmentService` with this post as the target and
+ * `Modules\Social\Services\PostMedia` as the one place in Social that asks.
+ * That is where the composer writes them, where the publisher reads them, and
+ * where the post page lists them.
+ *
+ * **Why not both.** A JSON column and an attachment table cannot disagree until
+ * the day they do: delete a file from Data's Files page and the row is gone
+ * while the JSON still names it, and a publisher reading the JSON would then
+ * send a post referring to a picture that no longer exists — or worse, quietly
+ * send four images where the person can see three. "The database is the source
+ * of truth, not the UI" cuts both ways; two databases of the same fact is not a
+ * source of truth, it is a race.
+ *
+ * **Why it was not dropped.** Because dropping it on SQLite would risk the
+ * table. SQLite has no `DROP COLUMN` that Laravel can rely on across supported
+ * versions, so the schema builder rebuilds `posts` — and `post_targets.post_id`
+ * references `posts.id` with `ON DELETE CASCADE`, which a rebuild fires. Inside
+ * a migration transaction `PRAGMA foreign_keys` is a no-op, so the guard that
+ * would have stopped it is not running. The realistic outcome of tidying this
+ * column away is every `post_targets` row in the install silently deleted:
+ * every delivery record, every remote id, every published status the retry
+ * design depends on being forward-only. A nullable column nobody can fill is a
+ * far cheaper wrong than that, and this note is what makes it safe.
  */
 class Post extends Model
 {
@@ -43,9 +78,10 @@ class Post extends Model
 
     public const FAILED = 'failed';
 
+    // `media` is absent on purpose and is not an oversight — see the class
+    // docblock. Images live on attachment rows.
     protected $fillable = [
         'body',
-        'media',
         'status',
         'scheduled_for',
         'published_at',
@@ -56,7 +92,6 @@ class Post extends Model
     protected function casts(): array
     {
         return [
-            'media' => 'array',
             'scheduled_for' => 'datetime',
             'published_at' => 'datetime',
         ];

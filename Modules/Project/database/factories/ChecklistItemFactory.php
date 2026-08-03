@@ -2,6 +2,7 @@
 
 namespace Modules\Project\Database\Factories;
 
+use App\Models\User;
 use Brick\Math\BigDecimal;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Modules\Project\Models\Checklist;
@@ -32,6 +33,11 @@ class ChecklistItemFactory extends Factory
             ),
             'completed_at' => null,
             'created_by' => null,
+            // The advanced pair is off by default. Most items carry neither,
+            // and a factory that assigned everybody to everything would make
+            // "an item with an assignee" impossible to test the absence of.
+            'assigned_to' => null,
+            'due_on' => null,
         ];
     }
 
@@ -41,6 +47,24 @@ class ChecklistItemFactory extends Factory
         return $this->state(fn () => [
             'is_done' => true,
             'completed_at' => now()->subDays($this->faker->numberBetween(0, 5)),
+        ]);
+    }
+
+    /** An advanced item: somebody is carrying it, and it is owed by a day. */
+    public function advanced(?int $userId = null): static
+    {
+        return $this->state(fn (): array => [
+            'assigned_to' => $userId ?? User::factory(),
+            'due_on' => now()->addDays($this->faker->numberBetween(1, 21))->toDateString(),
+        ]);
+    }
+
+    /** Due on a day that has already passed, and not ticked. */
+    public function overdue(): static
+    {
+        return $this->state(fn (): array => [
+            'is_done' => false,
+            'due_on' => now()->subDays($this->faker->numberBetween(1, 10))->toDateString(),
         ]);
     }
 }

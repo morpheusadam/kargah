@@ -53,6 +53,12 @@ return new class extends Migration
             $table->id();
 
             $table->text('body');
+            // Dead since the media pipeline shipped. Images are attachment rows
+            // reached through Modules\Data\Contracts\AttachmentService; nothing
+            // reads or writes this column and `Post` does not expose it. Left in
+            // place rather than dropped because dropping a column rebuilds the
+            // table on SQLite, and a rebuild of `posts` fires post_targets'
+            // ON DELETE CASCADE. See the docblock on Modules\Social\Models\Post.
             $table->json('media')->nullable();
 
             // draft | scheduled | publishing | published | partly_failed | failed
