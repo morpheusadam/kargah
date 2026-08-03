@@ -461,6 +461,48 @@ the same card; blurring those two in the UI is the one thing this feature must n
 
 ---
 
+## The dashboard, and a trap in `Cache::flexible()`
+
+🔴 **Never put a `Carbon` — or any object — inside a value cached through
+`Cache::flexible()` on the `database` driver.**
+
+`flexible()` serves the stale value immediately while refreshing behind, which is exactly right for a
+dashboard figure. The stale-serve branch reads the cached value back through the store's own
+`unserialize()`, and an object nested in that array comes back as `__PHP_Incomplete_Class`. The page
+500s — not on the first request, which writes the cache, but on a later one, which is the worst
+possible shape for a bug.
+
+Reproduced in isolation from Livewire and from the page, in two lines. The fix is to cache
+primitives only: the dashboard turns a timestamp into `diffForHumans()` **before** caching rather
+than after reading back.
+
+01-architecture.md recommends `flexible()` for exactly this use. The recommendation stands; the
+constraint on what may go inside it did not exist and now does.
+
+**A variable set in a template body does not exist inside an `@island`.**
+An island's fragment is compiled into an isolated view, so it inherits `with()` data and **not**
+bare `<?php $x = … ?>` locals from the surrounding template. The board set its surface class that
+way and the page 500ed. Anything an island reads has to come through `with()`.
+
+**The dashboard never sums money, and that is a contract gap rather than a style choice.**
+`InvoiceReader` exposes no aggregate. Summing outside Accounting would mean either doing money
+arithmetic outside `brick/money` or formatting a total without Accounting's own currency table —
+which defines USDT itself, so even bare `brick/money` cannot format it. So the page shows a real
+bounded count and one invoice's own verbatim formatted string, and the missing method is recorded
+rather than worked around: `InvoiceReader::totals()`.
+
+Same shape in Mailbox: `EmailReader` has `countForCustomer()` and no inbox-wide count, so the unread
+tile shows an em dash and links to the inbox. Fabricating a number would have been worse, and
+summing per-customer counts would also have been *wrong* — mail from a stranger is not a customer's
+mail.
+
+**`paginate('sent')` alone undercounts the outstanding book.**
+`invoices.status` can hold `overdue` as a stored value distinct from `sent` and `part_paid` — the
+migration says so and `InvoiceFactory::overdue()` writes it. Anything asking "what is outstanding"
+has to merge both and dedupe. A test caught this before it shipped.
+
+---
+
 ## The toast layer
 
 **"Only report what the user cannot already see" is the whole rule, and it decided fifty call

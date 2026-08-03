@@ -6,6 +6,7 @@ use Illuminate\Console\Scheduling\Schedule;
 use Modules\Core\Support\MorphMap;
 use Modules\Project\Console\NotifyDueCards;
 use Modules\Project\Console\RebalancePositions;
+use Modules\Project\Contracts\BoardReader as BoardReaderContract;
 use Modules\Project\Contracts\CardReader as CardReaderContract;
 use Modules\Project\Models\Board;
 use Modules\Project\Models\BoardList;
@@ -15,6 +16,7 @@ use Modules\Project\Models\CardPlacement;
 use Modules\Project\Observers\CardCommentObserver;
 use Modules\Project\Observers\CardObserver;
 use Modules\Project\Observers\CardPlacementObserver;
+use Modules\Project\Services\BoardReader;
 use Modules\Project\Services\CardReader;
 use Nwidart\Modules\Support\ModuleServiceProvider;
 
@@ -41,6 +43,7 @@ class ProjectServiceProvider extends ModuleServiceProvider
         parent::register();
 
         $this->app->bind(CardReaderContract::class, CardReader::class);
+        $this->app->bind(BoardReaderContract::class, BoardReader::class);
     }
 
     public function boot(): void
