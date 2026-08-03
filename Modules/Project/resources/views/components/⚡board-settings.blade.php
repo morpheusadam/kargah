@@ -9,9 +9,18 @@ use Modules\Project\Models\Board;
 use Modules\Project\Models\BoardList;
 use Modules\Project\Models\Card;
 use Modules\Project\Models\CardPlacement;
+use Modules\Project\Models\CustomField;
 use Modules\Project\Models\Label;
+use Modules\Project\Services\CustomFields;
+use Modules\Project\Support\CustomFieldType;
 use Modules\Project\Support\Palette;
 use Modules\Project\Support\Position;
+
+// No `use RuntimeException;` here on purpose. Livewire 4 compiles this file's
+// class block into a namespaced class of its own, and PHP treats importing a
+// root-namespace name with no effect as a warning there — which Laravel's
+// error handler promotes to an `ErrorException` and takes the whole page down
+// with it. `\RuntimeException` at each throw site instead.
 
 /**
  * Board settings, reading from the database.
@@ -70,6 +79,29 @@ class extends Component
 
     public string $listDraft = '';
 
+    /** New custom field form. */
+    public string $newFieldName = '';
+
+    public string $newFieldType = 'text';
+
+    /** Custom field being renamed inline, by id. */
+    public ?int $editingCustomField = null;
+
+    public string $customFieldDraft = '';
+
+    /** Custom field awaiting delete confirmation, by id — set once the value count is known. */
+    public ?int $confirmingCustomFieldDelete = null;
+
+    public int $confirmingCustomFieldDeleteCount = 0;
+
+    /** New dropdown option, one draft per field id. */
+    public array $newOptionDraft = [];
+
+    /** Dropdown option being renamed inline, as "{fieldId}:{optionId}". */
+    public ?string $editingOption = null;
+
+    public string $optionDraft = '';
+
     public bool $confirmingDelete = false;
 
     public string $deleteConfirmation = '';
@@ -120,6 +152,14 @@ class extends Component
             : $board->labels()->withCount('cards')->orderBy('position')->orderBy('name')->get();
     }
 
+    /** @return Collection<int, CustomField> */
+    private function customFields(): Collection
+    {
+        $board = $this->board();
+
+        return $board === null ? collect() : app(CustomFields::class)->fieldsFor($board);
+    }
+
     /** @return Collection<int, BoardList> */
     private function lists(): Collection
     {
@@ -152,6 +192,8 @@ class extends Component
                 ? 0
                 : BoardList::query()->where('board_id', $board->id)->whereNotNull('archived_at')->count(),
             'cardTotal' => $lists->sum('cards_count'),
+            'customFields' => $this->customFields(),
+            'customFieldTypes' => CustomFieldType::cases(),
         ];
     }
 
@@ -426,6 +468,351 @@ class extends Component
         $this->toastSuccess(
             $label->name.' added',
             'Every card on '.$board->name.' can wear it, in '.Palette::name($colour).'.',
+        );
+    }
+
+    /* Custom fields ------------------------------------------------------------- */
+
+    private function customFieldOnThisBoard(int $fieldId): ?CustomField
+    {
+        $board = $this->board();
+
+        return $board === null ? null : CustomField::query()->where('board_id', $board->id)->find($fieldId);
+    }
+
+    /** Define a new field on this board. */
+    public function createCustomField(): void
+    {
+        $board = $this->board();
+
+        if ($board === null) {
+            $this->toastError('There is no board at this address', 'Pick one from the boards page.');
+
+            return;
+        }
+
+        $type = CustomFieldType::tryFrom($this->newFieldType);
+
+        if ($type === null) {
+            $this->toastError('That is not a field type', 'Pick checkbox, date, dropdown, number or text.');
+
+            return;
+        }
+
+        try {
+            $field = app(CustomFields::class)->define($board, $this->newFieldName, $type);
+        } catch (\RuntimeException $e) {
+            $this->toastError('Could not add the field', $e->getMessage());
+
+            return;
+        }
+
+        activity('board')
+            ->performedOn($board)
+            ->causedBy(auth()->user())
+            ->event('board.custom-field-added')
+            ->withProperties(['field' => $field->name, 'type' => $type->value])
+            ->log('custom field '.$field->name.' added');
+
+        $this->newFieldName = '';
+
+        $this->toastSuccess(
+            $field->name.' added',
+            'Every card on '.$board->name.' can carry a '.$type->label().' value for it.',
+        );
+    }
+
+    public function startEditCustomField(int $fieldId): void
+    {
+        $field = $this->customFieldOnThisBoard($fieldId);
+
+        if ($field === null) {
+            $this->toastError('That field is not on this board', 'Reload the page and try again.');
+
+            return;
+        }
+
+        $this->editingCustomField = $field->id;
+        $this->customFieldDraft = $field->name;
+    }
+
+    public function cancelEditCustomField(): void
+    {
+        $this->editingCustomField = null;
+        $this->customFieldDraft = '';
+    }
+
+    public function saveCustomField(int $fieldId): void
+    {
+        $field = $this->customFieldOnThisBoard($fieldId);
+
+        if ($field === null) {
+            $this->toastError('That field is not on this board', 'Reload the page and try again.');
+
+            return;
+        }
+
+        $was = $field->name;
+
+        try {
+            app(CustomFields::class)->rename($field, $this->customFieldDraft);
+        } catch (\RuntimeException $e) {
+            $this->toastError('Could not rename the field', $e->getMessage());
+
+            return;
+        }
+
+        $field->refresh();
+
+        $this->editingCustomField = null;
+
+        if ($was === $field->name) {
+            $this->toastSuccess('Nothing to save', $was.' already reads like that.');
+
+            return;
+        }
+
+        activity('board')
+            ->performedOn($this->board())
+            ->causedBy(auth()->user())
+            ->event('board.custom-field-renamed')
+            ->withProperties(['from' => $was, 'to' => $field->name])
+            ->log('custom field '.$was.' renamed to '.$field->name);
+
+        $this->toastSuccess('Field renamed', $was.' is now '.$field->name.' on every card.');
+    }
+
+    public function moveCustomFieldUp(int $fieldId): void
+    {
+        $this->moveCustomField($fieldId, -1);
+    }
+
+    public function moveCustomFieldDown(int $fieldId): void
+    {
+        $this->moveCustomField($fieldId, 1);
+    }
+
+    private function moveCustomField(int $fieldId, int $direction): void
+    {
+        $field = $this->customFieldOnThisBoard($fieldId);
+
+        if ($field === null) {
+            $this->toastError('That field is not on this board', 'Reload the page and try again.');
+
+            return;
+        }
+
+        $before = $this->customFields()->pluck('position', 'id');
+
+        app(CustomFields::class)->move($field, $direction);
+
+        $after = $this->customFieldOnThisBoard($fieldId);
+
+        if ($after === null || (int) $before->get($fieldId) === (int) $after->position) {
+            $this->toastSuccess(
+                $field->name.' is already '.($direction < 0 ? 'first' : 'last'),
+                'Nothing moved.',
+            );
+
+            return;
+        }
+
+        activity('board')
+            ->performedOn($this->board())
+            ->causedBy(auth()->user())
+            ->event('board.custom-field-moved')
+            ->withProperties(['field' => $field->name])
+            ->log('custom field '.$field->name.' reordered');
+
+        $this->toastSuccess($field->name.' moved', $direction < 0 ? 'It now sits earlier.' : 'It now sits later.');
+    }
+
+    /** First click: find out how much would be lost. Second click on the same field: do it. */
+    public function confirmDeleteCustomField(int $fieldId): void
+    {
+        $field = $this->customFieldOnThisBoard($fieldId);
+
+        if ($field === null) {
+            $this->toastError('That field is not on this board', 'Reload the page and try again.');
+
+            return;
+        }
+
+        $this->confirmingCustomFieldDelete = $field->id;
+        $this->confirmingCustomFieldDeleteCount = app(CustomFields::class)->valueCount($field);
+    }
+
+    public function cancelDeleteCustomField(): void
+    {
+        $this->confirmingCustomFieldDelete = null;
+        $this->confirmingCustomFieldDeleteCount = 0;
+    }
+
+    /** Delete a field and every value it holds, in one transaction. Destructive by design — Trello's own behaviour. */
+    public function deleteCustomField(int $fieldId): void
+    {
+        $field = $this->customFieldOnThisBoard($fieldId);
+
+        if ($field === null) {
+            $this->toastError('That field is not on this board', 'Reload the page and try again.');
+
+            return;
+        }
+
+        if ($this->confirmingCustomFieldDelete !== $field->id) {
+            $this->toastError('Confirm the delete first', 'Click delete once more to remove it.');
+
+            return;
+        }
+
+        $name = $field->name;
+        $wiped = app(CustomFields::class)->delete($field);
+
+        activity('board')
+            ->performedOn($this->board())
+            ->causedBy(auth()->user())
+            ->event('board.custom-field-deleted')
+            ->withProperties(['field' => $name, 'values' => $wiped])
+            ->log('custom field '.$name.' deleted');
+
+        $this->confirmingCustomFieldDelete = null;
+        $this->confirmingCustomFieldDeleteCount = 0;
+
+        if ($this->editingCustomField === $fieldId) {
+            $this->editingCustomField = null;
+        }
+
+        $this->toastSuccess(
+            $name.' deleted',
+            $wiped === 0
+                ? 'No card had a value in it.'
+                : $wiped.' card '.str('value')->plural($wiped).' went with it — that cannot be undone.',
+        );
+    }
+
+    /** Add an option to a dropdown field. */
+    public function addCustomFieldOption(int $fieldId): void
+    {
+        $field = $this->customFieldOnThisBoard($fieldId);
+
+        if ($field === null) {
+            $this->toastError('That field is not on this board', 'Reload the page and try again.');
+
+            return;
+        }
+
+        $label = $this->newOptionDraft[$fieldId] ?? '';
+
+        try {
+            app(CustomFields::class)->addOption($field, $label);
+        } catch (\RuntimeException $e) {
+            $this->toastError('Could not add the option', $e->getMessage());
+
+            return;
+        }
+
+        activity('board')
+            ->performedOn($this->board())
+            ->causedBy(auth()->user())
+            ->event('board.custom-field-option-added')
+            ->withProperties(['field' => $field->name, 'option' => trim($label)])
+            ->log('option added to '.$field->name);
+
+        $this->newOptionDraft[$fieldId] = '';
+
+        $this->toastSuccess('Option added', trim($label).' can now be picked on '.$field->name.'.');
+    }
+
+    public function startEditOption(int $fieldId, int $optionId): void
+    {
+        $field = $this->customFieldOnThisBoard($fieldId);
+
+        if ($field === null) {
+            return;
+        }
+
+        $this->editingOption = $fieldId.':'.$optionId;
+        $this->optionDraft = $field->optionLabel($optionId) ?? '';
+    }
+
+    public function cancelEditOption(): void
+    {
+        $this->editingOption = null;
+        $this->optionDraft = '';
+    }
+
+    public function saveOption(int $fieldId, int $optionId): void
+    {
+        $field = $this->customFieldOnThisBoard($fieldId);
+
+        if ($field === null) {
+            $this->toastError('That field is not on this board', 'Reload the page and try again.');
+
+            return;
+        }
+
+        $was = $field->optionLabel($optionId);
+
+        try {
+            app(CustomFields::class)->renameOption($field, $optionId, $this->optionDraft);
+        } catch (\RuntimeException $e) {
+            $this->toastError('Could not rename the option', $e->getMessage());
+
+            return;
+        }
+
+        $field->refresh();
+        $now = $field->optionLabel($optionId);
+
+        $this->editingOption = null;
+
+        if ($was === $now) {
+            $this->toastSuccess('Nothing to save', $was.' already reads like that.');
+
+            return;
+        }
+
+        activity('board')
+            ->performedOn($this->board())
+            ->causedBy(auth()->user())
+            ->event('board.custom-field-option-renamed')
+            ->withProperties(['field' => $field->name, 'from' => $was, 'to' => $now])
+            ->log($was.' renamed to '.$now.' on '.$field->name);
+
+        $this->toastSuccess(
+            'Option renamed',
+            $was.' is now '.$now.' — every card already carrying it keeps it.',
+        );
+    }
+
+    public function deleteOption(int $fieldId, int $optionId): void
+    {
+        $field = $this->customFieldOnThisBoard($fieldId);
+
+        if ($field === null) {
+            $this->toastError('That field is not on this board', 'Reload the page and try again.');
+
+            return;
+        }
+
+        $label = $field->optionLabel($optionId);
+
+        app(CustomFields::class)->removeOption($field, $optionId);
+
+        activity('board')
+            ->performedOn($this->board())
+            ->causedBy(auth()->user())
+            ->event('board.custom-field-option-deleted')
+            ->withProperties(['field' => $field->name, 'option' => $label])
+            ->log(($label ?? 'an option').' removed from '.$field->name);
+
+        if ($this->editingOption === $fieldId.':'.$optionId) {
+            $this->editingOption = null;
+        }
+
+        $this->toastSuccess(
+            ($label ?? 'The option').' removed',
+            'Cards carrying it now show no value for '.$field->name.'.',
         );
     }
 
@@ -968,6 +1355,151 @@ class extends Component
                                 <i class="ki-filled ki-plus"></i> Add label
                             </span>
                             <span wire:loading wire:target="createLabel" class="inline-flex items-center gap-2">
+                                <i class="ki-filled ki-loading animate-spin"></i> Adding…
+                            </span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            {{-- Custom fields --}}
+            <div class="kt-card xl:col-span-2">
+                <div class="kt-card-header">
+                    <h2 class="kt-card-title">Custom fields</h2>
+                    <span class="text-xs text-muted-foreground">
+                        {{ $customFields->count() }} {{ $customFields->count() === 1 ? 'field' : 'fields' }} of {{ \Modules\Project\Services\CustomFields::MAX_FIELDS_PER_BOARD }}
+                    </span>
+                </div>
+                <div class="kt-card-content flex flex-col gap-3 p-5">
+
+                    @forelse ($customFields as $index => $field)
+                        <div class="rounded-lg border border-border px-3 py-2.5 flex flex-col gap-2.5" wire:key="custom-field-{{ $field->id }}">
+                            @if ($editingCustomField === $field->id)
+                                <div class="flex flex-wrap items-center gap-2">
+                                    <input type="text" class="kt-input max-w-[240px]" aria-label="Field name"
+                                           wire:model="customFieldDraft" wire:keydown.escape="cancelEditCustomField"
+                                           wire:keydown.enter.prevent="saveCustomField({{ $field->id }})">
+                                    <div class="flex items-center gap-2 ms-auto">
+                                        <button wire:click="saveCustomField({{ $field->id }})" wire:loading.attr="disabled" wire:target="saveCustomField"
+                                                class="kt-btn kt-btn-sm kt-btn-primary">
+                                            <span wire:loading.remove wire:target="saveCustomField">Save</span>
+                                            <span wire:loading wire:target="saveCustomField"><i class="ki-filled ki-loading animate-spin"></i></span>
+                                        </button>
+                                        <button wire:click="cancelEditCustomField" class="kt-btn kt-btn-sm kt-btn-ghost">Cancel</button>
+                                    </div>
+                                </div>
+                            @else
+                                <div class="flex flex-wrap items-center gap-3">
+                                    <i class="ki-filled {{ $field->type->icon() }} text-sm text-muted-foreground"></i>
+                                    <span class="text-sm font-medium text-mono">{{ $field->name }}</span>
+                                    <span class="kt-badge kt-badge-sm kt-badge-outline">{{ $field->type->label() }}</span>
+
+                                    <div class="flex flex-wrap items-center gap-1 ms-auto">
+                                        <button wire:click="moveCustomFieldUp({{ $field->id }})"
+                                                wire:loading.attr="disabled" wire:target="moveCustomFieldUp"
+                                                class="kt-btn kt-btn-sm kt-btn-icon kt-btn-ghost"
+                                                title="Move {{ $field->name }} earlier" aria-label="Move {{ $field->name }} earlier"
+                                                @disabled($index === 0)>
+                                            <i class="ki-filled ki-up text-sm"></i>
+                                        </button>
+                                        <button wire:click="moveCustomFieldDown({{ $field->id }})"
+                                                wire:loading.attr="disabled" wire:target="moveCustomFieldDown"
+                                                class="kt-btn kt-btn-sm kt-btn-icon kt-btn-ghost"
+                                                title="Move {{ $field->name }} later" aria-label="Move {{ $field->name }} later"
+                                                @disabled($index === $customFields->count() - 1)>
+                                            <i class="ki-filled ki-down text-sm"></i>
+                                        </button>
+                                        <button wire:click="startEditCustomField({{ $field->id }})" class="kt-btn kt-btn-sm kt-btn-ghost gap-1">
+                                            <i class="ki-filled ki-pencil text-sm"></i> Rename
+                                        </button>
+
+                                        @if ($confirmingCustomFieldDelete === $field->id)
+                                            <span class="text-xs text-destructive">
+                                                {{ $confirmingCustomFieldDeleteCount === 0
+                                                    ? 'No values will be lost.'
+                                                    : $confirmingCustomFieldDeleteCount.' '.($confirmingCustomFieldDeleteCount === 1 ? 'value' : 'values').' will be lost.' }}
+                                            </span>
+                                            <button wire:click="deleteCustomField({{ $field->id }})" wire:loading.attr="disabled" wire:target="deleteCustomField"
+                                                    class="kt-btn kt-btn-sm kt-btn-destructive gap-1">
+                                                <i class="ki-filled ki-trash text-sm"></i> Confirm delete
+                                            </button>
+                                            <button wire:click="cancelDeleteCustomField" class="kt-btn kt-btn-sm kt-btn-ghost">Cancel</button>
+                                        @else
+                                            <button wire:click="confirmDeleteCustomField({{ $field->id }})"
+                                                    class="kt-btn kt-btn-sm kt-btn-ghost text-destructive gap-1">
+                                                <i class="ki-filled ki-trash text-sm"></i> Delete
+                                            </button>
+                                        @endif
+                                    </div>
+                                </div>
+                            @endif
+
+                            @if ($field->type === CustomFieldType::Dropdown)
+                                <div class="flex flex-col gap-2 pt-2 border-t border-border">
+                                    <div class="flex flex-wrap items-center gap-2">
+                                        @forelse ($field->options() as $option)
+                                            <div class="flex items-center gap-1 rounded-md border border-border px-2 py-1"
+                                                 wire:key="option-{{ $field->id }}-{{ $option['id'] }}">
+                                                @if ($editingOption === $field->id.':'.$option['id'])
+                                                    <input type="text" class="kt-input kt-input-sm max-w-[140px]" aria-label="Option label"
+                                                           wire:model="optionDraft" wire:keydown.escape="cancelEditOption"
+                                                           wire:keydown.enter.prevent="saveOption({{ $field->id }}, {{ $option['id'] }})">
+                                                    <button wire:click="saveOption({{ $field->id }}, {{ $option['id'] }})"
+                                                            class="kt-btn kt-btn-icon kt-btn-sm kt-btn-ghost" title="Save option" aria-label="Save option">
+                                                        <i class="ki-filled ki-check text-xs"></i>
+                                                    </button>
+                                                @else
+                                                    <button wire:click="startEditOption({{ $field->id }}, {{ $option['id'] }})"
+                                                            class="text-xs text-mono hover:text-primary" title="Rename {{ $option['label'] }}">
+                                                        {{ $option['label'] }}
+                                                    </button>
+                                                    <button wire:click="deleteOption({{ $field->id }}, {{ $option['id'] }})"
+                                                            class="kt-btn kt-btn-icon kt-btn-sm kt-btn-ghost text-destructive"
+                                                            title="Remove {{ $option['label'] }}" aria-label="Remove {{ $option['label'] }}">
+                                                        <i class="ki-filled ki-cross text-[10px]"></i>
+                                                    </button>
+                                                @endif
+                                            </div>
+                                        @empty
+                                            <span class="text-xs text-muted-foreground">No options yet.</span>
+                                        @endforelse
+                                    </div>
+                                    <div class="flex items-center gap-2">
+                                        <input type="text" class="kt-input kt-input-sm max-w-[180px]" placeholder="New option"
+                                               aria-label="New option for {{ $field->name }}"
+                                               wire:model="newOptionDraft.{{ $field->id }}"
+                                               wire:keydown.enter.prevent="addCustomFieldOption({{ $field->id }})">
+                                        <button wire:click="addCustomFieldOption({{ $field->id }})"
+                                                wire:loading.attr="disabled" wire:target="addCustomFieldOption({{ $field->id }})"
+                                                class="kt-btn kt-btn-sm kt-btn-outline gap-1">
+                                            <i class="ki-filled ki-plus text-xs"></i> Add option
+                                        </button>
+                                    </div>
+                                </div>
+                            @endif
+                        </div>
+                    @empty
+                        <div class="text-center py-8">
+                            <i class="ki-filled ki-setting-4 text-2xl text-muted-foreground"></i>
+                            <p class="text-sm text-muted-foreground mt-2">No custom fields yet. Add the first one below.</p>
+                        </div>
+                    @endforelse
+
+                    <div class="flex flex-wrap items-center gap-2 pt-2 border-t border-border">
+                        <input type="text" class="kt-input max-w-[220px]" placeholder="New field name"
+                               aria-label="New field name" wire:model="newFieldName"
+                               wire:keydown.enter.prevent="createCustomField">
+                        <select class="kt-select max-w-[160px]" aria-label="New field type" wire:model="newFieldType">
+                            @foreach ($customFieldTypes as $type)
+                                <option value="{{ $type->value }}">{{ $type->label() }}</option>
+                            @endforeach
+                        </select>
+                        <button wire:click="createCustomField" wire:loading.attr="disabled" wire:target="createCustomField"
+                                class="kt-btn kt-btn-outline gap-2">
+                            <span wire:loading.remove wire:target="createCustomField" class="inline-flex items-center gap-2">
+                                <i class="ki-filled ki-plus"></i> Add field
+                            </span>
+                            <span wire:loading wire:target="createCustomField" class="inline-flex items-center gap-2">
                                 <i class="ki-filled ki-loading animate-spin"></i> Adding…
                             </span>
                         </button>
