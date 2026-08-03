@@ -364,6 +364,23 @@ class extends Component
                 'expenses' => 'Expenses',
                 'notes' => 'Notes',
             ],
+            /*
+             * Whole class strings in a map, never built by concatenation —
+             * Tailwind's scanner reads source as text and cannot see a class
+             * that only exists once PHP has run.
+             *
+             * The five states come from `Card::dueState()` in Project. This
+             * page reads them through `CardReader`'s array, so it does not get
+             * to use Project's own `Palette`; the tones are chosen to match
+             * what the board renders rather than to be independently pretty.
+             */
+            'dueTone' => [
+                'done' => 'text-success',
+                'overdue' => 'text-destructive',
+                'due' => 'text-destructive',
+                'soon' => 'text-warning',
+                'later' => 'text-secondary-foreground',
+            ],
             // Real, from Project, through its contract. Accounting may read a
             // card; it may not hold one — see Modules\Project\Contracts\CardReader.
             'cards' => $this->cards(),
@@ -667,7 +684,13 @@ class extends Component
                                             <td class="text-secondary-foreground">{{ $card['list'] }}</td>
                                             <td>
                                                 @if ($card['due_on'])
-                                                    <span class="{{ $card['due_state'] === 'overdue' ? 'text-destructive' : ($card['due_state'] === 'soon' ? 'text-warning' : 'text-secondary-foreground') }}">
+                                                    {{--
+                                                        `due` is its own state — a card due exactly today.
+                                                        It used to be folded into `soon`, and when it was
+                                                        split out this branch silently stopped colouring
+                                                        the one card a person most wants to notice.
+                                                    --}}
+                                                    <span class="{{ $dueTone[$card['due_state']] ?? 'text-secondary-foreground' }}">
                                                         {{ $card['due_on'] }}
                                                     </span>
                                                 @else
