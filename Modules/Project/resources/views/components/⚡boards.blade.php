@@ -58,6 +58,51 @@ class extends Component
 
     public string $newListName = '';
 
+    /**
+     * An `#[Url]` property is whatever the address bar says, which may be
+     * nothing this board has ever heard of. Without this the page renders an
+     * empty board titled "Board" and offers no way back to a real one.
+     */
+    public function mount(): void
+    {
+        $this->activeBoard = $this->resolveBoard($this->activeBoard);
+    }
+
+    private function resolveBoard(string $key): string
+    {
+        $keys = array_column($this->boards(), 'key');
+
+        return in_array($key, $keys, true) ? $key : ($keys[0] ?? '');
+    }
+
+    /**
+     * Shut every transient panel. One thing is open at a time, and closing on
+     * the way to opening something else is silent — a single gesture reports
+     * once, not three times.
+     */
+    private function closeOverlays(): void
+    {
+        $this->filterOpen = false;
+        $this->boardPickerOpen = false;
+        $this->listMenuOpen = null;
+        $this->addingCardIn = null;
+        $this->newCardTitle = '';
+        $this->addingList = false;
+        $this->newListName = '';
+    }
+
+    /** Click-away from any open panel. Dismissing is not worth announcing. */
+    public function dismissPanels(): void
+    {
+        $this->closeOverlays();
+    }
+
+    /** The search box, ignoring whitespace nobody meant to type. */
+    private function searchTerm(): string
+    {
+        return trim($this->search);
+    }
+
     /** Labels available on this board. */
     private function labels(): array
     {
@@ -174,8 +219,10 @@ class extends Component
     private function filtered(array $lists): array
     {
         return array_map(function (array $list): array {
-            $list['cards'] = array_values(array_filter($list['cards'], function (array $card): bool {
-                if ($this->search !== '' && stripos($card['title'], trim($this->search)) === false) {
+            $term = $this->searchTerm();
+
+            $list['cards'] = array_values(array_filter($list['cards'], function (array $card) use ($term): bool {
+                if ($term !== '' && stripos($card['title'], $term) === false) {
                     return false;
                 }
 
@@ -227,7 +274,7 @@ class extends Component
             'activeFilters' => count($this->filterLabels)
                 + count($this->filterAssignees)
                 + ($this->filterDue !== '' ? 1 : 0)
-                + ($this->search !== '' ? 1 : 0),
+                + ($this->searchTerm() !== '' ? 1 : 0),
             'dueOptions' => [
                 'overdue' => ['label' => 'Overdue', 'icon' => 'ki-time', 'tone' => 'text-destructive'],
                 'soon' => ['label' => 'Due in the next week', 'icon' => 'ki-calendar', 'tone' => 'text-warning'],
@@ -250,41 +297,52 @@ class extends Component
 
     public function selectBoard(string $key): void
     {
-        $this->activeBoard = $key;
-        $this->boardPickerOpen = false;
-        $this->cancelAddCard();
-        $this->cancelAddList();
+        $this->activeBoard = $this->resolveBoard($key);
+
+        // A filter set against one board's labels and people usually matches
+        // nothing on the next one, and an empty board with no visible reason
+        // reads as a bug. Switching board starts clean.
+        $this->search = '';
+        $this->filterLabels = [];
+        $this->filterAssignees = [];
+        $this->filterDue = '';
+
+        $this->closeOverlays();
 
         $this->toastSuccess('Board switched', 'You are looking at '.$this->boardName().'.');
     }
 
     public function toggleBoardPicker(): void
     {
-        $this->boardPickerOpen = ! $this->boardPickerOpen;
-        $this->filterOpen = false;
+        $opening = ! $this->boardPickerOpen;
+        $this->closeOverlays();
+        $this->boardPickerOpen = $opening;
 
-        $this->boardPickerOpen
+        $opening
             ? $this->toastSuccess('Board picker open', 'Pick the board you want to work on.')
             : $this->toastSuccess('Board picker closed');
     }
 
     public function toggleListMenu(string $listId): void
     {
-        $this->listMenuOpen = $this->listMenuOpen === $listId ? null : $listId;
+        $opening = $this->listMenuOpen !== $listId;
+        $this->closeOverlays();
+        $this->listMenuOpen = $opening ? $listId : null;
 
-        $this->listMenuOpen === null
-            ? $this->toastSuccess('List menu closed')
-            : $this->toastSuccess('List menu open', 'Add a card, or archive what the list holds.');
+        $opening
+            ? $this->toastSuccess('List menu open', 'Add a card, or archive what the list holds.')
+            : $this->toastSuccess('List menu closed');
     }
 
     /* Filtering ---------------------------------------------------------- */
 
     public function toggleFilterPanel(): void
     {
-        $this->filterOpen = ! $this->filterOpen;
-        $this->boardPickerOpen = false;
+        $opening = ! $this->filterOpen;
+        $this->closeOverlays();
+        $this->filterOpen = $opening;
 
-        $this->filterOpen
+        $opening
             ? $this->toastSuccess('Filter panel open', 'Narrow the board by label, member or due date.')
             : $this->toastSuccess('Filter panel closed', 'Whatever you set is still applied.');
     }
@@ -356,10 +414,8 @@ class extends Component
 
     public function startAddCard(string $listId): void
     {
+        $this->closeOverlays();
         $this->addingCardIn = $listId;
-        $this->newCardTitle = '';
-        $this->addingList = false;
-        $this->listMenuOpen = null;
 
         $this->toastSuccess('Card form open', 'It sits at the bottom of the list.');
     }
@@ -385,9 +441,8 @@ class extends Component
 
     public function startAddList(): void
     {
+        $this->closeOverlays();
         $this->addingList = true;
-        $this->newListName = '';
-        $this->addingCardIn = null;
 
         $this->toastSuccess('List form open', 'It sits at the end of the board.');
     }
@@ -456,6 +511,16 @@ class extends Component
 ?>
 
 <div class="flex flex-col gap-5 h-full">
+
+    {{--
+        Click-away for whichever panel is open. Driven from component state
+        rather than from a listener, because an attribute added by the morph is
+        not a listener the browser has bound. It sits below the panels' own
+        z-20 and above everything else, so only the panel stays clickable.
+    --}}
+    @if ($filterOpen || $boardPickerOpen || $listMenuOpen !== null)
+        <div class="fixed inset-0 z-10" wire:click="dismissPanels" aria-hidden="true"></div>
+    @endif
 
     {{-- Board toolbar --}}
     <div class="flex flex-wrap items-start justify-between gap-3">
@@ -764,34 +829,66 @@ class extends Component
 @script
 <script>
     (function initBoard() {
+        // The click that a browser fires after a drag has to be swallowed or
+        // the card drawer opens on every drop. One guard for the whole page,
+        // registered once however many times this component is re-initialised.
+        if (! window.kargahDragGuard) {
+            window.kargahDragGuard = { until: 0 };
+
+            document.addEventListener('click', function (event) {
+                if (Date.now() < window.kargahDragGuard.until && event.target.closest('[data-card-id]')) {
+                    window.kargahDragGuard.until = 0;
+                    event.stopPropagation();
+                    event.preventDefault();
+                }
+            }, true);
+        }
+
+        const guard = window.kargahDragGuard;
+
         function mount() {
             if (typeof Sortable === 'undefined') return;
 
-            document.querySelectorAll('.kargah-list').forEach(function (el) {
-                if (el.dataset.sortableMounted) return;
-                el.dataset.sortableMounted = '1';
+            const root = $wire.$el;
+
+            // After a wire:navigate this closure outlives its own DOM. A hook
+            // registered by the previous instance must not touch the new one.
+            if (! root || ! root.isConnected) return;
+
+            root.querySelectorAll('.kargah-list').forEach(function (el) {
+                // The guard cannot be a data-* attribute: Livewire's morph
+                // removes any attribute the incoming HTML does not carry, so
+                // the flag cleared itself on every render and a second
+                // Sortable bound to the same element — one drop, N writes.
+                if (Sortable.get(el)) return;
 
                 new Sortable(el, {
                     group: 'kargah-cards',
                     animation: 150,
                     ghostClass: 'opacity-40',
                     dragClass: 'rotate-2',
+                    // Without this the "Nothing in this list yet" paragraph is
+                    // itself draggable, and lands in another list as a ghost.
+                    draggable: '[data-card-id]',
+                    onStart: function () {
+                        guard.until = Infinity;
+                    },
                     onEnd: function (evt) {
-                        const cardId = parseInt(evt.item.dataset.cardId, 10);
-                        const toList = evt.to.dataset.list;
-                        const position = evt.newIndex;
+                        guard.until = Date.now() + 300;
 
-                        if (window.Livewire) {
-                            Livewire.dispatch('card-moved', { cardId, toList, position });
-                        }
+                        if (evt.to === evt.from && evt.oldIndex === evt.newIndex) return;
+
+                        $wire.moveCard(
+                            parseInt(evt.item.dataset.cardId, 10),
+                            evt.to.dataset.list,
+                            evt.newIndex,
+                        );
                     },
                 });
             });
         }
 
-        document.addEventListener('DOMContentLoaded', mount);
-        document.addEventListener('livewire:navigated', mount);
-        if (window.Livewire) Livewire.hook('morph.updated', mount);
+        Livewire.hook('morphed', mount);
         mount();
     })();
 </script>

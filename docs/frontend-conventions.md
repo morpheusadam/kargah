@@ -190,22 +190,43 @@ Every list or collection view must handle all three:
 
 ## JavaScript
 
-Only when Blade and Livewire genuinely cannot do it (drag and drop, charts, editors). Put it in
-`@push('scripts')` at the bottom of the component file, guard against double-mounting, and
-re-mount after Livewire updates:
+Only when Blade and Livewire genuinely cannot do it (drag and drop, charts, editors).
+
+**`@push('scripts')` does not work inside a Livewire component.** Livewire carries neither a
+pushed stack nor `@assets` through to the layout, and discards both silently — no error, no
+warning, no script. The board's drag and drop was dead for days because of exactly this. Use
+`@script … @endscript`, inside the single root element:
 
 ```blade
-@push('scripts')
+@script
 <script>
 (function () {
-    function mount() { /* … */ }
-    document.addEventListener('DOMContentLoaded', mount);
-    if (window.Livewire) Livewire.hook('morph.updated', mount);
+    function mount() {
+        // `$wire.$el` is this component's root. A closure left behind by a
+        // wire:navigate must not touch the page that replaced it.
+        if (! $wire.$el || ! $wire.$el.isConnected) return;
+        /* … */
+    }
+
+    Livewire.hook('morphed', mount);   // once per component, not per element
     mount();
 })();
 </script>
-@endpush
+@endscript
 ```
+
+Three things that have each cost a day:
+
+- **Never guard a mount with a `data-*` attribute.** Livewire's morph removes any attribute the
+  incoming HTML does not carry, so the flag clears itself on every render and you get a second
+  instance bound to the same element. Ask the library: `Sortable.get(el)`, `chart.destroy()`.
+- **`morph.updated` fires once per DOM node touched; `morphed` fires once per component.** The
+  first is almost never what you want.
+- **Talk to your own component with `$wire.method()`, not `Livewire.dispatch()`.** A global event
+  needs a `#[On]` listener somewhere, and when nobody declares one the call vanishes without an
+  error.
+
+`@push('scripts')` remains correct in a **layout or a plain Blade view** — just not in a component.
 
 Globals the layout loads on **every** page: `Sortable`, `KTMenu`, `KTDrawer`, `KTDropdown`,
 `KTModal`, jQuery. That is the whole list, and it should stay short — the layout is the one file
