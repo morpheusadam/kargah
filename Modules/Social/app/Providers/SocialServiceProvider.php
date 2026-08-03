@@ -2,7 +2,9 @@
 
 namespace Modules\Social\Providers;
 
+use Illuminate\Console\Scheduling\Schedule;
 use Modules\Core\Support\MorphMap;
+use Modules\Social\Console\CheckTokenExpiry;
 use Modules\Social\Console\PublishDue;
 use Modules\Social\Console\SyncNotifications;
 use Modules\Social\Models\Post;
@@ -27,6 +29,7 @@ class SocialServiceProvider extends ModuleServiceProvider
     protected array $commands = [
         PublishDue::class,
         SyncNotifications::class,
+        CheckTokenExpiry::class,
     ];
 
     /** @var string[] */
@@ -76,5 +79,37 @@ class SocialServiceProvider extends ModuleServiceProvider
             'post_target' => PostTarget::class,
             'social_notification' => SocialNotification::class,
         ]);
+
+        $this->bootTokenExpiryCheck();
+    }
+
+    /**
+     * The token-expiry sweep: one command, dispatched from cron, never doing
+     * the work inline in the scheduler itself — same pattern as
+     * `Modules\Core\Providers\CoreServiceProvider::bootNotifications()` and
+     * `Modules\Project\Providers\ProjectServiceProvider::bootDueCardSweep()`.
+     * Scheduled here rather than in `routes/console.php` for the same reason
+     * those two are: that file is shared across every module working today,
+     * and this entry needs nothing from it. `withoutOverlapping()` because a
+     * lookup this cheap has no business running twice at once, and because
+     * two overlapping ticks would otherwise race the same dedupe key that
+     * `Notifier::notifyMany()` is built to survive but there is no reason to
+     * invite.
+     *
+     * Daily, not per-minute like `social:publish-due`: `token_expires_at`
+     * moves in units of days for every network that has one at all, so a
+     * tighter tick would only mean checking a clock that has not moved.
+     */
+    private function bootTokenExpiryCheck(): void
+    {
+        if (! $this->app->runningInConsole()) {
+            return;
+        }
+
+        $this->callAfterResolving(Schedule::class, function (Schedule $schedule): void {
+            $schedule->command('social:check-token-expiry')
+                ->dailyAt('08:15')
+                ->withoutOverlapping();
+        });
     }
 }

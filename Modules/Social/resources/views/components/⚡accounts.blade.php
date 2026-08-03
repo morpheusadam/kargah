@@ -210,7 +210,11 @@ class extends Component
                         </div>
 
                         <div class="flex flex-col items-end gap-2 shrink-0">
-                            @if ($ready)
+                            @if ($ready && $account->tokenExpired())
+                                <span class="kt-badge kt-badge-sm kt-badge-destructive">Token expired</span>
+                            @elseif ($ready && $account->tokenExpiringSoon())
+                                <span class="kt-badge kt-badge-sm kt-badge-warning">Token expiring soon</span>
+                            @elseif ($ready)
                                 <span class="kt-badge kt-badge-sm kt-badge-success">Connected</span>
                             @elseif (! $account->is_active)
                                 <span class="kt-badge kt-badge-sm kt-badge-outline">Switched off</span>
@@ -233,6 +237,22 @@ class extends Component
                             @endif
                         </p>
                     @endunless
+
+                    @if ($ready && $account->tokenExpired())
+                        <p class="text-xs text-secondary-foreground rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
+                            Its token expired {{ $account->token_expires_at->diffForHumans() }}. Publishing to it is failing until a fresh one is pasted.
+                            @if ($meta)
+                                {{ $meta['requirement'] }}
+                            @endif
+                        </p>
+                    @elseif ($ready && $account->tokenExpiringSoon())
+                        <p class="text-xs text-secondary-foreground rounded-lg border border-warning/30 bg-warning/10 px-3 py-2">
+                            Its token expires {{ $account->token_expires_at->diffForHumans() }}.
+                            @if ($meta)
+                                {{ $meta['requirement'] }}
+                            @endif
+                        </p>
+                    @endif
 
                     @if ($account->last_error)
                         <p class="text-xs text-secondary-foreground rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">

@@ -265,6 +265,8 @@ class extends Component
 
         $existing = $this->existing();
 
+        $lifetimeDays = Networks::tokenLifetimeDays($this->network);
+
         $account = SocialAccount::query()->updateOrCreate(
             ['network' => $this->network, 'handle' => $handle],
             [
@@ -272,6 +274,12 @@ class extends Component
                 'display_name' => $existing?->display_name ?? auth()->user()?->name,
                 'is_active' => true,
                 'connected_at' => now(),
+                // Every field is required for `save()` to succeed, so a save
+                // is always a fresh paste, never an edit to a handle alone —
+                // see `missingLabels()` above. That is what makes recomputing
+                // this on every save correct rather than something that needs
+                // to detect whether the credential actually changed.
+                'token_expires_at' => $lifetimeDays === null ? null : now()->addDays($lifetimeDays),
                 'last_error' => null,
                 'created_by' => $existing?->created_by ?? auth()->id(),
             ],
@@ -380,6 +388,22 @@ class extends Component
                             <i class="ki-filled ki-information-2 text-secondary-foreground text-base mt-0.5 shrink-0"></i>
                             <p class="text-sm text-secondary-foreground">{{ $chosen['requirement'] }}</p>
                         </div>
+
+                        @if ($existing && $existing->tokenExpired())
+                            <div class="flex items-start gap-2.5 rounded-lg border border-destructive/30 bg-destructive/5 px-3.5 py-3">
+                                <i class="ki-filled ki-cross-circle text-destructive text-base mt-0.5 shrink-0"></i>
+                                <p class="text-sm text-secondary-foreground">
+                                    Its stored token expired {{ $existing->token_expires_at->diffForHumans() }}, which is likely why you are here. Saving a fresh credential below replaces it.
+                                </p>
+                            </div>
+                        @elseif ($existing && $existing->tokenExpiringSoon())
+                            <div class="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/10 px-3.5 py-3">
+                                <i class="ki-filled ki-information-2 text-warning text-base mt-0.5 shrink-0"></i>
+                                <p class="text-sm text-secondary-foreground">
+                                    Its stored token expires {{ $existing->token_expires_at->diffForHumans() }}. Saving a fresh credential below replaces it and resets the clock.
+                                </p>
+                            </div>
+                        @endif
 
                         <div class="flex flex-col gap-1.5">
                             <label class="kt-form-label" for="account-handle">Handle</label>

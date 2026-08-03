@@ -21,6 +21,21 @@ namespace Modules\Social\Support;
  * Telegram's `getUpdates` consumes the update queue the bot itself needs, so
  * both are marked false and `social:sync-notifications` skips them rather than
  * pretending there is nothing to show.
+ *
+ * `token_lifetime_days` is null for every credential that does not expire on
+ * its own — Mastodon, Bluesky and Telegram all issue a scoped, revocable
+ * token from the network's own settings screen with no clock attached; the
+ * person revokes it, Kargah does not out-wait it. LinkedIn's member token is
+ * the one exception Kargah has today, and the pasted-token model means there
+ * is no OAuth response to read a real expiry off — the credential arrives
+ * over `⚡account-connect`'s form, not a token exchange this application ever
+ * sees. `social:check-token-expiry` therefore infers `token_expires_at` from
+ * this lifetime, counted from the moment the credential was saved. That is an
+ * approximation — the true clock started whenever LinkedIn actually issued
+ * the token, which may be minutes or days before it was pasted here — and it
+ * is the same shortcut the constraint that ruled out OAuth (see
+ * `08-postiz-parity.md`) makes unavoidable: a value that reads slightly early
+ * beats a column that never gets a value at all.
  */
 final class Networks
 {
@@ -44,6 +59,7 @@ final class Networks
      *     summary: string,
      *     requirement: string,
      *     ingests: bool,
+     *     token_lifetime_days: int|null,
      *     credentials: array<string, array{label: string, secret: bool, placeholder: string, hint: string}>,
      *     permissions: list<array{allowed: bool, text: string}>
      * }>
@@ -62,6 +78,7 @@ final class Networks
                 'summary' => 'Post to your own instance and read mentions back.',
                 'requirement' => 'Create an application under Preferences → Development on your instance, tick write:statuses and read:notifications, then paste the access token here.',
                 'ingests' => true,
+                'token_lifetime_days' => null,
                 'credentials' => [
                     'instance' => [
                         'label' => 'Instance URL',
@@ -93,6 +110,7 @@ final class Networks
                 'summary' => 'Publish to your feed and read replies and likes back.',
                 'requirement' => 'Create an app password under Settings → App passwords. Your account password is not accepted and should not be pasted here.',
                 'ingests' => true,
+                'token_lifetime_days' => null,
                 'credentials' => [
                     'identifier' => [
                         'label' => 'Handle',
@@ -124,6 +142,12 @@ final class Networks
                 'summary' => 'Publish to your personal feed.',
                 'requirement' => 'Create an app on the LinkedIn developer portal, request the w_member_social product, then paste the member access token and your member URN.',
                 'ingests' => false,
+                // The member token's real lifetime, per LinkedIn's own docs.
+                // `social:check-token-expiry` counts it from when the
+                // credential is saved, not from when LinkedIn actually issued
+                // it — see the class docblock above for why that is the best
+                // available approximation under the pasted-token model.
+                'token_lifetime_days' => 60,
                 'credentials' => [
                     'member_urn' => [
                         'label' => 'Member URN',
@@ -155,6 +179,7 @@ final class Networks
                 'summary' => 'Post to a channel or group through a bot you own.',
                 'requirement' => 'Create a bot with @BotFather, add it to the channel as an administrator, then paste its token and the chat it should post to.',
                 'ingests' => false,
+                'token_lifetime_days' => null,
                 'credentials' => [
                     'bot_token' => [
                         'label' => 'Bot token',
@@ -226,5 +251,16 @@ final class Networks
     public static function ingestsNotifications(string $network): bool
     {
         return (bool) (self::all()[$network]['ingests'] ?? false);
+    }
+
+    /**
+     * How many days a freshly saved credential is assumed good for, or null
+     * for a network whose token does not expire on its own. See the class
+     * docblock for why this is an approximation rather than a real value read
+     * off an OAuth response.
+     */
+    public static function tokenLifetimeDays(string $network): ?int
+    {
+        return self::all()[$network]['token_lifetime_days'] ?? null;
     }
 }

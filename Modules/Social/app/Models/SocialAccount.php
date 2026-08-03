@@ -142,6 +142,27 @@ class SocialAccount extends Model
         return $this->is_active && $this->hasCredentials();
     }
 
+    /**
+     * Matches `Modules\Social\Console\CheckTokenExpiry::WARN_AT_DAYS[0]` —
+     * the connect and accounts pages read the same "worth mentioning" window
+     * the scheduled check warns at, rather than picking their own number.
+     */
+    public const TOKEN_EXPIRY_WARNING_DAYS = 7;
+
+    /** Whether the stored token has already passed its expiry. */
+    public function tokenExpired(): bool
+    {
+        return $this->token_expires_at !== null && $this->token_expires_at->isPast();
+    }
+
+    /** Whether the token is inside its warning window but not expired yet. */
+    public function tokenExpiringSoon(): bool
+    {
+        return $this->token_expires_at !== null
+            && ! $this->tokenExpired()
+            && now()->diffInDays($this->token_expires_at) <= self::TOKEN_EXPIRY_WARNING_DAYS;
+    }
+
     public function label(): string
     {
         return Networks::label($this->network);

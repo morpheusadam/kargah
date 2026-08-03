@@ -126,6 +126,23 @@ final class NotificationEvents
                 'label' => 'A backup fails',
                 'default' => ['in_app' => true, 'email' => true],
             ],
+            /*
+             * Both default to email on, unlike the watch-driven project events.
+             * A connected account whose token is dying is exactly the thing a
+             * person wants told to them when they are not looking at the app,
+             * and there is no volume problem: a handful of accounts, a couple of
+             * thresholds each.
+             */
+            'social.token_expiring' => [
+                'group' => 'Social',
+                'label' => "A connected account's token is expiring soon",
+                'default' => ['in_app' => true, 'email' => true],
+            ],
+            'social.token_expired' => [
+                'group' => 'Social',
+                'label' => "A connected account's token has already expired",
+                'default' => ['in_app' => true, 'email' => true],
+            ],
             'post.failed' => [
                 'group' => 'Social',
                 'label' => 'A scheduled post fails',

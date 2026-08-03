@@ -115,6 +115,10 @@ class extends Component
             'email' => ['icon' => 'ki-sms', 'tone' => 'text-info'],
             'campaign' => ['icon' => 'ki-paper-plane', 'tone' => 'text-info'],
             'post' => ['icon' => 'ki-share', 'tone' => 'text-success'],
+            // A token about to expire is a thing to act on, not a status
+            // update, so it takes the warning tone rather than Social's usual
+            // green.
+            'social' => ['icon' => 'ki-share', 'tone' => 'text-warning'],
             'backup' => ['icon' => 'ki-folder', 'tone' => 'text-muted-foreground'],
         ];
     }
