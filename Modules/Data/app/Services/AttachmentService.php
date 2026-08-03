@@ -122,6 +122,22 @@ class AttachmentService implements AttachmentServiceContract
         return $attachment === null ? null : $this->toArray($attachment);
     }
 
+    public function contents(int $attachmentId): ?string
+    {
+        $attachment = Attachment::query()->find($attachmentId);
+
+        if ($attachment === null) {
+            return null;
+        }
+
+        $disk = Storage::disk($attachment->disk);
+
+        // `exists()` first rather than catching a read failure: `get()` on a
+        // missing path returns null on some drivers and throws on others, and
+        // the caller needs one answer.
+        return $disk->exists($attachment->path) ? $disk->get($attachment->path) : null;
+    }
+
     public function stream(int $attachmentId, bool $inline = false): StreamedResponse
     {
         $attachment = Attachment::query()->findOrFail($attachmentId);

@@ -6,11 +6,15 @@ use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
 /**
- * An email, as `Modules\Mailbox\Contracts\EmailReader::forCustomer()` hands
- * one back — already an array with a stable shape, so this only re-states the
- * fields rather than passing the array through untouched: a key Mailbox adds
- * to its internal shape tomorrow does not silently become part of this API's
- * contract with its own clients.
+ * An email in a *listing* — as `Modules\Mailbox\Contracts\EmailReader`'s
+ * `forCustomer()` and `paginate()` both hand one back. A preview, never a body:
+ * `EmailMessageResource` is the shape for one whole message, and a page of
+ * twenty bodies is not a list.
+ *
+ * Already an array with a stable shape, so this only re-states the fields
+ * rather than passing the array through untouched: a key Mailbox adds to its
+ * internal shape tomorrow does not silently become part of this API's contract
+ * with its own clients.
  */
 class EmailResource extends JsonResource
 {

@@ -5,12 +5,14 @@ namespace Modules\Core\Providers;
 use App\Models\User;
 use Illuminate\Console\Scheduling\Schedule;
 use Modules\Core\Console\PruneNotifications;
+use Modules\Core\Contracts\CompanyReader as CompanyReaderContract;
 use Modules\Core\Contracts\CustomerReader as CustomerReaderContract;
 use Modules\Core\Contracts\Linker as LinkerContract;
 use Modules\Core\Contracts\NotificationPreferences as NotificationPreferencesContract;
 use Modules\Core\Contracts\Notifier as NotifierContract;
 use Modules\Core\Models\Company;
 use Modules\Core\Models\Customer;
+use Modules\Core\Services\CompanyReader;
 use Modules\Core\Services\CustomerReader;
 use Modules\Core\Services\Linker;
 use Modules\Core\Services\NotificationPreferences;
@@ -33,6 +35,7 @@ class CoreServiceProvider extends ModuleServiceProvider
     {
         parent::register();
 
+        $this->app->bind(CompanyReaderContract::class, CompanyReader::class);
         $this->app->bind(CustomerReaderContract::class, CustomerReader::class);
         $this->app->bind(LinkerContract::class, Linker::class);
         $this->app->bind(NotificationPreferencesContract::class, NotificationPreferences::class);

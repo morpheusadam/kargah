@@ -128,10 +128,13 @@ class BoardSearchTest extends TestCase
     {
         app(CardService::class)->append($this->todo, 'Would otherwise be visible');
 
-        $component = Livewire::test('project::boards')->set('search', 'has:cover');
+        // `has:stickers` is the last operator with nothing behind it.
+        // `has:cover`, `has:attachments` and `is:starred` used to be here too
+        // and are now real — see `SearchCompiler`'s class docblock.
+        $component = Livewire::test('project::boards')->set('search', 'has:stickers');
 
         $this->assertSame([], $this->visibleTitles($component));
-        $component->assertViewHas('searchWarning', fn (?string $warning) => $warning !== null && str_contains($warning, 'has:cover'));
+        $component->assertViewHas('searchWarning', fn (?string $warning) => $warning !== null && str_contains($warning, 'has:stickers'));
     }
 
     public function test_a_supported_search_carries_no_warning(): void

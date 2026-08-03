@@ -250,15 +250,37 @@ class Board extends Model
     public function scopeStarredFirstFor(Builder $query, ?User $user): Builder
     {
         if ($user !== null) {
-            $query->orderByRaw(
-                'coalesce((select case when s.starred_at is null then 0 else 1 end'
+            $starred = 'coalesce((select case when s.starred_at is null then 0 else 1 end'
                 .' from board_user_states as s'
-                .' where s.board_id = boards.id and s.user_id = ?), 0) desc',
-                [$user->id],
-            );
+                .' where s.board_id = boards.id and s.user_id = ?), 0)';
+
+            // Selected as well as ordered by, so a caller that has to *draw*
+            // the stars — the board picker does — reads them off the models it
+            // already has instead of asking a second time. `addSelect` rather
+            // than `select`, so `boards.*` survives; and a computed column
+            // rather than the join this scope's docblock warns about, which
+            // would drag `board_user_states.id` in after `boards.id` and have
+            // Eloquent hydrate the wrong one as the key.
+            $query
+                ->addSelect(['boards.*'])
+                ->selectRaw($starred.' as is_starred', [$user->id])
+                ->orderByRaw($starred.' desc', [$user->id]);
         }
 
         return $query->orderBy('position')->orderBy('name');
+    }
+
+    /**
+     * Whether `starredFirstFor()` marked this row starred.
+     *
+     * Only meaningful on a model loaded through that scope; anything else has
+     * no such column and falls back to false rather than to a query, because a
+     * silent per-row lookup is the thing the scope exists to avoid. Use
+     * `isStarredBy()` when you have one board and no such collection.
+     */
+    public function wasLoadedStarred(): bool
+    {
+        return (bool) ($this->attributes['is_starred'] ?? false);
     }
 
     /**

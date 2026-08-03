@@ -9,6 +9,8 @@ use Livewire\Component;
 use Livewire\WithFileUploads;
 use Modules\Core\Concerns\InteractsWithToasts;
 use Modules\Data\Contracts\AttachmentService;
+use Modules\Project\Butler\Butler;
+use Modules\Project\Butler\Triggers;
 use Modules\Project\Models\Board;
 use Modules\Project\Models\BoardList;
 use Modules\Project\Models\Card;
@@ -496,6 +498,34 @@ class extends Component
         $this->open = true;
     }
 
+    /**
+     * Something outside this drawer changed the card that is open in it.
+     *
+     * Today that is a Butler card button, which runs an action chain and then
+     * announces it — the board canvas has listened for this event since
+     * mirroring shipped, and the drawer showing the very card that just moved
+     * or gained a label had no reason to be the last to know.
+     *
+     * Nothing happens when the drawer is shut, or when the drawer's own edits
+     * are what raised it: `forgetCard()` only drops the memo, so the next read
+     * goes back to the database.
+     */
+    #[On('card-changed')]
+    public function cardChangedElsewhere(): void
+    {
+        if (! $this->open || $this->cardId === null) {
+            return;
+        }
+
+        $this->forgetCard();
+
+        $card = $this->card();
+
+        if ($card !== null) {
+            $this->hydrateFrom($card);
+        }
+    }
+
     public function close(): void
     {
         $this->open = false;
@@ -658,6 +688,16 @@ class extends Component
             app(Watching::class)->notifyMemberAdded($card, $user->id, auth()->id());
         }
 
+        // Butler, for the same reason the notification above is by hand:
+        // `card_members` is a pivot and `attach()`/`detach()` raise no Eloquent
+        // events, so a rule watching for a member change would only ever see
+        // the ones Butler itself made.
+        app(Butler::class)->fire(
+            $wasOn ? Triggers::CARD_MEMBER_REMOVED : Triggers::CARD_MEMBER_ADDED,
+            $card,
+            ['user_id' => $user->id],
+        );
+
         $this->cardChanged();
 
         $this->toastSuccess(
@@ -702,6 +742,14 @@ class extends Component
             ->event($wasOn ? 'card.label_removed' : 'card.label_added')
             ->withProperties(['label' => $label->name])
             ->log($wasOn ? 'lost the label '.$label->name : 'gained the label '.$label->name);
+
+        // Same reasoning as the member toggle above: a pivot raises no model
+        // events, so Butler has to be told by hand or it never hears this.
+        app(Butler::class)->fire(
+            $wasOn ? Triggers::CARD_LABEL_REMOVED : Triggers::CARD_LABEL_ADDED,
+            $card,
+            ['label_id' => $label->id],
+        );
 
         $this->cardChanged();
 
@@ -2393,6 +2441,15 @@ class extends Component
                             that part lives on those pages, not here.
                         --}}
                         <livewire:project::card-watch :card-id="$card->id" />
+
+                        {{--
+                            Butler's card buttons: an action chain somebody
+                            defined once, run against this card. The component
+                            dispatches `card-changed` when a chain alters the
+                            card, which the board canvas and this drawer both
+                            listen for.
+                        --}}
+                        <livewire:project::card-buttons :card-id="$card->id" />
 
                         {{-- Checklist --}}
                         <div class="flex flex-col gap-3">

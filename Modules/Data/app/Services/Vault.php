@@ -32,8 +32,15 @@ class Vault
      * be read under the current `APP_KEY`. The log entry is still written in
      * that case: an attempted read is exactly as interesting to an auditor as a
      * successful one, and arguably more so.
+     *
+     * `$via` names *what* did the revealing when it was not a person at a
+     * browser — the API passes the application password's name. The causer
+     * alone cannot answer that: an application password belongs to the owner,
+     * so a reveal through it and a reveal through the vault page are logged
+     * against the same user and would otherwise be indistinguishable. Revoking
+     * one credential after an incident means knowing which one to revoke.
      */
-    public function reveal(Credential $credential, string $field = 'secret', ?Authenticatable $causer = null): ?string
+    public function reveal(Credential $credential, string $field = 'secret', ?Authenticatable $causer = null, ?string $via = null): ?string
     {
         if (! in_array($field, self::FIELDS, true)) {
             throw new InvalidArgumentException('A credential has no revealable field called '.$field.'.');
@@ -45,12 +52,13 @@ class Vault
             ->performedOn($credential)
             ->causedBy($causer ?? auth()->user())
             ->event('credential.revealed')
-            ->withProperties([
+            ->withProperties(array_filter([
                 // The field name, never the value. This table is append-only.
                 'field' => $field,
                 'credential' => $credential->name,
-            ])
-            ->log('revealed the '.$this->fieldLabel($field).' for '.$credential->name);
+                'via' => $via,
+            ], static fn ($value): bool => $value !== null))
+            ->log('revealed the '.$this->fieldLabel($field).' for '.$credential->name.($via === null ? '' : ' via '.$via));
 
         // Timestamps stay put: `updated_at` means the entry changed, and reading
         // one does not change it. `last_revealed_at` is the column that answers

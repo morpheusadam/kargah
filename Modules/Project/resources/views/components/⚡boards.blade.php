@@ -7,6 +7,8 @@ use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
 use Modules\Core\Concerns\InteractsWithToasts;
+use Modules\Project\Butler\Butler;
+use Modules\Project\Butler\Triggers;
 use Modules\Project\Models\Board;
 use Modules\Project\Models\BoardList;
 use Modules\Project\Models\BoardListUserState;
@@ -124,6 +126,9 @@ class extends Component
 
     /** @var list<int>|null Which of this board's lists this person has folded away. */
     private ?array $resolvedCollapsed = null;
+
+    /** @var list<int>|null Which boards this person has starred. */
+    private ?array $resolvedStarred = null;
 
     /**
      * Operator tokens from the last compiled search that could not be
@@ -285,6 +290,55 @@ class extends Component
     }
 
     /**
+     * The boards this person has starred, in **one** query for the whole picker.
+     *
+     * This was a nested `board-star` component per row to begin with, on the
+     * reasoning that toggling a star should not re-render the page around it.
+     * It cost two queries per board — resolve the board, then ask whether it is
+     * starred — and the picker lists every board, so a page with five boards
+     * paid ten queries to draw five outlines. That is what pushed
+     * `BoardSearchTest`'s bounded-query assertion over its ceiling.
+     *
+     * It now costs **nothing**: `starredFirstFor()` already computes
+     * starredness to order by it, so it selects it too and this reads the flag
+     * off the boards `allBoards()` has loaded. A plain button is also the right
+     * shape — the picker sits **outside** the canvas island, so toggling a star
+     * redraws the toolbar and nothing else, which is all the component bought.
+     *
+     * @return list<int>
+     */
+    private function starredBoardIds(): array
+    {
+        return $this->resolvedStarred ??= $this->allBoards()
+            ->filter(fn (Board $board): bool => $board->wasLoadedStarred())
+            ->map(fn (Board $board): int => (int) $board->id)
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Star a board, or unstar it.
+     *
+     * No toast: the icon fills in place, and the toast rule says not to report
+     * what the person is already looking at.
+     */
+    public function toggleStar(string $slug): void
+    {
+        $user = auth()->user();
+        $board = $this->allBoards()->firstWhere('slug', $slug);
+
+        if ($user === null || $board === null) {
+            return;
+        }
+
+        $board->toggleStarFor($user);
+
+        // The picker's order is starred-first, so this changes it.
+        $this->resolvedStarred = null;
+        $this->resolvedBoards = null;
+    }
+
+    /**
      * The lists this person has folded away, among the ones on screen.
      *
      * One query for the whole board, asked only about the lists this board
@@ -387,6 +441,7 @@ class extends Component
             'totalCards' => $this->totalPlacementsCount(),
             'visibleCards' => $visibleCards,
             'collapsedLists' => $this->collapsedLists(),
+            'starredBoardIds' => $this->starredBoardIds(),
             'sortOptions' => ListOperations::SORTS,
             'activeFilters' => count($this->filterLabels)
                 + count($this->filterAssignees)
@@ -904,10 +959,20 @@ class extends Component
 
         $card->members()->toggle([$user->id]);
 
+        $on = $card->members()->whereKey($user->id)->exists();
+
+        // A pivot raises no Eloquent events, so Butler is told by hand — the
+        // same reason the card back does it at its own member toggle.
+        app(Butler::class)->fire(
+            $on ? Triggers::CARD_MEMBER_ADDED : Triggers::CARD_MEMBER_REMOVED,
+            $card,
+            ['user_id' => $user->id],
+        );
+
         $this->refreshBoard();
 
         $this->toastSuccess(
-            $card->members()->whereKey($user->id)->exists() ? 'Added you to the card' : 'Took you off the card',
+            $on ? 'Added you to the card' : 'Took you off the card',
             $card->title,
         );
     }
@@ -947,10 +1012,18 @@ class extends Component
 
         $card->labels()->toggle([$label->id]);
 
+        $on = $card->labels()->whereKey($label->id)->exists();
+
+        app(Butler::class)->fire(
+            $on ? Triggers::CARD_LABEL_ADDED : Triggers::CARD_LABEL_REMOVED,
+            $card,
+            ['label_id' => $label->id],
+        );
+
         $this->refreshBoard();
 
         $this->toastSuccess(
-            $card->labels()->whereKey($label->id)->exists() ? 'Label added' : 'Label removed',
+            $on ? 'Label added' : 'Label removed',
             $label->name.' — '.$card->title,
         );
     }
@@ -1178,7 +1251,14 @@ class extends Component
                                     <span class="size-2.5 rounded-full {{ $b->dotClass() }}"></span>
                                     {{ $b->name }}
                                 </button>
-                                <livewire:project::board-star :board-id="$b->id" :key="'board-star-'.$b->id" />
+                                @php($isStarred = in_array((int) $b->id, $starredBoardIds, true))
+                                <button wire:click="toggleStar('{{ $b->slug }}')"
+                                        class="kt-btn kt-btn-icon kt-btn-ghost size-7 shrink-0 {{ $isStarred ? 'text-warning' : 'text-muted-foreground' }}"
+                                        title="{{ $isStarred ? 'Unstar' : 'Star' }} {{ $b->name }}"
+                                        aria-label="{{ $isStarred ? 'Unstar' : 'Star' }} {{ $b->name }}"
+                                        aria-pressed="{{ $isStarred ? 'true' : 'false' }}">
+                                    <i class="{{ $isStarred ? 'ki-filled' : 'ki-outline' }} ki-star text-sm"></i>
+                                </button>
                             </div>
                         @empty
                             <p class="text-xs text-muted-foreground px-2 py-3 text-center">No boards yet.</p>
@@ -1189,6 +1269,10 @@ class extends Component
                             <a href="{{ route('projects.board-settings', ['board' => $activeBoard]) }}" wire:navigate
                                class="kt-btn kt-btn-ghost justify-start gap-2 w-full">
                                 <i class="ki-filled ki-setting-2 text-sm"></i> Board settings
+                            </a>
+                            <a href="{{ route('projects.butler', ['board' => $activeBoard]) }}" wire:navigate
+                               class="kt-btn kt-btn-ghost justify-start gap-2 w-full">
+                                <i class="ki-filled ki-flash-circle text-sm"></i> Butler — automation
                             </a>
                             {{--
                                 No `wire:navigate` on any of these three. The two
@@ -1217,8 +1301,14 @@ class extends Component
             </div>
 
             @if ($activeBoardModel !== null)
-                {{-- Keyed apart from the picker's stars: the same board appears in both. --}}
-                <livewire:project::board-star :board-id="$activeBoardModel->id" :key="'board-star-header-'.$activeBoardModel->id" />
+                @php($activeStarred = in_array((int) $activeBoardModel->id, $starredBoardIds, true))
+                <button wire:click="toggleStar('{{ $activeBoardModel->slug }}')"
+                        class="kt-btn kt-btn-icon kt-btn-ghost {{ $activeStarred ? 'text-warning' : 'text-muted-foreground' }}"
+                        title="{{ $activeStarred ? 'Unstar this board' : 'Star this board' }}"
+                        aria-label="{{ $activeStarred ? 'Unstar this board' : 'Star this board' }}"
+                        aria-pressed="{{ $activeStarred ? 'true' : 'false' }}">
+                    <i class="{{ $activeStarred ? 'ki-filled' : 'ki-outline' }} ki-star"></i>
+                </button>
             @endif
         </div>
 
@@ -1341,6 +1431,16 @@ class extends Component
                     </div>
                 </div>
             </div>
+
+            @if ($activeBoardModel !== null)
+                {{--
+                    Butler's board buttons: one action chain run over every card
+                    the chain's own conditions qualify. Keyed by board — without
+                    it, switching boards would reuse the previous board's
+                    component state and offer its buttons here.
+                --}}
+                <livewire:project::board-buttons :board-id="$activeBoardModel->id" :key="'board-buttons-'.$activeBoardModel->id" />
+            @endif
 
             @if ($activeBoard !== '')
                 <a href="{{ route('projects.board-settings', ['board' => $activeBoard]) }}" wire:navigate

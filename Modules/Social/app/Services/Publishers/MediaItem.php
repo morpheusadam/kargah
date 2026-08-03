@@ -2,7 +2,7 @@
 
 namespace Modules\Social\Services\Publishers;
 
-use Illuminate\Support\Facades\Storage;
+use Modules\Data\Contracts\AttachmentService;
 
 /**
  * One picture on its way to a network.
@@ -37,8 +37,6 @@ final class MediaItem
         public readonly string $name,
         public readonly string $mime,
         public readonly int $sizeBytes,
-        private readonly string $disk,
-        private readonly string $path,
     ) {}
 
     /**
@@ -60,33 +58,30 @@ final class MediaItem
             return null;
         }
 
-        $disk = $attachment['disk'] ?? null;
-        $path = $attachment['path'] ?? null;
+        // The id is the whole handle now that the bytes come back through the
+        // contract. An attachment array without one is malformed, and a
+        // MediaItem built from it could never fetch anything.
+        $id = (int) ($attachment['id'] ?? 0);
 
-        if (! is_string($disk) || $disk === '' || ! is_string($path) || $path === '') {
+        if ($id <= 0) {
             return null;
         }
 
         return new self(
-            id: (int) ($attachment['id'] ?? 0),
+            id: $id,
             name: is_string($attachment['name'] ?? null) ? $attachment['name'] : 'image',
             mime: $mime,
             sizeBytes: (int) ($attachment['size_bytes'] ?? 0),
-            disk: $disk,
-            path: $path,
         );
     }
 
     /**
      * The bytes, read once.
      *
-     * Read through `Storage` with the disk and path the attachment array
-     * carries, which is the only reason those two keys are in that array's
-     * documented shape at all. It is a read, not a write — Data remains the one
-     * writer to disk — but a `contents(int $id): ?string` on
-     * `Modules\Data\Contracts\AttachmentService` would be the better home for
-     * it, and is the one change this pipeline wants from a module Social does
-     * not own.
+     * Through `AttachmentService::contents()`, not through `Storage::disk()`:
+     * where the bytes live is Data's business, and reaching for the `disk` and
+     * `path` keys directly put another module's storage layout in this one's
+     * hands. A null answer means the row outlived its file.
      *
      * @throws PublishFailed when the row survived but the file behind it did not
      */
@@ -96,15 +91,15 @@ final class MediaItem
             return $this->bytes;
         }
 
-        $disk = Storage::disk($this->disk);
+        $bytes = app(AttachmentService::class)->contents($this->id);
 
-        if (! $disk->exists($this->path)) {
+        if ($bytes === null) {
             throw new PublishFailed(
                 'The image “'.$this->name.'” is recorded against this post but its file is missing from storage, so the post was not sent.',
             );
         }
 
-        return $this->bytes = (string) $disk->get($this->path);
+        return $this->bytes = $bytes;
     }
 
     /** A filename safe to put in a multipart part, never the one a browser sent. */

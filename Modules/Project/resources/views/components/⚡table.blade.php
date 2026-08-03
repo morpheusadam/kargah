@@ -11,6 +11,8 @@ use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
 use Modules\Core\Concerns\InteractsWithToasts;
+use Modules\Project\Butler\Butler;
+use Modules\Project\Butler\Triggers;
 use Modules\Project\Models\Board;
 use Modules\Project\Models\BoardList;
 use Modules\Project\Models\Card;
@@ -413,6 +415,14 @@ class extends Component
         }
 
         $card->labels()->toggle($labelId);
+
+        // A pivot raises no Eloquent events, so Butler is told by hand.
+        app(Butler::class)->fire(
+            $card->labels()->whereKey($label->id)->exists() ? Triggers::CARD_LABEL_ADDED : Triggers::CARD_LABEL_REMOVED,
+            $card,
+            ["label_id" => $label->id],
+        );
+
         $this->refreshRows();
     }
 
@@ -425,6 +435,13 @@ class extends Component
         }
 
         $card->members()->toggle($userId);
+
+        app(Butler::class)->fire(
+            $card->members()->whereKey($userId)->exists() ? Triggers::CARD_MEMBER_ADDED : Triggers::CARD_MEMBER_REMOVED,
+            $card,
+            ["user_id" => $userId],
+        );
+
         $this->refreshRows();
     }
 

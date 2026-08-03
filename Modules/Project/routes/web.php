@@ -16,6 +16,7 @@ Route::middleware('auth')->prefix('projects')->name('projects.')->group(function
     Route::livewire('/calendar', 'project::calendar')->name('calendar');
     Route::livewire('/dashboard', 'project::board-dashboard')->name('dashboard');
     Route::livewire('/activity', 'project::board-activity')->name('activity');
+    Route::livewire('/butler', 'project::butler')->name('butler');
     Route::livewire('/print', 'project::board-print')->name('print');
     Route::livewire('/{board}/settings', 'project::board-settings')->name('board-settings');
 

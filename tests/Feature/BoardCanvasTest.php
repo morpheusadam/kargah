@@ -72,7 +72,9 @@ class BoardCanvasTest extends TestCase
         // anywhere on the page" check — the nested board-templates modal
         // renders unrelated `bg-muted/40` chrome of its own.
         $this->assertStringContainsString('w-[290px] shrink-0 bg-black/30 backdrop-blur-sm', $html);
-        $this->assertStringContainsString('text-sm font-semibold text-white', $html);
+        // `truncate` sits between the two because a long list name would
+        // otherwise push the card-count badge out of the column header.
+        $this->assertStringContainsString('text-sm font-semibold truncate text-white', $html);
     }
 
     public function test_a_gradient_background_renders_its_whole_class_string_and_light_translucent_surface(): void

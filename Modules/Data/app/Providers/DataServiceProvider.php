@@ -4,12 +4,14 @@ namespace Modules\Data\Providers;
 
 use Modules\Core\Support\MorphMap;
 use Modules\Data\Contracts\AttachmentService as AttachmentServiceContract;
+use Modules\Data\Contracts\VaultReader as VaultReaderContract;
 use Modules\Data\Models\Attachment;
 use Modules\Data\Models\Backup;
 use Modules\Data\Models\Bookmark;
 use Modules\Data\Models\Credential;
 use Modules\Data\Models\Repository;
 use Modules\Data\Services\AttachmentService;
+use Modules\Data\Services\VaultReader;
 use Nwidart\Modules\Support\ModuleServiceProvider;
 
 class DataServiceProvider extends ModuleServiceProvider
@@ -41,6 +43,13 @@ class DataServiceProvider extends ModuleServiceProvider
         parent::register();
 
         $this->app->bind(AttachmentServiceContract::class, AttachmentService::class);
+
+        // The vault's read side, for consumers that may not hold a Credential —
+        // the model decrypts on attribute read, so handing it out is handing
+        // out every secret in it without an activity entry. The implementation
+        // takes `Vault` itself, so every decrypt still goes through the one
+        // method that logs.
+        $this->app->bind(VaultReaderContract::class, VaultReader::class);
 
         $this->registerBackupDisk();
     }

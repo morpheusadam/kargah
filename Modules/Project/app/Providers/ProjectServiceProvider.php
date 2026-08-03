@@ -36,6 +36,11 @@ class ProjectServiceProvider extends ModuleServiceProvider
     protected array $providers = [
         EventServiceProvider::class,
         RouteServiceProvider::class,
+        // Butler's model-event hooks, and — the part that matters — the
+        // container **singleton** its loop guard lives on. Registered here
+        // rather than in module.json so it sits beside the other two and
+        // cannot be separated from them by a `module:publish`.
+        ButlerServiceProvider::class,
     ];
 
     public function register(): void

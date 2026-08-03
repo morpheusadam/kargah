@@ -13,15 +13,17 @@ use Modules\Platform\Support\ApiResponse;
  * `GET /api/v1/customers`, `GET /api/v1/customers/{customer}` — `core:read`.
  *
  * Reads through `Modules\Core\Contracts\CustomerReader` alone; nothing here
- * imports `Modules\Core\Models\Customer`. There is no `/api/v1/companies`:
- * Core exposes no `CompanyReader`, and `07-platform.md` names companies as
- * part of this surface without one existing to read them through — see the
- * report rather than a route that reaches into `Modules\Core\Models\Company`.
+ * imports `Modules\Core\Models\Customer`.
  *
- * Not cursor-paginated. `CustomerReader::search()` and `::forCompany()` return
- * a bounded `Collection`, not a paginator — there is no cursor to carry,
- * because the contract was built for a select box, not a listing endpoint.
- * See the report for what a `paginate()` method here would need.
+ * Companies live at `/api/v1/companies` and go through
+ * `Modules\Core\Contracts\CompanyReader`, which was written after this file and
+ * deliberately returns arrays where this one's contract returns models.
+ *
+ * Not cursor-paginated, which `/api/v1/companies` is. `CustomerReader::search()`
+ * and `::forCompany()` return a bounded `Collection`, not a paginator — there
+ * is no cursor to carry, because the contract was built for a select box, not a
+ * listing endpoint. See the report for what a `paginate()` method here would
+ * need.
  */
 class CustomerController
 {

@@ -115,6 +115,24 @@ interface AttachmentService
      */
     public function targetIdsWithAttachments(string $morphAlias): array;
 
+    /**
+     * The bytes of one attachment, or null when the row or its file is gone.
+     *
+     * `stream()` next door returns a `StreamedResponse`, which is the right
+     * answer for a browser and useless to a publisher: getting bytes out of it
+     * means capturing output. Social's media pipeline needs the bytes
+     * themselves — to hand to a multipart upload, or to `PUT` raw at a network
+     * that wants no framing — so it gets its own method rather than reaching
+     * for `Storage::disk()` with the `disk` and `path` keys the array happens
+     * to publish. That worked, but it put another module's storage layout in
+     * another module's hands.
+     *
+     * A missing file reads as null rather than throwing: an attachment whose
+     * bytes have gone is a post that cannot carry that picture, not a request
+     * that should 500.
+     */
+    public function contents(int $attachmentId): ?string;
+
     /** One attachment, or null when it does not exist or has been deleted. */
     public function find(int $attachmentId): ?array;
 
