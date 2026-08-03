@@ -252,7 +252,13 @@ Two caveats that have already cost time:
   module with no global binding, so `typeof Sortable === 'undefined'` was silently true and drag
   and drop did nothing. Kargah ships it separately from `/vendor/sortablejs/Sortable.min.js`.
 - **`FullCalendar` is not in `core.bundle.js`** either; it lives at
-  `/assets/vendors/fullcalendar/index.global.min.js`. Both are loaded by `layouts/app.blade.php`.
+  `/assets/vendors/fullcalendar/index.global.min.js`.
+
+  This line used to say "Both are loaded by `layouts/app.blade.php`". **Only `Sortable` is.** The
+  layout loads `core.bundle.js`, KTUI, `Sortable` and `demo1.js`, and nothing else — which is
+  correct, and is what the paragraph above about 854 KB insists on. FullCalendar is loaded by the
+  page that needs it, from `@script`, with the init guarded. `Modules/Social`'s calendar has done
+  it that way from the start and is the pattern to copy.
 
 TinyMCE, Dropzone and DataTables ship in the theme's `vendors/` directory but are **not** loaded
 by the layout. Add the tag yourself from `@push('scripts')` and guard the init.
