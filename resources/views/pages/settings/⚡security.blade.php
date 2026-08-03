@@ -16,13 +16,21 @@ use Modules\Core\Concerns\InteractsWithToasts;
 /**
  * Password, two-factor authentication and active sessions — all real.
  *
- * **Two-factor is enrolment only; nothing here enforces it at login.** A
+ * **Two-factor enrolment lives here; enforcement lives at the login form.** A
  * secret is generated, shown for manual entry (no QR image — no QR library is
  * installed, and every authenticator app accepts a typed setup key), and is
  * not trusted until a real code from it has been checked — `hasTwoFactorEnabled()`
- * reads `two_factor_confirmed_at`, never merely "a secret exists". Wiring a
- * confirmed second factor into the sign-in form is a separate change with its
- * own lockout risk and is not part of this page.
+ * reads `two_factor_confirmed_at`, never merely "a secret exists". That same
+ * method is what `pages::login` branches on: a confirmed factor turns a correct
+ * password into a pending challenge rather than a session, and
+ * `pages::two-factor-challenge` takes the code or one recovery code. So the
+ * sentence this page prints — "sign-in asks for a code" — is now true, and
+ * turning it off here really does make the next sign-in password-only.
+ *
+ * The lockout that made enforcement a separate change is answered by
+ * `php artisan two-factor:disable <email>`, which is the only way back for
+ * somebody who has lost both their app and their codes. See
+ * `App\Console\Commands\DisableTwoFactor`.
  *
  * **Sessions are the real `sessions` table**, because `SESSION_DRIVER=database`
  * on this install. A page that invents devices when the table is genuinely
@@ -525,7 +533,14 @@ class extends Component
                     @if ($twoFactorEnabled)
                         <div class="flex flex-col gap-3">
                             <p class="text-sm text-secondary-foreground">
-                                On. Sign-in asks for a six-digit code from your authenticator app.
+                                On. Sign-in asks for a six-digit code from your authenticator app, or for one
+                                of your recovery codes.
+                            </p>
+                            <p class="text-sm text-secondary-foreground">
+                                Keep those codes somewhere you can reach without this device. If you lose both
+                                the app and the codes, there is no reset link — two-factor can only be cleared
+                                from the server's command line, with
+                                <code class="text-xs px-1.5 py-0.5 rounded bg-muted text-mono">php artisan two-factor:disable {{ auth()->user()?->email }}</code>.
                             </p>
                             <div class="flex flex-wrap gap-2">
                                 <button type="button" class="kt-btn kt-btn-sm kt-btn-outline gap-2" wire:click="regenerateRecoveryCodes"

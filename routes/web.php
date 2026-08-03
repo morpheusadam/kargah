@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Middleware\RequireTwoFactorChallenge;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Route;
@@ -17,6 +18,16 @@ Route::redirect('/', '/login')->name('home');
 
 Route::middleware('guest')->group(function () {
     Route::livewire('/login', 'pages::login')->name('login');
+
+    // The second half of signing in. Behind `guest` because nobody is logged in
+    // yet — a correct password with a confirmed second factor buys a pending
+    // challenge, not a session — and behind RequireTwoFactorChallenge so the URL
+    // is not a page for anyone who has not got that far. The class is named
+    // rather than aliased: one route uses it, and an alias would only be a
+    // second place to look. See `App\Support\TwoFactorChallenge`.
+    Route::livewire('/two-factor-challenge', 'pages::two-factor-challenge')
+        ->middleware(RequireTwoFactorChallenge::class)
+        ->name('two-factor.challenge');
 });
 
 Route::middleware('auth')->group(function () {

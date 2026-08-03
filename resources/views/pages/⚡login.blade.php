@@ -1,5 +1,7 @@
 <?php
 
+use App\Models\User;
+use App\Support\TwoFactorChallenge;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Validation\ValidationException;
@@ -9,6 +11,21 @@ use Livewire\Attributes\Validate;
 use Livewire\Component;
 use Modules\Core\Concerns\InteractsWithToasts;
 
+/**
+ * The password half of signing in.
+ *
+ * A correct password is not a session when the account has a **confirmed**
+ * second factor. That is why this calls `Auth::validate()` rather than
+ * `Auth::attempt()`: `validate()` checks the credentials and hands back the
+ * matched row without touching the session, so the two-factor branch can be
+ * taken before anybody is logged in. `pages::two-factor-challenge` finishes
+ * the job, and `App\Support\TwoFactorChallenge` is the only thing that
+ * survives in between — an id and an expiry, no session, no user model.
+ *
+ * Enrolment that was started and never confirmed does not count:
+ * `hasTwoFactorEnabled()` reads `two_factor_confirmed_at`, so an abandoned
+ * setup cannot lock the owner behind a code their app never received.
+ */
 new
 #[Layout('layouts::guest')]
 #[Title('Sign in — Kargah')]
@@ -44,7 +61,7 @@ class extends Component
             ]);
         }
 
-        if (! Auth::attempt(['email' => $this->email, 'password' => $this->password], $this->remember)) {
+        if (! Auth::validate(['email' => $this->email, 'password' => $this->password])) {
             RateLimiter::hit($this->throttleKey());
 
             throw ValidationException::withMessages([
@@ -52,7 +69,23 @@ class extends Component
             ]);
         }
 
+        /** @var User $user The row `validate()` just matched. */
+        $user = Auth::getLastAttempted();
+
         RateLimiter::clear($this->throttleKey());
+
+        // The plaintext is spent. It is cleared either way, but it matters most
+        // on the branch that redirects: a public Livewire property is posted
+        // back on every round trip, and the challenge page is several of them.
+        $this->password = '';
+
+        if ($user->hasTwoFactorEnabled()) {
+            TwoFactorChallenge::begin($user, $this->remember);
+
+            return redirect()->route('two-factor.challenge');
+        }
+
+        Auth::login($user, $this->remember);
         session()->regenerate();
 
         $this->flashToast('success', 'Welcome back', 'Signed in to Kargah.');
