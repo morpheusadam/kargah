@@ -66,4 +66,61 @@ return [
          */
         'timeout' => (int) env('MAILBOX_IMAP_TIMEOUT', 20),
     ],
+
+    /*
+     * Sending mail.
+     *
+     * The same hosting constraint as above, from the other direction. The
+     * scheduled command finds a bounded amount of outstanding work and queues
+     * small jobs; nothing here does the sending itself, and no single number
+     * may be raised to the point where one job outlives `max_execution_time`.
+     */
+    'sending' => [
+
+        /*
+         * Recipients one queued chunk may take.
+         *
+         * Fifty messages is a few seconds of SMTP or fifty API calls, which
+         * finishes well inside a 30-second `max_execution_time` with room for a
+         * slow provider. A 500-recipient campaign is therefore ten chunks
+         * across as many ticks as the worker needs, and no tick is longer than
+         * any other. Raise it on a VPS; lower it if the host's limit is 10
+         * seconds.
+         */
+        'chunk_size' => (int) env('MAILBOX_SEND_CHUNK_SIZE', 50),
+
+        /*
+         * Chunks queued per campaign per tick.
+         *
+         * One, because the worker gets 50 seconds a minute and shares them with
+         * the IMAP sync, crawls and everything else. One chunk a minute still
+         * drains 500 recipients inside ten minutes, and it never lets a single
+         * campaign monopolise the queue. Raise it only where the worker has
+         * time to spare.
+         */
+        'chunks_per_tick' => (int) env('MAILBOX_SEND_CHUNKS_PER_TICK', 1),
+
+        /*
+         * Campaigns examined per tick.
+         *
+         * Bounded for the same reason the account list is: the command reads
+         * each campaign's outstanding count and runs its pre-flight, which is
+         * cheap but not free. Five campaigns sending at once is already more
+         * than a freelance install will ever have.
+         */
+        'campaigns_per_tick' => (int) env('MAILBOX_SEND_CAMPAIGNS_PER_TICK', 5),
+
+        /*
+         * How long a claim may look live before it is written off, in minutes.
+         *
+         * A worker killed mid-send leaves its recipient on `claimed` with no
+         * way to know whether the provider accepted the message. Past this
+         * window the row is written off as failed — **not** retried, because
+         * sending a campaign twice to the same person is worse than not sending
+         * it at all. Long enough that a slow provider is not overtaken by the
+         * next tick, short enough that a crash does not strand a recipient for
+         * a working day.
+         */
+        'stale_claim_minutes' => (int) env('MAILBOX_STALE_CLAIM_MINUTES', 15),
+    ],
 ];

@@ -2,6 +2,7 @@
 
 namespace Modules\Social\Services\Publishers;
 
+use Illuminate\Http\Client\ConnectionException;
 use Modules\Social\Models\SocialAccount;
 use Modules\Social\Support\Networks;
 
@@ -55,7 +56,7 @@ class LinkedInPublisher extends HttpPublisher
                     'com.linkedin.ugc.MemberNetworkVisibility' => 'PUBLIC',
                 ],
             ]);
-        } catch (\Illuminate\Http\Client\ConnectionException $e) {
+        } catch (ConnectionException $e) {
             throw PublishFailed::unreachable($this->network(), $e->getMessage());
         }
 

@@ -6,8 +6,8 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Modules\Data\Models\Backup;
 use RuntimeException;
-use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
 use Throwable;
 
@@ -103,10 +103,11 @@ class DatabaseBackups
     /**
      * Put a backup into a database.
      *
-     * `$intoConnection` is required in spirit even though it has a default:
-     * pass the connection you mean. The checksum is verified before a single
-     * statement runs, because restoring a corrupted archive over a working
-     * database turns one problem into two.
+     * `$intoConnection` has no default, on purpose. Defaulting it to the live
+     * connection would make "restore" one mistyped command away from destroying
+     * the database it exists to protect. The checksum is verified before a
+     * single statement runs, because restoring a corrupted archive over a
+     * working database turns one problem into two.
      */
     public function restore(Backup $backup, string $intoConnection): void
     {

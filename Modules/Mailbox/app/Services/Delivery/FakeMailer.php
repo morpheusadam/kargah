@@ -86,6 +86,14 @@ class FakeMailer implements HandlesWebhooks, Mailer
         return $this;
     }
 
+    /** Bring the worker back, which is what the next cron tick amounts to. */
+    public function revive(): static
+    {
+        $this->dieAfter = null;
+
+        return $this;
+    }
+
     /** Refuse to verify callbacks, as a provider whose signing key is wrong does. */
     public function rejectWebhooks(): static
     {

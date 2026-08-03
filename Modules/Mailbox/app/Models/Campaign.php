@@ -234,6 +234,67 @@ class Campaign extends Model
         return $this;
     }
 
+    /**
+     * Who carried how much of this campaign, and how it went for them.
+     *
+     * This is the acceptance criterion made visible: when one provider's quota
+     * runs out mid-campaign the rest goes through the next one, and the only
+     * place that shows is `campaign_recipients.delivery_provider_id`. Grouping
+     * on it is what turns 'the send finished' into 'Brevo took ten of these and
+     * Mailgun took twenty'.
+     *
+     * Counted in one grouped query rather than by loading the rows, because a
+     * 500-recipient campaign report should not be five hundred models.
+     *
+     * @return list<array{
+     *     id: int|null, name: string, carried: int, delivered: int,
+     *     bounced: int, complained: int, failed: int, share: int
+     * }>
+     */
+    public function providerBreakdown(): array
+    {
+        $rows = $this->recipients()
+            ->selectRaw('delivery_provider_id, status, count(*) as total')
+            ->whereNotNull('delivery_provider_id')
+            ->groupBy('delivery_provider_id', 'status')
+            ->get();
+
+        if ($rows->isEmpty()) {
+            return [];
+        }
+
+        $names = DeliveryProvider::query()
+            ->withTrashed()
+            ->whereIn('id', $rows->pluck('delivery_provider_id')->unique())
+            ->pluck('name', 'id');
+
+        $carriedTotal = (int) $rows->sum('total');
+        $out = [];
+
+        foreach ($rows->groupBy('delivery_provider_id') as $providerId => $group) {
+            $carried = (int) $group->sum('total');
+            $count = fn (string $status): int => (int) ($group->firstWhere('status', $status)->total ?? 0);
+
+            $out[] = [
+                'id' => $providerId === null ? null : (int) $providerId,
+                // A provider deleted after a campaign still has to be named on
+                // the report, so this reads the trashed row rather than the
+                // relation, and falls back to something rather than blank.
+                'name' => $names[$providerId] ?? 'Removed provider',
+                'carried' => $carried,
+                'delivered' => $count(CampaignRecipient::SENT),
+                'bounced' => $count(CampaignRecipient::BOUNCED),
+                'complained' => $count(CampaignRecipient::COMPLAINED),
+                'failed' => $count(CampaignRecipient::FAILED),
+                'share' => $carriedTotal === 0 ? 0 : (int) round($carried / $carriedTotal * 100),
+            ];
+        }
+
+        usort($out, fn (array $a, array $b): int => $b['carried'] <=> $a['carried']);
+
+        return $out;
+    }
+
     /** How many recipients are still waiting for their turn. */
     public function outstandingCount(): int
     {

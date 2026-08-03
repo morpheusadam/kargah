@@ -8,6 +8,7 @@ use Modules\Accounting\Console\FetchRates;
 use Modules\Accounting\Console\GenerateRecurringInvoices;
 use Modules\Data\Console\SyncRepos;
 use Modules\Data\Console\TakeBackup;
+use Modules\Mailbox\Console\DispatchSends;
 use Modules\Mailbox\Console\SyncImap;
 use Modules\Social\Console\PublishDue;
 use Modules\Social\Console\SyncNotifications;
@@ -68,6 +69,34 @@ Schedule::command('accounting:generate-recurring')->dailyAt('09:30')->withoutOve
 ConsoleApplication::starting(fn (ConsoleApplication $artisan) => $artisan->resolve(SyncImap::class));
 
 Schedule::command('mailbox:sync-imap')->everyFiveMinutes()->withoutOverlapping();
+
+/*
+ * Sending mail.
+ *
+ * Every minute, because that is the resolution the promise is made at: a
+ * campaign scheduled for 09:30 begins within a minute of 09:30, and a
+ * 500-recipient send completes across the ticks that follow.
+ *
+ * This command sends nothing. It takes a bounded number of campaigns that are
+ * scheduled or already sending and queues one small chunk each; the worker below
+ * does the sending, fifty recipients at a time, across as many ticks as it
+ * takes. A 500-recipient campaign therefore costs this tick no more than an
+ * empty one.
+ *
+ * Re-running is harmless twice over. A scheduled campaign is claimed by a
+ * conditional update before anything is queued, and even a duplicate chunk sends
+ * nothing extra: every recipient is claimed the same way and a recipient already
+ * on `sent` cannot be claimed at all. That is what makes 'no recipient sent
+ * twice' true rather than hoped for — see the docblock on
+ * `Modules\Mailbox\Services\Delivery\CampaignSender`.
+ *
+ * `withoutOverlapping()` because a tick that finds five sending campaigns can
+ * outlast its minute, and the next tick starting alongside it would only queue
+ * work the recipient claim then throws away.
+ */
+ConsoleApplication::starting(fn (ConsoleApplication $artisan) => $artisan->resolve(DispatchSends::class));
+
+Schedule::command('mailbox:dispatch-sends')->everyMinute()->withoutOverlapping();
 
 /*
  * The queue, run from cron.

@@ -3,10 +3,10 @@
 namespace Tests\Feature;
 
 use App\Models\User;
+use Database\Seeders\DatabaseSeeder;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
@@ -15,6 +15,7 @@ use Modules\Accounting\Models\Invoice;
 use Modules\Core\Models\Company;
 use Modules\Core\Models\Customer;
 use Modules\Data\Contracts\AttachmentService;
+use Modules\Data\Database\Seeders\DataDatabaseSeeder;
 use Modules\Data\Models\Attachment;
 use Modules\Data\Models\Backup;
 use Modules\Data\Models\Bookmark;
@@ -186,13 +187,22 @@ class DataModuleTest extends TestCase
 
     public function test_the_seeder_is_idempotent(): void
     {
-        $this->seed(\Database\Seeders\DatabaseSeeder::class);
+        $this->seed(DatabaseSeeder::class);
 
         $before = $this->dataFingerprint();
+        $this->assertNotEmpty($before['credentials'], 'The seeder wrote nothing, so idempotency proves nothing.');
 
-        $this->seed(\Modules\Data\Database\Seeders\DataDatabaseSeeder::class);
+        // Five minutes later, so an `updated_at` that moved would move visibly
+        // rather than land back on the same second.
+        $this->travelTo(now()->addMinutes(5));
 
-        $this->assertSame($before, $this->dataFingerprint(), 'Running the seeder twice changed the database.');
+        // Through the application seeder, which is how a deploy runs it.
+        $this->seed(DatabaseSeeder::class);
+        $this->assertSame($before, $this->dataFingerprint(), 'Running the application seeder twice changed the database.');
+
+        // And directly, which is how someone debugging runs it.
+        $this->seed(DataDatabaseSeeder::class);
+        $this->assertSame($before, $this->dataFingerprint(), 'Running the Data seeder twice changed the database.');
     }
 
     /**
@@ -230,7 +240,7 @@ class DataModuleTest extends TestCase
         // SmokeTest walks these routes on an empty database. This walks them on
         // a full one, which is where a page that reads a relation it forgot to
         // guard actually falls over.
-        $this->seed(\Database\Seeders\DatabaseSeeder::class);
+        $this->seed(DatabaseSeeder::class);
 
         $user = User::factory()->create();
         $repo = Repository::query()->firstOrFail();

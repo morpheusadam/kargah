@@ -6,6 +6,7 @@ use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Queue;
 use Livewire\Livewire;
 use Modules\Social\Database\Seeders\SocialDatabaseSeeder;
 use Modules\Social\Jobs\PublishPost;
@@ -478,7 +479,7 @@ class SocialModuleTest extends TestCase
      */
     public function test_the_command_dispatches_one_job_per_post_and_publishes_nothing_itself(): void
     {
-        \Illuminate\Support\Facades\Queue::fake();
+        Queue::fake();
 
         $this->fake(Networks::MASTODON);
 
@@ -492,8 +493,8 @@ class SocialModuleTest extends TestCase
 
         $this->artisan('social:publish-due')->assertSuccessful();
 
-        \Illuminate\Support\Facades\Queue::assertPushed(PublishPost::class, 2);
-        \Illuminate\Support\Facades\Queue::assertPushed(
+        Queue::assertPushed(PublishPost::class, 2);
+        Queue::assertPushed(
             fn (PublishPost $job): bool => $job->postId === $first->id,
         );
 
@@ -503,7 +504,7 @@ class SocialModuleTest extends TestCase
     /** The batch is bounded, because an unbounded one is how a shared host suspends an account. */
     public function test_the_due_batch_is_bounded(): void
     {
-        \Illuminate\Support\Facades\Queue::fake();
+        Queue::fake();
 
         $account = $this->account(Networks::MASTODON);
 
@@ -516,7 +517,7 @@ class SocialModuleTest extends TestCase
 
         $this->artisan('social:publish-due --limit=2')->assertSuccessful();
 
-        \Illuminate\Support\Facades\Queue::assertPushed(PublishPost::class, 2);
+        Queue::assertPushed(PublishPost::class, 2);
     }
 
     public function test_running_publish_due_twice_publishes_once(): void

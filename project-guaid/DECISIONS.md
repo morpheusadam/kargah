@@ -291,6 +291,41 @@ the account has to resync from scratch.
 
 ---
 
+## Phase 7 — Social
+
+**Status lives on the target, not on the post.**
+The migration says it and the module turns on it: a post going to two networks
+fails on one far more often than it fails as a whole. `PostTarget::scopeClaimable()`
+matches `pending`, `failed`, and `publishing` past a stale window — it cannot match
+`published`, so a retry physically cannot resend the network that worked. The test asserts on the
+publisher's send count rather than on the row, because a preserved row and a resend that rewrote
+the same values look identical from the database.
+
+**Media attachments and engagement metrics were removed, not stubbed.**
+The composer had a fake media picker behind a "not wired up yet" toast and `⚡post-show` displayed
+invented impression counts. There is no upload path until phase 6 and Kargah collects no metrics
+at all, so both are gone rather than lying. `posts.media` and the drivers' `$media` parameter
+remain for whoever adds the real thing.
+
+**Pasted tokens rather than OAuth.**
+An OAuth callback needs a redirect URI registered per install, which fights the shared-hosting
+target — there is no stable public URL to register.
+
+---
+
+## Cross-cutting
+
+**Thirty scaffolded API endpoints were removed.**
+`nwidart/laravel-modules` scaffolds an `apiResource` and a placeholder controller into every new
+module, and Core additionally got a `Route::resource('cores', …)` in its web routes. All of them
+pointed at controllers whose `index`, `create`, `show` and `edit` rendered views that were never
+written, so a signed-in request got a 500. Kargah has no API. Dead surface area is worse than
+missing surface area — undocumented, untested, and the first thing anyone poking at the
+application finds — so they are gone, and `tests/Feature/NoDeadEndpointsTest.php` walks the real
+routing table to stop `module:make` quietly putting them back.
+
+---
+
 ## Environment
 
 **A known environment problem, left alone deliberately.**

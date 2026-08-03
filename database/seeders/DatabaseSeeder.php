@@ -9,6 +9,7 @@ use Modules\Accounting\Database\Seeders\AccountingDatabaseSeeder;
 use Modules\Core\Database\Seeders\CoreDatabaseSeeder;
 use Modules\Data\Database\Seeders\DataDatabaseSeeder;
 use Modules\Mailbox\Database\Seeders\MailboxDatabaseSeeder;
+use Modules\Mailbox\Database\Seeders\MailboxSendingSeeder;
 use Modules\Project\Database\Seeders\ProjectDatabaseSeeder;
 use Modules\Social\Database\Seeders\SocialDatabaseSeeder;
 
@@ -36,6 +37,7 @@ class DatabaseSeeder extends Seeder
             ProjectDatabaseSeeder::class,
             AccountingDatabaseSeeder::class,
             MailboxDatabaseSeeder::class,
+            MailboxSendingSeeder::class,
             DataDatabaseSeeder::class,
             SocialDatabaseSeeder::class,
         ]);
