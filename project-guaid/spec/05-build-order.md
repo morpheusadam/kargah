@@ -36,7 +36,8 @@ Boards prove the graph works, because a card is the thing everything else wants 
 - Persist drag and drop: `moveCard(cardId, toList, position)` already has its final signature
 - Card ↔ customer, card ↔ company
 - Replace the board fixtures with queries
-- Islands on the list columns
+- Islands on the board canvas and the filter panel — **not** one per list column, which
+  Livewire 4.3 cannot target. See [04-frontend.md](04-frontend.md)
 
 **Done when**
 - A card dragged between lists is still there after a refresh

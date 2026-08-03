@@ -2,6 +2,7 @@
 
 namespace Modules\Core\Providers;
 
+use App\Models\User;
 use Modules\Core\Contracts\CustomerReader as CustomerReaderContract;
 use Modules\Core\Contracts\Linker as LinkerContract;
 use Modules\Core\Models\Company;
@@ -35,6 +36,11 @@ class CoreServiceProvider extends ModuleServiceProvider
         parent::boot();
 
         MorphMap::register([
+            // `user` is an application model rather than a module one, but the
+            // activity log writes it polymorphically as the causer of every
+            // entry, so it needs an alias like anything else. Core owns the
+            // map, so Core registers it.
+            'user' => User::class,
             'company' => Company::class,
             'customer' => Customer::class,
         ]);

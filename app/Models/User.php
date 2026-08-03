@@ -29,4 +29,19 @@ class User extends Authenticatable
             'password' => 'hashed',
         ];
     }
+
+    /**
+     * Two letters for an avatar chip. Same rule as Core's Customer, because a
+     * person should read the same whichever table they came out of.
+     */
+    public function initials(): string
+    {
+        $parts = preg_split('/\s+/', trim((string) $this->name)) ?: [];
+
+        if (count($parts) >= 2) {
+            return mb_strtoupper(mb_substr($parts[0], 0, 1).mb_substr($parts[count($parts) - 1], 0, 1));
+        }
+
+        return mb_strtoupper(mb_substr((string) $this->name, 0, 2));
+    }
 }

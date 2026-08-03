@@ -22,9 +22,37 @@ Apply to, in order:
 | Page | Islands |
 | --- | --- |
 | Mailbox inbox | message list · reading pane |
-| Project boards | each list column |
+| Project boards | the board canvas (one island, see below) |
 | Accounting invoices | filter tabs · table body |
 | Dashboard | each widget, so a slow query never blocks first paint |
+
+### One island per `@island` in the source — not per loop iteration
+
+**An island inside a `@foreach` cannot be targeted.** This was measured against
+Livewire 4.3, not assumed, and it is why the board's islands are the canvas and the
+filter panel rather than one per list column.
+
+An island's identity is its **token**, and the token is assigned at compile time from
+the file hash plus the ordinal of the `@island` directive *in the source file*
+(`Compiler/IslandCompiler.php:91-92`). A directive inside a loop is one directive, so
+every iteration renders with the same token. On the client, `renderIsland()` finds the
+fragment to morph by `type` and `token` only — not by name — and `findFragment()` stops
+at the first match (`dist/livewire.js:14933-14936`, `6637-6656`). Ask for the seventh
+column and the seventh column's HTML is morphed into the first one.
+
+`renderSlot()` twenty lines below it matches on `name` *and* `token`, so this reads as an
+oversight rather than a design decision. Revisit when it is fixed upstream.
+
+Two consequences worth carrying to every other page in this table:
+
+- Give each island its own `@island` block in the source. A fixed set of regions —
+  list and pane, filters and body — is fine. A variable-length list of them is not.
+- **An island nobody names does not update.** After an action that does not call
+  `$this->renderIsland(…)`, the fragment is emitted with `mode=skip` and the morph
+  engine skips the entire range between its markers, so the DOM keeps whatever it had.
+  Any action that changes what an island shows must name it, or the change is computed
+  server-side, sent, and silently thrown away. `always: true` opts out of the skip and
+  therefore out of the benefit.
 
 Islands also take `lazy: true`, which defers a region until after first paint — right for dashboard
 widgets whose queries are slow. Multiple lazy regions can be bundled into one request rather than

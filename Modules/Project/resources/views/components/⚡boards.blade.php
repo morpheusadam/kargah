@@ -1,21 +1,34 @@
 <?php
 
+use Illuminate\Support\Collection;
+use Livewire\Attributes\On;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
 use Modules\Core\Concerns\InteractsWithToasts;
+use Modules\Project\Models\Board;
+use Modules\Project\Models\BoardList;
+use Modules\Project\Models\Card;
+use Modules\Project\Services\CardService;
+use Modules\Project\Support\Position;
 
 /**
- * Trello-style board.
+ * Trello-style board, reading from the database.
  *
- * Frontend phase: boards, lists and cards come from a static fixture so the
- * interaction model (drag between lists, reorder within a list, filtering,
- * inline creation) can be built and reviewed before any persistence exists.
- * `moveCard`, `addCard` and `addList` already carry the exact signature the
- * backend will implement — only their bodies change later.
+ * Two things here are worth knowing before changing anything.
  *
- * The card drawer and the board template picker are nested components; this
- * page opens them by dispatching an event rather than by holding their state.
+ * **The board canvas is an island.** Toggling the filter panel, the board
+ * picker or a list menu skips re-rendering every card on the board. Anything
+ * that *does* change what a card looks like has to name the island, or the new
+ * markup is computed, sent and thrown away — the morph engine skips the whole
+ * fragment. There is exactly one `@island` directive in this file on purpose;
+ * one inside the `@foreach` would share a token with every other iteration and
+ * morph the wrong column. See project-guaid/spec/04-frontend.md.
+ *
+ * **`moveCard` trusts the browser for the index and nothing else.** Sortable
+ * reports where the card landed among the cards it can *see*. The server knows
+ * the filter, so it works out which cards those were itself rather than taking
+ * a list of ids from the client.
  */
 new
 #[Title('Boards — Kargah')]
@@ -24,17 +37,17 @@ class extends Component
     use InteractsWithToasts;
 
     #[Url(as: 'board')]
-    public string $activeBoard = 'client-work';
+    public string $activeBoard = '';
 
     /** Free-text filter, shared by the toolbar search box and the filter panel. */
     #[Url]
     public string $search = '';
 
-    /** @var string[] Label keys the filter is limited to. */
+    /** @var array<int, int|string> Label ids the filter is limited to. */
     #[Url(as: 'label')]
     public array $filterLabels = [];
 
-    /** @var string[] Member keys the filter is limited to. */
+    /** @var array<int, int|string> User ids the filter is limited to. */
     #[Url(as: 'who')]
     public array $filterAssignees = [];
 
@@ -47,10 +60,10 @@ class extends Component
     public bool $boardPickerOpen = false;
 
     /** The list whose ⋯ menu is open, if any. */
-    public ?string $listMenuOpen = null;
+    public ?int $listMenuOpen = null;
 
     /** The list whose inline "add a card" form is open, if any. */
-    public ?string $addingCardIn = null;
+    public ?int $addingCardIn = null;
 
     public string $newCardTitle = '';
 
@@ -58,22 +71,195 @@ class extends Component
 
     public string $newListName = '';
 
+    /** Per-request memo. Private, so Livewire neither ships nor rehydrates it. */
+    private ?Board $resolvedBoard = null;
+
+    private ?Collection $resolvedLists = null;
+
     /**
-     * An `#[Url]` property is whatever the address bar says, which may be
-     * nothing this board has ever heard of. Without this the page renders an
-     * empty board titled "Board" and offers no way back to a real one.
+     * An `#[Url]` property is whatever the address bar says, which may be a
+     * board that was archived, deleted, or never existed.
      */
     public function mount(): void
     {
         $this->activeBoard = $this->resolveBoard($this->activeBoard);
     }
 
-    private function resolveBoard(string $key): string
+    private function resolveBoard(string $slug): string
     {
-        $keys = array_column($this->boards(), 'key');
+        $slugs = $this->allBoards()->pluck('slug');
 
-        return in_array($key, $keys, true) ? $key : ($keys[0] ?? '');
+        return $slugs->contains($slug) ? $slug : (string) $slugs->first();
     }
+
+    /* Reading the board ---------------------------------------------------- */
+
+    private function allBoards(): Collection
+    {
+        return Board::query()->active()->orderBy('position')->orderBy('name')->get();
+    }
+
+    private function board(): ?Board
+    {
+        return $this->resolvedBoard ??= $this->allBoards()->firstWhere('slug', $this->activeBoard);
+    }
+
+    /**
+     * Every list on the board with its cards, before filtering.
+     *
+     * One query per relation rather than one per card: the checklist chip is
+     * two `withCount` subqueries, not a load of every item on the board.
+     */
+    private function lists(): Collection
+    {
+        if ($this->resolvedLists !== null) {
+            return $this->resolvedLists;
+        }
+
+        $board = $this->board();
+
+        if ($board === null) {
+            return $this->resolvedLists = collect();
+        }
+
+        return $this->resolvedLists = BoardList::query()
+            ->where('board_id', $board->id)
+            ->active()
+            ->orderBy('position')
+            ->with(['cards' => fn ($query) => $query
+                ->active()
+                ->orderBy('position')
+                ->with(['labels', 'members'])
+                ->withCount([
+                    'comments',
+                    'checklistItems as checklist_total',
+                    'checklistItems as checklist_done' => fn ($q) => $q->where('is_done', true),
+                ]),
+            ])
+            ->get();
+    }
+
+    /** @return Collection<int, \Modules\Project\Models\Label> */
+    private function labels(): Collection
+    {
+        $board = $this->board();
+
+        return $board === null ? collect() : $board->labels()->get();
+    }
+
+    /** People who can be put on a card. */
+    private function members(): Collection
+    {
+        return \App\Models\User::query()->orderBy('name')->get();
+    }
+
+    /* Filtering ------------------------------------------------------------- */
+
+    /** The search box, ignoring whitespace nobody meant to type. */
+    private function searchTerm(): string
+    {
+        return trim($this->search);
+    }
+
+    /** `#[Url]` arrays arrive as strings. Compare ids as ids. */
+    private function labelFilterIds(): array
+    {
+        return array_map('intval', $this->filterLabels);
+    }
+
+    private function assigneeFilterIds(): array
+    {
+        return array_map('intval', $this->filterAssignees);
+    }
+
+    private function matches(Card $card): bool
+    {
+        $term = $this->searchTerm();
+
+        if ($term !== '' && stripos($card->title, $term) === false) {
+            return false;
+        }
+
+        $labelIds = $this->labelFilterIds();
+
+        if ($labelIds !== [] && $card->labels->pluck('id')->intersect($labelIds)->isEmpty()) {
+            return false;
+        }
+
+        $assigneeIds = $this->assigneeFilterIds();
+
+        if ($assigneeIds !== [] && $card->members->pluck('id')->intersect($assigneeIds)->isEmpty()) {
+            return false;
+        }
+
+        return match ($this->filterDue) {
+            'overdue' => $card->dueState() === 'overdue',
+            'soon' => in_array($card->dueState(), ['overdue', 'soon'], true),
+            'none' => $card->due_on === null,
+            default => true,
+        };
+    }
+
+    /** The cards of one list that survive the current filter, in order. */
+    private function visibleCards(BoardList $list): Collection
+    {
+        return $list->cards->filter(fn (Card $card): bool => $this->matches($card))->values();
+    }
+
+    /**
+     * The ids the browser had on screen for a list.
+     *
+     * Derived from the same filter that rendered the page rather than sent up
+     * with the drop: the server already knows, and a client-supplied ordering
+     * is one more thing that can be wrong or forged.
+     *
+     * @return list<int>
+     */
+    private function visibleCardIds(BoardList $list): array
+    {
+        return $this->visibleCards($list)->pluck('id')->map(fn ($id): int => (int) $id)->all();
+    }
+
+    private function countCards(bool $filtered): int
+    {
+        return $this->lists()->sum(
+            fn (BoardList $list): int => $filtered ? $this->visibleCards($list)->count() : $list->cards->count(),
+        );
+    }
+
+    /** How the board reads once the current filter is applied. Used in filter toasts. */
+    private function filterSummary(): string
+    {
+        return 'Showing '.$this->countCards(true).' of '.$this->countCards(false).' cards.';
+    }
+
+    public function with(): array
+    {
+        $lists = $this->lists();
+
+        return [
+            'boards' => $this->allBoards(),
+            'labels' => $this->labels(),
+            'members' => $this->members(),
+            'lists' => $lists->map(fn (BoardList $list): array => [
+                'model' => $list,
+                'cards' => $this->visibleCards($list),
+            ]),
+            'totalCards' => $this->countCards(false),
+            'visibleCards' => $this->countCards(true),
+            'activeFilters' => count($this->filterLabels)
+                + count($this->filterAssignees)
+                + ($this->filterDue !== '' ? 1 : 0)
+                + ($this->searchTerm() !== '' ? 1 : 0),
+            'dueOptions' => [
+                'overdue' => ['label' => 'Overdue', 'icon' => 'ki-time', 'tone' => 'text-destructive'],
+                'soon' => ['label' => 'Due in the next week', 'icon' => 'ki-calendar', 'tone' => 'text-warning'],
+                'none' => ['label' => 'No due date', 'icon' => 'ki-calendar-remove', 'tone' => 'text-muted-foreground'],
+            ],
+        ];
+    }
+
+    /* Panels ---------------------------------------------------------------- */
 
     /**
      * Shut every transient panel. One thing is open at a time, and closing on
@@ -97,217 +283,27 @@ class extends Component
         $this->closeOverlays();
     }
 
-    /** The search box, ignoring whitespace nobody meant to type. */
-    private function searchTerm(): string
-    {
-        return trim($this->search);
-    }
-
-    /** Labels available on this board. */
-    private function labels(): array
-    {
-        return [
-            'copy' => ['name' => 'Copywriting', 'chip' => 'bg-primary/15 text-primary', 'dot' => 'bg-primary'],
-            'outreach' => ['name' => 'Outreach', 'chip' => 'bg-success/15 text-success', 'dot' => 'bg-success'],
-            'dev' => ['name' => 'Development', 'chip' => 'bg-info/15 text-info', 'dot' => 'bg-info'],
-            'bug' => ['name' => 'Bug', 'chip' => 'bg-destructive/15 text-destructive', 'dot' => 'bg-destructive'],
-            'finance' => ['name' => 'Finance', 'chip' => 'bg-warning/15 text-warning', 'dot' => 'bg-warning'],
-            'admin' => ['name' => 'Admin', 'chip' => 'bg-accent/60 text-secondary-foreground', 'dot' => 'bg-muted-foreground'],
-        ];
-    }
-
-    /** People who can be assigned a card. */
-    private function members(): array
-    {
-        return [
-            'nima' => ['name' => 'Nima Fazlipour', 'initials' => 'NF', 'tone' => 'bg-primary/15 text-primary'],
-            'sara' => ['name' => 'Sara Rahimi', 'initials' => 'SR', 'tone' => 'bg-success/15 text-success'],
-            'dan' => ['name' => 'Daniel Whitfield', 'initials' => 'DW', 'tone' => 'bg-info/15 text-info'],
-            'mina' => ['name' => 'Mina Karimi', 'initials' => 'MK', 'tone' => 'bg-warning/15 text-warning'],
-        ];
-    }
-
-    private function boards(): array
-    {
-        return [
-            ['key' => 'client-work', 'name' => 'Client Work', 'color' => 'bg-primary'],
-            ['key' => 'outreach', 'name' => 'Outreach', 'color' => 'bg-success'],
-            ['key' => 'personal', 'name' => 'Personal', 'color' => 'bg-warning'],
-        ];
-    }
-
-    /** Every list of the active board, before filtering. */
-    private function lists(): array
-    {
-        $all = [
-            'client-work' => [
-                [
-                    'id' => 'backlog', 'name' => 'Backlog',
-                    'cards' => [
-                        ['id' => 1, 'title' => 'Rewrite portfolio landing copy', 'labels' => ['copy'], 'assignee' => 'nima', 'due' => null, 'checklist' => [0, 4], 'comments' => 2, 'attachments' => 1],
-                        ['id' => 2, 'title' => 'Collect testimonials from past clients', 'labels' => ['outreach', 'admin'], 'assignee' => 'sara', 'due' => ['label' => 'Aug 12', 'state' => 'later'], 'checklist' => [1, 3], 'comments' => 0, 'attachments' => 0],
-                        ['id' => 8, 'title' => 'Scope the Bluepeak booking widget', 'labels' => ['dev'], 'assignee' => null, 'due' => null, 'checklist' => [0, 0], 'comments' => 0, 'attachments' => 2],
-                    ],
-                ],
-                [
-                    'id' => 'todo', 'name' => 'To Do',
-                    'cards' => [
-                        ['id' => 3, 'title' => 'Send the Northwind retainer proposal', 'labels' => ['outreach'], 'assignee' => 'nima', 'due' => ['label' => 'Aug 05', 'state' => 'soon'], 'checklist' => [5, 20], 'comments' => 1, 'attachments' => 1],
-                        ['id' => 4, 'title' => 'Fix invoice PDF margins', 'labels' => ['bug'], 'assignee' => 'dan', 'due' => null, 'checklist' => [0, 0], 'comments' => 0, 'attachments' => 0],
-                    ],
-                ],
-                [
-                    'id' => 'doing', 'name' => 'In Progress',
-                    'cards' => [
-                        ['id' => 5, 'title' => 'Build the Acme Studio mail module', 'labels' => ['dev'], 'assignee' => 'nima', 'due' => ['label' => 'Aug 20', 'state' => 'later'], 'checklist' => [3, 9], 'comments' => 4, 'attachments' => 3],
-                    ],
-                ],
-                [
-                    'id' => 'review', 'name' => 'Review',
-                    'cards' => [
-                        ['id' => 6, 'title' => 'Q3 expense reconciliation', 'labels' => ['finance'], 'assignee' => 'mina', 'due' => ['label' => 'Aug 01', 'state' => 'overdue'], 'checklist' => [8, 8], 'comments' => 0, 'attachments' => 1],
-                    ],
-                ],
-                [
-                    'id' => 'done', 'name' => 'Done',
-                    'cards' => [
-                        ['id' => 7, 'title' => 'Register the kargah.dev domain', 'labels' => ['admin'], 'assignee' => 'nima', 'due' => null, 'checklist' => [0, 0], 'comments' => 0, 'attachments' => 0],
-                    ],
-                ],
-            ],
-            'outreach' => [
-                [
-                    'id' => 'leads', 'name' => 'Leads',
-                    'cards' => [
-                        ['id' => 11, 'title' => 'Orbit Studio — referred by Bluepeak', 'labels' => ['outreach'], 'assignee' => 'nima', 'due' => ['label' => 'Aug 04', 'state' => 'soon'], 'checklist' => [1, 4], 'comments' => 1, 'attachments' => 0],
-                        ['id' => 12, 'title' => 'Follow up with Harbour & Finch', 'labels' => ['outreach'], 'assignee' => 'sara', 'due' => ['label' => 'Jul 28', 'state' => 'overdue'], 'checklist' => [0, 0], 'comments' => 3, 'attachments' => 0],
-                    ],
-                ],
-                [
-                    'id' => 'talking', 'name' => 'In Conversation',
-                    'cards' => [
-                        ['id' => 13, 'title' => 'Northwind Ltd — retainer renewal call', 'labels' => ['finance'], 'assignee' => 'nima', 'due' => ['label' => 'Aug 14', 'state' => 'later'], 'checklist' => [2, 5], 'comments' => 2, 'attachments' => 1],
-                    ],
-                ],
-                [
-                    'id' => 'won', 'name' => 'Won',
-                    'cards' => [
-                        ['id' => 14, 'title' => 'Acme Studio — signed for Q3', 'labels' => ['admin'], 'assignee' => 'nima', 'due' => null, 'checklist' => [0, 0], 'comments' => 0, 'attachments' => 2],
-                    ],
-                ],
-            ],
-            'personal' => [
-                [
-                    'id' => 'admin', 'name' => 'Admin',
-                    'cards' => [
-                        ['id' => 21, 'title' => 'File the Q2 self-assessment', 'labels' => ['finance'], 'assignee' => 'nima', 'due' => ['label' => 'Aug 07', 'state' => 'soon'], 'checklist' => [2, 6], 'comments' => 0, 'attachments' => 1],
-                    ],
-                ],
-                [
-                    'id' => 'learning', 'name' => 'Learning',
-                    'cards' => [
-                        ['id' => 22, 'title' => 'Finish the Livewire 4 upgrade notes', 'labels' => ['dev'], 'assignee' => 'nima', 'due' => null, 'checklist' => [4, 11], 'comments' => 1, 'attachments' => 0],
-                    ],
-                ],
-            ],
-        ];
-
-        return $all[$this->activeBoard] ?? [];
-    }
-
-    /** Cards that survive the current filter, list by list. */
-    private function filtered(array $lists): array
-    {
-        return array_map(function (array $list): array {
-            $term = $this->searchTerm();
-
-            $list['cards'] = array_values(array_filter($list['cards'], function (array $card) use ($term): bool {
-                if ($term !== '' && stripos($card['title'], $term) === false) {
-                    return false;
-                }
-
-                if ($this->filterLabels !== [] && array_intersect($this->filterLabels, $card['labels']) === []) {
-                    return false;
-                }
-
-                if ($this->filterAssignees !== [] && ! in_array($card['assignee'], $this->filterAssignees, true)) {
-                    return false;
-                }
-
-                return match ($this->filterDue) {
-                    'overdue' => ($card['due']['state'] ?? null) === 'overdue',
-                    'soon' => in_array($card['due']['state'] ?? null, ['overdue', 'soon'], true),
-                    'none' => $card['due'] === null,
-                    default => true,
-                };
-            }));
-
-            return $list;
-        }, $lists);
-    }
-
-    private function countCards(array $lists): int
-    {
-        return array_sum(array_map(fn (array $list): int => count($list['cards']), $lists));
-    }
-
-    /** How the board reads once the current filter is applied. Used in filter toasts. */
-    private function filterSummary(): string
-    {
-        $lists = $this->lists();
-
-        return 'Showing '.$this->countCards($this->filtered($lists)).' of '.$this->countCards($lists).' cards.';
-    }
-
-    public function with(): array
-    {
-        $lists = $this->lists();
-        $visible = $this->filtered($lists);
-
-        return [
-            'boards' => $this->boards(),
-            'labels' => $this->labels(),
-            'members' => $this->members(),
-            'lists' => $visible,
-            'totalCards' => $this->countCards($lists),
-            'visibleCards' => $this->countCards($visible),
-            'activeFilters' => count($this->filterLabels)
-                + count($this->filterAssignees)
-                + ($this->filterDue !== '' ? 1 : 0)
-                + ($this->searchTerm() !== '' ? 1 : 0),
-            'dueOptions' => [
-                'overdue' => ['label' => 'Overdue', 'icon' => 'ki-time', 'tone' => 'text-destructive'],
-                'soon' => ['label' => 'Due in the next week', 'icon' => 'ki-calendar', 'tone' => 'text-warning'],
-                'none' => ['label' => 'No due date', 'icon' => 'ki-calendar-remove', 'tone' => 'text-muted-foreground'],
-            ],
-        ];
-    }
-
     /** The active board's display name, for the heading. */
     public function boardName(): string
     {
-        foreach ($this->boards() as $board) {
-            if ($board['key'] === $this->activeBoard) {
-                return $board['name'];
-            }
-        }
-
-        return 'Board';
+        return $this->board()?->name ?? 'Board';
     }
 
-    public function selectBoard(string $key): void
+    public function selectBoard(string $slug): void
     {
-        $this->activeBoard = $this->resolveBoard($key);
+        $this->activeBoard = $this->resolveBoard($slug);
+        $this->resolvedBoard = null;
+        $this->resolvedLists = null;
 
-        // A filter set against one board's labels and people usually matches
-        // nothing on the next one, and an empty board with no visible reason
-        // reads as a bug. Switching board starts clean.
+        // A filter set against one board's labels and people matches nothing on
+        // the next one, and an empty board with no visible reason reads as a bug.
         $this->search = '';
         $this->filterLabels = [];
         $this->filterAssignees = [];
         $this->filterDue = '';
 
         $this->closeOverlays();
+        $this->refreshBoard();
 
         $this->toastSuccess('Board switched', 'You are looking at '.$this->boardName().'.');
     }
@@ -323,7 +319,7 @@ class extends Component
             : $this->toastSuccess('Board picker closed');
     }
 
-    public function toggleListMenu(string $listId): void
+    public function toggleListMenu(int $listId): void
     {
         $opening = $this->listMenuOpen !== $listId;
         $this->closeOverlays();
@@ -333,8 +329,6 @@ class extends Component
             ? $this->toastSuccess('List menu open', 'Add a card, or archive what the list holds.')
             : $this->toastSuccess('List menu closed');
     }
-
-    /* Filtering ---------------------------------------------------------- */
 
     public function toggleFilterPanel(): void
     {
@@ -358,32 +352,56 @@ class extends Component
         }
     }
 
-    public function toggleLabelFilter(string $key): void
+    /**
+     * Redraw the board canvas.
+     *
+     * The canvas is an island, and an island nobody names keeps whatever the
+     * DOM already had. Every action that changes a card has to come through
+     * here or the change is silently discarded on the way to the browser.
+     */
+    private function refreshBoard(): void
     {
-        $this->filterLabels = in_array($key, $this->filterLabels, true)
-            ? array_values(array_diff($this->filterLabels, [$key]))
-            : [...$this->filterLabels, $key];
+        $this->resolvedLists = null;
 
-        $name = $this->labels()[$key]['name'] ?? $key;
+        $this->renderIsland('board');
+    }
+
+    /* Filters --------------------------------------------------------------- */
+
+    public function toggleLabelFilter(int $labelId): void
+    {
+        $current = $this->labelFilterIds();
+
+        $this->filterLabels = in_array($labelId, $current, true)
+            ? array_values(array_diff($current, [$labelId]))
+            : [...$current, $labelId];
+
+        $name = $this->labels()->firstWhere('id', $labelId)?->name ?? 'Label';
+
+        $this->refreshBoard();
 
         $this->toastSuccess(
-            in_array($key, $this->filterLabels, true)
+            in_array($labelId, $this->labelFilterIds(), true)
                 ? $name.' added to the filter'
                 : $name.' dropped from the filter',
             $this->filterSummary(),
         );
     }
 
-    public function toggleAssigneeFilter(string $key): void
+    public function toggleAssigneeFilter(int $userId): void
     {
-        $this->filterAssignees = in_array($key, $this->filterAssignees, true)
-            ? array_values(array_diff($this->filterAssignees, [$key]))
-            : [...$this->filterAssignees, $key];
+        $current = $this->assigneeFilterIds();
 
-        $name = $this->members()[$key]['name'] ?? $key;
+        $this->filterAssignees = in_array($userId, $current, true)
+            ? array_values(array_diff($current, [$userId]))
+            : [...$current, $userId];
+
+        $name = $this->members()->firstWhere('id', $userId)?->name ?? 'Member';
+
+        $this->refreshBoard();
 
         $this->toastSuccess(
-            in_array($key, $this->filterAssignees, true)
+            in_array($userId, $this->assigneeFilterIds(), true)
                 ? $name.' added to the filter'
                 : $name.' dropped from the filter',
             $this->filterSummary(),
@@ -394,10 +412,18 @@ class extends Component
     {
         $this->filterDue = $this->filterDue === $state ? '' : $state;
 
+        $this->refreshBoard();
+
         $this->toastSuccess(
             $this->filterDue === '' ? 'Due date filter cleared' : 'Due date filter set',
             $this->filterSummary(),
         );
+    }
+
+    /** Typing in either search box changes what the canvas shows. */
+    public function updatedSearch(): void
+    {
+        $this->refreshBoard();
     }
 
     public function clearFilters(): void
@@ -407,12 +433,14 @@ class extends Component
         $this->filterAssignees = [];
         $this->filterDue = '';
 
+        $this->refreshBoard();
+
         $this->toastSuccess('Filters cleared', $this->filterSummary());
     }
 
-    /* Inline creation ---------------------------------------------------- */
+    /* Inline creation -------------------------------------------------------- */
 
-    public function startAddCard(string $listId): void
+    public function startAddCard(int $listId): void
     {
         $this->closeOverlays();
         $this->addingCardIn = $listId;
@@ -433,10 +461,33 @@ class extends Component
     }
 
     /** Create a card at the bottom of a list. */
-    public function addCard(string $listId): void
+    public function addCard(int $listId): void
     {
-        // Backend: persist the card, then clear $newCardTitle and keep the form open.
-        $this->toastInfo('Not connected yet', 'Cards are stored once the backend phase lands.');
+        $title = trim($this->newCardTitle);
+
+        if ($title === '') {
+            $this->toastError('The card needs a title', 'Type what has to happen, then add it.');
+
+            return;
+        }
+
+        $list = $this->listOnThisBoard($listId);
+
+        if ($list === null) {
+            $this->toastError('That list is not on this board', 'Reload the page and try again.');
+
+            return;
+        }
+
+        $card = app(CardService::class)->append($list, $title);
+
+        // Keep the form open: adding one card usually means adding three.
+        $this->newCardTitle = '';
+        $this->addingCardIn = $listId;
+
+        $this->refreshBoard();
+
+        $this->toastSuccess('Card added', $card->title.' is at the bottom of '.$list->name.'.');
     }
 
     public function startAddList(): void
@@ -462,27 +513,99 @@ class extends Component
     /** Create a list at the end of the board. */
     public function addList(): void
     {
-        // Backend: persist the list, then clear $newListName and keep the form open.
-        $this->toastInfo('Not connected yet', 'Lists are stored once the backend phase lands.');
+        $name = trim($this->newListName);
+
+        if ($name === '') {
+            $this->toastError('The list needs a name', 'Something like "Waiting on client".');
+
+            return;
+        }
+
+        $board = $this->board();
+
+        if ($board === null) {
+            $this->toastError('No board is open', 'Pick a board first.');
+
+            return;
+        }
+
+        $last = BoardList::query()->where('board_id', $board->id)->orderByDesc('position')->value('position');
+
+        $list = BoardList::query()->create([
+            'board_id' => $board->id,
+            'name' => $name,
+            'position' => Position::after($last === null ? null : Position::format((string) $last)),
+            'created_by' => auth()->id(),
+        ]);
+
+        $this->newListName = '';
+        $this->addingList = true;
+
+        $this->refreshBoard();
+
+        $this->toastSuccess('List added', $list->name.' is at the end of the board.');
     }
 
-    /* Card and list actions ---------------------------------------------- */
+    /* Card and list actions --------------------------------------------------- */
+
+    private function listOnThisBoard(int $listId): ?BoardList
+    {
+        $board = $this->board();
+
+        if ($board === null) {
+            return null;
+        }
+
+        return BoardList::query()
+            ->where('board_id', $board->id)
+            ->active()
+            ->find($listId);
+    }
 
     /**
      * Called by Sortable when a card is dropped.
-     * Backend phase fills this in; the contract stays the same.
+     *
+     * `$position` is the index the card landed on among the cards the browser
+     * could see, which is not an offset into the list when a filter is hiding
+     * rows between them.
      */
     public function moveCard(int $cardId, string $toList, int $position): void
     {
-        // no-op during the frontend phase
-        $this->toastInfo('Not connected yet', 'The card returns to its old list on the next refresh.');
+        $list = $this->listOnThisBoard((int) $toList);
+
+        if ($list === null) {
+            $this->toastError('That list is not on this board', 'Reload the page and try the move again.');
+
+            return;
+        }
+
+        $card = Card::query()->active()->find($cardId);
+
+        if ($card === null) {
+            $this->toastError('That card is gone', 'It was archived or deleted while the page was open.');
+            $this->refreshBoard();
+
+            return;
+        }
+
+        $from = $card->list;
+
+        app(CardService::class)->move($card, $list, $position, $this->visibleCardIds($list));
+
+        $this->refreshBoard();
+
+        $this->toastSuccess(
+            'Card moved',
+            $from && $from->id !== $list->id
+                ? $card->title.' is now in '.$list->name.'.'
+                : $card->title.' moved within '.$list->name.'.',
+        );
     }
 
     /**
      * Open the card drawer, which listens for this event.
      *
      * The drawer is what actually opens, so the drawer is what reports it.
-     * Toasting here as well would fire the same message twice.
      */
     public function openCard(int $cardId): void
     {
@@ -495,16 +618,59 @@ class extends Component
         $this->dispatch('open-board-templates');
     }
 
-    public function archiveList(string $listId): void
+    /** A card changed in the drawer. Redraw the canvas so the front matches. */
+    #[On('card-changed')]
+    public function cardChanged(): void
     {
-        // Backend: archive the list and every card still in it.
-        $this->toastInfo('Not connected yet', 'Archiving a list lands with the backend phase.');
+        $this->refreshBoard();
     }
 
-    public function archiveCardsInList(string $listId): void
+    public function archiveList(int $listId): void
     {
-        // Backend: archive the cards but keep the empty list on the board.
-        $this->toastInfo('Not connected yet', 'Archiving a list of cards lands with the backend phase.');
+        $list = $this->listOnThisBoard($listId);
+
+        if ($list === null) {
+            $this->toastError('That list is not on this board');
+
+            return;
+        }
+
+        $cards = Card::query()->where('board_list_id', $list->id)->active()->update(['archived_at' => now()]);
+
+        $list->forceFill(['archived_at' => now()])->save();
+
+        $this->closeOverlays();
+        $this->refreshBoard();
+
+        $this->toastSuccess(
+            $list->name.' archived',
+            $cards === 0
+                ? 'It was empty. Nothing else moved.'
+                : $cards.' '.str('card')->plural($cards).' went with it, and can be restored from the archive.',
+        );
+    }
+
+    public function archiveCardsInList(int $listId): void
+    {
+        $list = $this->listOnThisBoard($listId);
+
+        if ($list === null) {
+            $this->toastError('That list is not on this board');
+
+            return;
+        }
+
+        $cards = Card::query()->where('board_list_id', $list->id)->active()->update(['archived_at' => now()]);
+
+        $this->closeOverlays();
+        $this->refreshBoard();
+
+        $cards === 0
+            ? $this->toastSuccess('Nothing to archive', $list->name.' was already empty.')
+            : $this->toastSuccess(
+                $cards.' '.str('card')->plural($cards).' archived',
+                $list->name.' is still on the board, and the cards are in the archive.',
+            );
     }
 };
 
@@ -535,9 +701,9 @@ class extends Component
             <div class="relative">
                 <button wire:click="toggleBoardPicker" class="kt-btn kt-btn-outline gap-2" aria-haspopup="true" aria-expanded="{{ $boardPickerOpen ? 'true' : 'false' }}">
                     @foreach ($boards as $b)
-                        @if ($b['key'] === $activeBoard)
-                            <span class="size-2.5 rounded-full {{ $b['color'] }}"></span>
-                            {{ $b['name'] }}
+                        @if ($b->slug === $activeBoard)
+                            <span class="size-2.5 rounded-full {{ $b->dotClass() }}"></span>
+                            {{ $b->name }}
                         @endif
                     @endforeach
                     <i class="ki-filled ki-down text-xs"></i>
@@ -545,20 +711,24 @@ class extends Component
 
                 <div class="kt-dropdown absolute z-20 mt-1 w-[240px] start-0 {{ $boardPickerOpen ? 'open' : '' }}">
                     <div class="p-2 flex flex-col gap-1">
-                        @foreach ($boards as $b)
-                            <button wire:click="selectBoard('{{ $b['key'] }}')"
-                                    class="kt-btn kt-btn-ghost justify-start gap-2 w-full {{ $b['key'] === $activeBoard ? 'bg-accent/60' : '' }}">
-                                <span class="size-2.5 rounded-full {{ $b['color'] }}"></span>
-                                {{ $b['name'] }}
+                        @forelse ($boards as $b)
+                            <button wire:click="selectBoard('{{ $b->slug }}')" wire:key="pick-{{ $b->id }}"
+                                    class="kt-btn kt-btn-ghost justify-start gap-2 w-full {{ $b->slug === $activeBoard ? 'bg-accent/60' : '' }}">
+                                <span class="size-2.5 rounded-full {{ $b->dotClass() }}"></span>
+                                {{ $b->name }}
                             </button>
-                        @endforeach
+                        @empty
+                            <p class="text-xs text-muted-foreground px-2 py-3 text-center">No boards yet.</p>
+                        @endforelse
                     </div>
-                    <div class="border-t border-border p-2">
-                        <a href="{{ route('projects.board-settings', ['board' => $activeBoard]) }}" wire:navigate
-                           class="kt-btn kt-btn-ghost justify-start gap-2 w-full">
-                            <i class="ki-filled ki-setting-2 text-sm"></i> Board settings
-                        </a>
-                    </div>
+                    @if ($activeBoard !== '')
+                        <div class="border-t border-border p-2">
+                            <a href="{{ route('projects.board-settings', ['board' => $activeBoard]) }}" wire:navigate
+                               class="kt-btn kt-btn-ghost justify-start gap-2 w-full">
+                                <i class="ki-filled ki-setting-2 text-sm"></i> Board settings
+                            </a>
+                        </div>
+                    @endif
                 </div>
             </div>
         </div>
@@ -602,30 +772,34 @@ class extends Component
 
                         <div class="flex flex-col gap-2">
                             <span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Labels</span>
-                            @foreach ($labels as $key => $label)
-                                <button wire:click="toggleLabelFilter('{{ $key }}')"
-                                        class="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-start hover:bg-accent/60 {{ in_array($key, $filterLabels, true) ? 'bg-accent/60' : '' }}">
-                                    <span class="size-3 rounded-sm {{ $label['dot'] }}"></span>
-                                    <span class="grow text-secondary-foreground">{{ $label['name'] }}</span>
-                                    @if (in_array($key, $filterLabels, true))
+                            @forelse ($labels as $label)
+                                <button wire:click="toggleLabelFilter({{ $label->id }})" wire:key="flabel-{{ $label->id }}"
+                                        class="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-start hover:bg-accent/60 {{ in_array((string) $label->id, array_map('strval', $filterLabels), true) ? 'bg-accent/60' : '' }}">
+                                    <span class="size-3 rounded-sm {{ $label->dotClass() }}"></span>
+                                    <span class="grow text-secondary-foreground">{{ $label->name }}</span>
+                                    @if (in_array((string) $label->id, array_map('strval', $filterLabels), true))
                                         <i class="ki-filled ki-check text-sm text-primary"></i>
                                     @endif
                                 </button>
-                            @endforeach
+                            @empty
+                                <p class="text-xs text-muted-foreground">This board has no labels yet.</p>
+                            @endforelse
                         </div>
 
                         <div class="flex flex-col gap-2">
                             <span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Members</span>
-                            @foreach ($members as $key => $member)
-                                <button wire:click="toggleAssigneeFilter('{{ $key }}')"
-                                        class="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-start hover:bg-accent/60 {{ in_array($key, $filterAssignees, true) ? 'bg-accent/60' : '' }}">
-                                    <span class="size-6 rounded-full grid place-items-center text-[10px] font-semibold {{ $member['tone'] }}">{{ $member['initials'] }}</span>
-                                    <span class="grow text-secondary-foreground">{{ $member['name'] }}</span>
-                                    @if (in_array($key, $filterAssignees, true))
+                            @forelse ($members as $member)
+                                <button wire:click="toggleAssigneeFilter({{ $member->id }})" wire:key="fwho-{{ $member->id }}"
+                                        class="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-start hover:bg-accent/60 {{ in_array((string) $member->id, array_map('strval', $filterAssignees), true) ? 'bg-accent/60' : '' }}">
+                                    <span class="size-6 rounded-full grid place-items-center text-[10px] font-semibold bg-primary/15 text-primary">{{ $member->initials() }}</span>
+                                    <span class="grow text-secondary-foreground">{{ $member->name }}</span>
+                                    @if (in_array((string) $member->id, array_map('strval', $filterAssignees), true))
                                         <i class="ki-filled ki-check text-sm text-primary"></i>
                                     @endif
                                 </button>
-                            @endforeach
+                            @empty
+                                <p class="text-xs text-muted-foreground">Nobody to filter by yet.</p>
+                            @endforelse
                         </div>
 
                         <div class="flex flex-col gap-2">
@@ -657,10 +831,12 @@ class extends Component
                 </div>
             </div>
 
-            <a href="{{ route('projects.board-settings', ['board' => $activeBoard]) }}" wire:navigate
-               class="kt-btn kt-btn-outline kt-btn-icon" title="Board settings" aria-label="Board settings">
-                <i class="ki-filled ki-setting-2"></i>
-            </a>
+            @if ($activeBoard !== '')
+                <a href="{{ route('projects.board-settings', ['board' => $activeBoard]) }}" wire:navigate
+                   class="kt-btn kt-btn-outline kt-btn-icon" title="Board settings" aria-label="Board settings">
+                    <i class="ki-filled ki-setting-2"></i>
+                </a>
+            @endif
 
             <button wire:click="openTemplates" class="kt-btn kt-btn-primary gap-2">
                 <i class="ki-filled ki-plus"></i> New board
@@ -668,32 +844,38 @@ class extends Component
         </div>
     </div>
 
-    {{-- The board --}}
+    {{--
+        The board canvas. Exactly one island in this file — see the class
+        docblock for why it is not one per column, and why every action that
+        changes a card calls refreshBoard().
+    --}}
+    @island(name: 'board')
     <div class="flex gap-4 overflow-x-auto pb-4 kt-scrollable-x items-start" id="kargah-board">
 
-        @foreach ($lists as $list)
-            <div class="kt-card w-[290px] shrink-0 bg-muted/40" data-list-id="{{ $list['id'] }}" wire:key="list-{{ $list['id'] }}">
+        @forelse ($lists as $entry)
+            @php($list = $entry['model'])
+            <div class="kt-card w-[290px] shrink-0 bg-muted/40" data-list-id="{{ $list->id }}" wire:key="list-{{ $list->id }}">
 
                 <div class="flex items-center justify-between px-4 py-3">
                     <div class="flex items-center gap-2">
-                        <h3 class="text-sm font-semibold text-mono">{{ $list['name'] }}</h3>
-                        <span class="kt-badge kt-badge-sm kt-badge-outline">{{ count($list['cards']) }}</span>
+                        <h3 class="text-sm font-semibold text-mono">{{ $list->name }}</h3>
+                        <span class="kt-badge kt-badge-sm kt-badge-outline">{{ $entry['cards']->count() }}</span>
                     </div>
 
                     <div class="relative">
-                        <button wire:click="toggleListMenu('{{ $list['id'] }}')" class="kt-btn kt-btn-icon kt-btn-ghost size-7"
+                        <button wire:click="toggleListMenu({{ $list->id }})" class="kt-btn kt-btn-icon kt-btn-ghost size-7"
                                 title="List actions" aria-label="List actions">
                             <i class="ki-filled ki-dots-horizontal text-sm"></i>
                         </button>
-                        <div class="kt-dropdown absolute z-20 end-0 mt-1 w-[210px] {{ $listMenuOpen === $list['id'] ? 'open' : '' }}">
+                        <div class="kt-dropdown absolute z-20 end-0 mt-1 w-[210px] {{ $listMenuOpen === $list->id ? 'open' : '' }}">
                             <div class="p-2 flex flex-col gap-1">
-                                <button wire:click="startAddCard('{{ $list['id'] }}')" class="kt-btn kt-btn-ghost justify-start gap-2 w-full">
+                                <button wire:click="startAddCard({{ $list->id }})" class="kt-btn kt-btn-ghost justify-start gap-2 w-full">
                                     <i class="ki-filled ki-plus text-sm"></i> Add a card
                                 </button>
-                                <button wire:click="archiveCardsInList('{{ $list['id'] }}')" class="kt-btn kt-btn-ghost justify-start gap-2 w-full">
+                                <button wire:click="archiveCardsInList({{ $list->id }})" class="kt-btn kt-btn-ghost justify-start gap-2 w-full">
                                     <i class="ki-filled ki-archive text-sm"></i> Archive the cards
                                 </button>
-                                <button wire:click="archiveList('{{ $list['id'] }}')" class="kt-btn kt-btn-ghost justify-start gap-2 w-full text-destructive">
+                                <button wire:click="archiveList({{ $list->id }})" class="kt-btn kt-btn-ghost justify-start gap-2 w-full text-destructive">
                                     <i class="ki-filled ki-trash text-sm"></i> Archive this list
                                 </button>
                             </div>
@@ -701,56 +883,53 @@ class extends Component
                     </div>
                 </div>
 
-                <div class="kargah-list flex flex-col gap-2 px-3 pb-3 min-h-[60px]" data-list="{{ $list['id'] }}">
-                    @forelse ($list['cards'] as $card)
-                        <div wire:click="openCard({{ $card['id'] }})"
-                             wire:key="card-{{ $card['id'] }}"
+                <div class="kargah-list flex flex-col gap-2 px-3 pb-3 min-h-[60px]" data-list="{{ $list->id }}">
+                    @forelse ($entry['cards'] as $card)
+                        <div wire:click="openCard({{ $card->id }})"
+                             wire:key="card-{{ $card->id }}"
                              role="button" tabindex="0"
-                             aria-label="Open card {{ $card['title'] }}"
+                             aria-label="Open card {{ $card->title }}"
                              class="kt-card bg-background border border-border rounded-lg p-3 cursor-grab hover:border-primary/40 transition-colors active:cursor-grabbing"
-                             data-card-id="{{ $card['id'] }}">
+                             data-card-id="{{ $card->id }}">
 
-                            @if (count($card['labels']))
+                            @if ($card->labels->isNotEmpty())
                                 <div class="flex flex-wrap gap-1 mb-2">
-                                    @foreach ($card['labels'] as $labelKey)
-                                        <span class="text-[10px] font-medium px-1.5 py-0.5 rounded {{ $labels[$labelKey]['chip'] }}">
-                                            {{ $labels[$labelKey]['name'] }}
+                                    @foreach ($card->labels as $label)
+                                        <span class="text-[10px] font-medium px-1.5 py-0.5 rounded {{ $label->chipClass() }}">
+                                            {{ $label->name }}
                                         </span>
                                     @endforeach
                                 </div>
                             @endif
 
-                            <p class="text-sm text-mono leading-snug">{{ $card['title'] }}</p>
+                            <p class="text-sm text-mono leading-snug">{{ $card->title }}</p>
 
-                            @if ($card['checklist'][1] > 0 || $card['due'] || $card['comments'] > 0 || $card['attachments'] > 0 || $card['assignee'])
+                            @php($dueState = $card->dueState())
+
+                            @if ($card->checklist_total > 0 || $card->due_on || $card->comments_count > 0 || $card->members->isNotEmpty())
                                 <div class="flex items-center gap-3 mt-2.5 text-xs text-muted-foreground">
-                                    @if ($card['checklist'][1] > 0)
-                                        <span class="inline-flex items-center gap-1 {{ $card['checklist'][0] === $card['checklist'][1] ? 'text-success' : '' }}">
+                                    @if ($card->checklist_total > 0)
+                                        <span class="inline-flex items-center gap-1 {{ $card->checklist_done === $card->checklist_total ? 'text-success' : '' }}">
                                             <i class="ki-filled ki-check-squared text-sm"></i>
-                                            {{ $card['checklist'][0] }}/{{ $card['checklist'][1] }}
+                                            {{ $card->checklist_done }}/{{ $card->checklist_total }}
                                         </span>
                                     @endif
-                                    @if ($card['due'])
-                                        <span class="inline-flex items-center gap-1 {{ $card['due']['state'] === 'overdue' ? 'text-destructive' : ($card['due']['state'] === 'soon' ? 'text-warning' : '') }}">
-                                            <i class="ki-filled ki-calendar text-sm"></i>{{ $card['due']['label'] }}
+                                    @if ($card->due_on)
+                                        <span class="inline-flex items-center gap-1 {{ $dueState === 'overdue' ? 'text-destructive' : ($dueState === 'soon' ? 'text-warning' : '') }}">
+                                            <i class="ki-filled ki-calendar text-sm"></i>{{ $card->due_on->format('M d') }}
                                         </span>
                                     @endif
-                                    @if ($card['comments'] > 0)
+                                    @if ($card->comments_count > 0)
                                         <span class="inline-flex items-center gap-1">
-                                            <i class="ki-filled ki-message-text-2 text-sm"></i>{{ $card['comments'] }}
+                                            <i class="ki-filled ki-message-text-2 text-sm"></i>{{ $card->comments_count }}
                                         </span>
                                     @endif
-                                    @if ($card['attachments'] > 0)
-                                        <span class="inline-flex items-center gap-1">
-                                            <i class="ki-filled ki-paper-clip text-sm"></i>{{ $card['attachments'] }}
+                                    @foreach ($card->members as $member)
+                                        <span class="ms-auto size-6 rounded-full grid place-items-center text-[10px] font-semibold bg-primary/15 text-primary"
+                                              title="{{ $member->name }}">
+                                            {{ $member->initials() }}
                                         </span>
-                                    @endif
-                                    @if ($card['assignee'])
-                                        <span class="ms-auto size-6 rounded-full grid place-items-center text-[10px] font-semibold {{ $members[$card['assignee']]['tone'] }}"
-                                              title="{{ $members[$card['assignee']]['name'] }}">
-                                            {{ $members[$card['assignee']]['initials'] }}
-                                        </span>
-                                    @endif
+                                    @endforeach
                                 </div>
                             @endif
                         </div>
@@ -762,16 +941,16 @@ class extends Component
                 </div>
 
                 {{-- Inline card creation --}}
-                @if ($addingCardIn === $list['id'])
+                @if ($addingCardIn === $list->id)
                     <div class="flex flex-col gap-2 px-3 pb-3">
                         <textarea rows="2" class="kt-textarea" autofocus
                                   aria-label="New card title"
                                   placeholder="e.g. Draft the Northwind scope document"
                                   wire:model="newCardTitle"
                                   wire:keydown.escape="cancelAddCard"
-                                  wire:keydown.enter.prevent="addCard('{{ $list['id'] }}')"></textarea>
+                                  wire:keydown.enter.prevent="addCard({{ $list->id }})"></textarea>
                         <div class="flex items-center gap-2">
-                            <button wire:click="addCard('{{ $list['id'] }}')"
+                            <button wire:click="addCard({{ $list->id }})"
                                     wire:loading.attr="disabled" wire:target="addCard"
                                     class="kt-btn kt-btn-sm kt-btn-primary gap-1">
                                 <span wire:loading.remove wire:target="addCard">Add card</span>
@@ -782,41 +961,54 @@ class extends Component
                         </div>
                     </div>
                 @else
-                    <button wire:click="startAddCard('{{ $list['id'] }}')"
+                    <button wire:click="startAddCard({{ $list->id }})"
                             class="kt-btn kt-btn-ghost w-full justify-start gap-2 text-sm text-secondary-foreground px-4 py-2.5 rounded-b-lg">
                         <i class="ki-filled ki-plus text-sm"></i> Add a card
                     </button>
                 @endif
             </div>
-        @endforeach
+        @empty
+            @if ($boards->isEmpty())
+                <div class="w-full rounded-lg border border-dashed border-border px-6 py-14 text-center">
+                    <i class="ki-filled ki-element-plus text-3xl text-muted-foreground"></i>
+                    <p class="text-sm text-secondary-foreground mt-3">No boards yet. The first one takes about ten seconds.</p>
+                    <button wire:click="openTemplates" class="kt-btn kt-btn-primary gap-2 mt-4">
+                        <i class="ki-filled ki-plus"></i> New board
+                    </button>
+                </div>
+            @endif
+        @endforelse
 
         {{-- Inline list creation --}}
-        @if ($addingList)
-            <div class="kt-card w-[290px] shrink-0 bg-muted/40 p-3 flex flex-col gap-2">
-                <input type="text" class="kt-input" autofocus
-                       aria-label="New list name"
-                       placeholder="e.g. Waiting on client"
-                       wire:model="newListName"
-                       wire:keydown.escape="cancelAddList"
-                       wire:keydown.enter.prevent="addList">
-                <div class="flex items-center gap-2">
-                    <button wire:click="addList" wire:loading.attr="disabled" wire:target="addList"
-                            class="kt-btn kt-btn-sm kt-btn-primary gap-1">
-                        <span wire:loading.remove wire:target="addList">Add list</span>
-                        <span wire:loading wire:target="addList"><i class="ki-filled ki-loading animate-spin"></i> Adding…</span>
-                    </button>
-                    <button wire:click="cancelAddList" class="kt-btn kt-btn-sm kt-btn-ghost">Cancel</button>
+        @if ($activeBoard !== '')
+            @if ($addingList)
+                <div class="kt-card w-[290px] shrink-0 bg-muted/40 p-3 flex flex-col gap-2">
+                    <input type="text" class="kt-input" autofocus
+                           aria-label="New list name"
+                           placeholder="e.g. Waiting on client"
+                           wire:model="newListName"
+                           wire:keydown.escape="cancelAddList"
+                           wire:keydown.enter.prevent="addList">
+                    <div class="flex items-center gap-2">
+                        <button wire:click="addList" wire:loading.attr="disabled" wire:target="addList"
+                                class="kt-btn kt-btn-sm kt-btn-primary gap-1">
+                            <span wire:loading.remove wire:target="addList">Add list</span>
+                            <span wire:loading wire:target="addList"><i class="ki-filled ki-loading animate-spin"></i> Adding…</span>
+                        </button>
+                        <button wire:click="cancelAddList" class="kt-btn kt-btn-sm kt-btn-ghost">Cancel</button>
+                    </div>
                 </div>
-            </div>
-        @else
-            <button wire:click="startAddList"
-                    class="kt-card w-[290px] shrink-0 bg-muted/20 border border-dashed border-border hover:border-primary/50 transition-colors">
-                <span class="flex items-center gap-2 px-4 py-4 text-sm text-secondary-foreground">
-                    <i class="ki-filled ki-plus"></i> Add another list
-                </span>
-            </button>
+            @else
+                <button wire:click="startAddList"
+                        class="kt-card w-[290px] shrink-0 bg-muted/20 border border-dashed border-border hover:border-primary/50 transition-colors">
+                    <span class="flex items-center gap-2 px-4 py-4 text-sm text-secondary-foreground">
+                        <i class="ki-filled ki-plus"></i> Add another list
+                    </span>
+                </button>
+            @endif
         @endif
     </div>
+    @endisland
 
     {{-- Nested components --}}
     <livewire:project::card-detail />

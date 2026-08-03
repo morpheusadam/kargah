@@ -2,45 +2,51 @@
 
 namespace Modules\Project\Providers;
 
+use Modules\Core\Support\MorphMap;
+use Modules\Project\Console\RebalancePositions;
+use Modules\Project\Contracts\CardReader as CardReaderContract;
+use Modules\Project\Models\Board;
+use Modules\Project\Models\BoardList;
+use Modules\Project\Models\Card;
+use Modules\Project\Models\CardComment;
+use Modules\Project\Services\CardReader;
 use Nwidart\Modules\Support\ModuleServiceProvider;
-use Illuminate\Console\Scheduling\Schedule;
 
 class ProjectServiceProvider extends ModuleServiceProvider
 {
-    /**
-     * The name of the module.
-     */
     protected string $name = 'Project';
 
-    /**
-     * The lowercase version of the module name.
-     */
     protected string $nameLower = 'project';
 
-    /**
-     * Command classes to register.
-     *
-     * @var string[]
-     */
-    // protected array $commands = [];
+    /** @var string[] */
+    protected array $commands = [
+        RebalancePositions::class,
+    ];
 
-    /**
-     * Provider classes to register.
-     *
-     * @var string[]
-     */
+    /** @var string[] */
     protected array $providers = [
         EventServiceProvider::class,
         RouteServiceProvider::class,
     ];
 
-    /**
-     * Define module schedules.
-     * 
-     * @param $schedule
-     */
-    // protected function configureSchedules(Schedule $schedule): void
-    // {
-    //     $schedule->command('inspire')->hourly();
-    // }
+    public function register(): void
+    {
+        parent::register();
+
+        $this->app->bind(CardReaderContract::class, CardReader::class);
+    }
+
+    public function boot(): void
+    {
+        parent::boot();
+
+        // Aliases, not class names. These rows outlive refactors — see
+        // Modules\Core\Support\MorphMap.
+        MorphMap::register([
+            'board' => Board::class,
+            'board_list' => BoardList::class,
+            'card' => Card::class,
+            'card_comment' => CardComment::class,
+        ]);
+    }
 }
