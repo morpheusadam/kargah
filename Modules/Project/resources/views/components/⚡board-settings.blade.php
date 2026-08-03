@@ -3,6 +3,7 @@
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Validate;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Board settings.
@@ -19,6 +20,8 @@ new
 #[Title('Board settings — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     /** Board slug from the route. */
     public string $board = '';
 
@@ -126,6 +129,7 @@ class extends Component
         $this->validateOnly('name');
 
         // Backend: persist the new name and update the board slug.
+        $this->toastInfo('Not connected yet', 'The old name comes back on the next refresh.');
     }
 
     public function selectBackground(string $key): void
@@ -133,6 +137,9 @@ class extends Component
         $this->background = $key;
 
         // Backend: persist the chosen background.
+        $name = $this->backgrounds()[$key]['name'] ?? $key;
+
+        $this->toastSuccess($name.' picked', 'On screen only — backgrounds are stored with the backend phase.');
     }
 
     /* Labels ---------------------------------------------------------------- */
@@ -144,12 +151,20 @@ class extends Component
         $this->editingLabel = $key;
         $this->labelDraft = $labels[$key]['name'] ?? '';
         $this->labelColorDraft = $labels[$key]['colour'] ?? 'primary';
+
+        $this->toastSuccess('Editing '.($labels[$key]['name'] ?? $key), 'Esc closes the editor without changing anything.');
     }
 
     public function cancelEditLabel(): void
     {
+        $wasEditing = $this->editingLabel !== null;
+
         $this->editingLabel = null;
         $this->labelDraft = '';
+
+        if ($wasEditing) {
+            $this->toastSuccess('Label editor closed', 'The label was left as it was.');
+        }
     }
 
     /** Rename a label and change its colour. */
@@ -157,18 +172,22 @@ class extends Component
     {
         // Backend: persist the label's name and colour.
         $this->editingLabel = null;
+
+        $this->toastInfo('Not connected yet', 'Label edits are stored with the backend phase.');
     }
 
     /** Remove a label from the board and from every card carrying it. */
     public function deleteLabel(string $key): void
     {
         // Backend: delete the label and detach it from its cards.
+        $this->toastInfo('Not connected yet', 'Deleting a label lands with the backend phase.');
     }
 
     /** Add a label to the board. */
     public function createLabel(): void
     {
         // Backend: persist the label, then clear $newLabelName.
+        $this->toastInfo('Not connected yet', 'New labels land with the backend phase.');
     }
 
     /* Members ---------------------------------------------------------------- */
@@ -177,17 +196,22 @@ class extends Component
     public function updatedRoles(string $value, string $memberKey): void
     {
         // Backend: persist the new role for this member.
+        $this->toastInfo('Not connected yet', 'The old role comes back on the next refresh.');
     }
 
     public function removeMember(string $memberKey): void
     {
         // Backend: revoke access and unassign the member from their cards.
+        $name = $this->members()[$memberKey]['name'] ?? $memberKey;
+
+        $this->toastInfo('Not connected yet', $name.' keeps access until the backend phase lands.');
     }
 
     /** Invite somebody to the board by email. */
     public function invite(): void
     {
         // Backend: create the invitation and send the email.
+        $this->toastInfo('Not connected yet', 'No invitation was sent.');
     }
 
     /* Danger zone ------------------------------------------------------------ */
@@ -195,24 +219,34 @@ class extends Component
     public function archiveBoard(): void
     {
         // Backend: archive the board, its lists and its cards.
+        $this->toastInfo('Not connected yet', 'Archiving a board lands with the backend phase.');
     }
 
     public function confirmDelete(): void
     {
         $this->confirmingDelete = true;
         $this->deleteConfirmation = '';
+
+        $this->toastWarning('Confirmation needed', 'Type '.$this->name.' to unlock the delete button.');
     }
 
     public function cancelDelete(): void
     {
+        $wasConfirming = $this->confirmingDelete;
+
         $this->confirmingDelete = false;
         $this->deleteConfirmation = '';
+
+        if ($wasConfirming) {
+            $this->toastSuccess('Deletion cancelled', 'The board is untouched.');
+        }
     }
 
     /** Delete the board for good. */
     public function deleteBoard(): void
     {
         // Backend: delete the board and everything under it.
+        $this->toastInfo('Not connected yet', 'The board is still here.');
     }
 };
 

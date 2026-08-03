@@ -3,6 +3,7 @@
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Client record.
@@ -18,6 +19,8 @@ new
 #[Title('Client — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     public string $clientId = '1';
 
     #[Url]
@@ -113,11 +116,14 @@ class extends Component
     {
         // Stores the note against the client once the record exists.
         $this->draftNote = '';
+
+        $this->toastInfo('Not connected yet', 'Notes are stored once the client record exists. Nothing was saved.');
     }
 
     public function archive(): void
     {
         // Hides the client from pickers without deleting the history.
+        $this->toastInfo('Not connected yet', 'Archiving a client lands with the backend phase. The client is unchanged.');
     }
 
     protected function money(float $amount): string

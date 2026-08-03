@@ -2,11 +2,17 @@
 
 use Livewire\Attributes\Title;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 new
 #[Title('Backups — Kargah')]
 class extends Component
 {
+    // Held ready for the actions this page still needs. Nothing on it calls the
+    // server yet — "Back up now" and the per-row downloads are plain markup with
+    // no wire:click — so there is nothing here to report to the user.
+    use InteractsWithToasts;
+
     public function with(): array
     {
         return [

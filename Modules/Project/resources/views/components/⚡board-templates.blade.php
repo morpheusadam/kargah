@@ -3,6 +3,7 @@
 use Livewire\Attributes\On;
 use Livewire\Attributes\Validate;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Board template picker.
@@ -15,6 +16,8 @@ use Livewire\Component;
 new
 class extends Component
 {
+    use InteractsWithToasts;
+
     public bool $open = false;
 
     public string $template = 'client-project';
@@ -90,16 +93,32 @@ class extends Component
     {
         $this->open = true;
         $this->resetValidation();
+
+        $this->toastSuccess('Template picker open', 'Name the board, then pick what it starts with.');
     }
 
     public function close(): void
     {
+        $wasOpen = $this->open;
+
         $this->open = false;
+
+        if ($wasOpen) {
+            $this->toastSuccess('Template picker closed', 'No board was created.');
+        }
     }
 
     public function selectTemplate(string $key): void
     {
         $this->template = $key;
+
+        $template = $this->templates()[$key] ?? null;
+        $lists = count($template['lists'] ?? []);
+
+        $this->toastSuccess(
+            ($template['name'] ?? $key).' selected',
+            $lists === 1 ? 'The preview shows its 1 list.' : 'The preview shows its '.$lists.' lists.',
+        );
     }
 
     /** Create the board from the chosen template. */
@@ -108,6 +127,7 @@ class extends Component
         $this->validate();
 
         // Backend: create the board, its lists and the seed cards, then redirect to it.
+        $this->toastInfo('Not connected yet', 'Boards are created once the backend phase lands.');
     }
 };
 

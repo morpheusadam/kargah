@@ -3,6 +3,7 @@
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Validate;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Provider configuration.
@@ -16,6 +17,8 @@ new
 #[Title('Provider settings — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     public string $provider = 'brevo';
 
     public string $driver = 'brevo';
@@ -124,16 +127,20 @@ class extends Component
     public function testConnection(): void
     {
         // Calls the provider's account endpoint and records the result.
+        // "Last test" above is a fixture, so nothing here may claim a pass.
+        $this->toastInfo('Not connected yet', 'The provider is never called until the backend phase.');
     }
 
     public function verifyDns(): void
     {
         // Re-resolves each record and refreshes the statuses above.
+        $this->toastInfo('Not connected yet', 'The DNS statuses shown are fixtures, not a live lookup.');
     }
 
     public function save(): void
     {
         // Persists the provider record.
+        $this->toastInfo('Not connected yet', 'Provider settings are not stored until the backend phase.');
     }
 };
 
@@ -394,9 +401,12 @@ class extends Component
             </div>
         </div>
     </div>
-</div>
-
-@push('scripts')
+{{--
+    Kept inside the component's root element on purpose. Livewire renders one
+    root node and discards everything after it, so a @push below the closing tag
+    never reaches the page.
+--}}
+@script
 <script>
 (function () {
     function mount() {
@@ -442,4 +452,5 @@ class extends Component
     mount();
 })();
 </script>
-@endpush
+@endscript
+</div>

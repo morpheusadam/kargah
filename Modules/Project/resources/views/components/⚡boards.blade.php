@@ -3,6 +3,7 @@
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Trello-style board.
@@ -20,6 +21,8 @@ new
 #[Title('Boards — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     #[Url(as: 'board')]
     public string $activeBoard = 'client-work';
 
@@ -201,6 +204,14 @@ class extends Component
         return array_sum(array_map(fn (array $list): int => count($list['cards']), $lists));
     }
 
+    /** How the board reads once the current filter is applied. Used in filter toasts. */
+    private function filterSummary(): string
+    {
+        $lists = $this->lists();
+
+        return 'Showing '.$this->countCards($this->filtered($lists)).' of '.$this->countCards($lists).' cards.';
+    }
+
     public function with(): array
     {
         $lists = $this->lists();
@@ -243,17 +254,27 @@ class extends Component
         $this->boardPickerOpen = false;
         $this->cancelAddCard();
         $this->cancelAddList();
+
+        $this->toastSuccess('Board switched', 'You are looking at '.$this->boardName().'.');
     }
 
     public function toggleBoardPicker(): void
     {
         $this->boardPickerOpen = ! $this->boardPickerOpen;
         $this->filterOpen = false;
+
+        $this->boardPickerOpen
+            ? $this->toastSuccess('Board picker open', 'Pick the board you want to work on.')
+            : $this->toastSuccess('Board picker closed');
     }
 
     public function toggleListMenu(string $listId): void
     {
         $this->listMenuOpen = $this->listMenuOpen === $listId ? null : $listId;
+
+        $this->listMenuOpen === null
+            ? $this->toastSuccess('List menu closed')
+            : $this->toastSuccess('List menu open', 'Add a card, or archive what the list holds.');
     }
 
     /* Filtering ---------------------------------------------------------- */
@@ -262,11 +283,21 @@ class extends Component
     {
         $this->filterOpen = ! $this->filterOpen;
         $this->boardPickerOpen = false;
+
+        $this->filterOpen
+            ? $this->toastSuccess('Filter panel open', 'Narrow the board by label, member or due date.')
+            : $this->toastSuccess('Filter panel closed', 'Whatever you set is still applied.');
     }
 
     public function closeFilterPanel(): void
     {
+        $wasOpen = $this->filterOpen;
+
         $this->filterOpen = false;
+
+        if ($wasOpen) {
+            $this->toastSuccess('Filter panel closed', 'Whatever you set is still applied.');
+        }
     }
 
     public function toggleLabelFilter(string $key): void
@@ -274,6 +305,15 @@ class extends Component
         $this->filterLabels = in_array($key, $this->filterLabels, true)
             ? array_values(array_diff($this->filterLabels, [$key]))
             : [...$this->filterLabels, $key];
+
+        $name = $this->labels()[$key]['name'] ?? $key;
+
+        $this->toastSuccess(
+            in_array($key, $this->filterLabels, true)
+                ? $name.' added to the filter'
+                : $name.' dropped from the filter',
+            $this->filterSummary(),
+        );
     }
 
     public function toggleAssigneeFilter(string $key): void
@@ -281,11 +321,25 @@ class extends Component
         $this->filterAssignees = in_array($key, $this->filterAssignees, true)
             ? array_values(array_diff($this->filterAssignees, [$key]))
             : [...$this->filterAssignees, $key];
+
+        $name = $this->members()[$key]['name'] ?? $key;
+
+        $this->toastSuccess(
+            in_array($key, $this->filterAssignees, true)
+                ? $name.' added to the filter'
+                : $name.' dropped from the filter',
+            $this->filterSummary(),
+        );
     }
 
     public function setDueFilter(string $state): void
     {
         $this->filterDue = $this->filterDue === $state ? '' : $state;
+
+        $this->toastSuccess(
+            $this->filterDue === '' ? 'Due date filter cleared' : 'Due date filter set',
+            $this->filterSummary(),
+        );
     }
 
     public function clearFilters(): void
@@ -294,6 +348,8 @@ class extends Component
         $this->filterLabels = [];
         $this->filterAssignees = [];
         $this->filterDue = '';
+
+        $this->toastSuccess('Filters cleared', $this->filterSummary());
     }
 
     /* Inline creation ---------------------------------------------------- */
@@ -304,18 +360,27 @@ class extends Component
         $this->newCardTitle = '';
         $this->addingList = false;
         $this->listMenuOpen = null;
+
+        $this->toastSuccess('Card form open', 'It sits at the bottom of the list.');
     }
 
     public function cancelAddCard(): void
     {
+        $wasOpen = $this->addingCardIn !== null;
+
         $this->addingCardIn = null;
         $this->newCardTitle = '';
+
+        if ($wasOpen) {
+            $this->toastSuccess('Card form closed', 'Nothing was added.');
+        }
     }
 
     /** Create a card at the bottom of a list. */
     public function addCard(string $listId): void
     {
         // Backend: persist the card, then clear $newCardTitle and keep the form open.
+        $this->toastInfo('Not connected yet', 'Cards are stored once the backend phase lands.');
     }
 
     public function startAddList(): void
@@ -323,18 +388,27 @@ class extends Component
         $this->addingList = true;
         $this->newListName = '';
         $this->addingCardIn = null;
+
+        $this->toastSuccess('List form open', 'It sits at the end of the board.');
     }
 
     public function cancelAddList(): void
     {
+        $wasOpen = $this->addingList;
+
         $this->addingList = false;
         $this->newListName = '';
+
+        if ($wasOpen) {
+            $this->toastSuccess('List form closed', 'Nothing was added.');
+        }
     }
 
     /** Create a list at the end of the board. */
     public function addList(): void
     {
         // Backend: persist the list, then clear $newListName and keep the form open.
+        $this->toastInfo('Not connected yet', 'Lists are stored once the backend phase lands.');
     }
 
     /* Card and list actions ---------------------------------------------- */
@@ -346,15 +420,21 @@ class extends Component
     public function moveCard(int $cardId, string $toList, int $position): void
     {
         // no-op during the frontend phase
+        $this->toastInfo('Not connected yet', 'The card returns to its old list on the next refresh.');
     }
 
-    /** Open the card drawer, which listens for this event. */
+    /**
+     * Open the card drawer, which listens for this event.
+     *
+     * The drawer is what actually opens, so the drawer is what reports it.
+     * Toasting here as well would fire the same message twice.
+     */
     public function openCard(int $cardId): void
     {
         $this->dispatch('open-card', cardId: $cardId);
     }
 
-    /** Open the board template picker, which listens for this event. */
+    /** Open the board template picker, which listens for this event and reports it. */
     public function openTemplates(): void
     {
         $this->dispatch('open-board-templates');
@@ -363,11 +443,13 @@ class extends Component
     public function archiveList(string $listId): void
     {
         // Backend: archive the list and every card still in it.
+        $this->toastInfo('Not connected yet', 'Archiving a list lands with the backend phase.');
     }
 
     public function archiveCardsInList(string $listId): void
     {
         // Backend: archive the cards but keep the empty list on the board.
+        $this->toastInfo('Not connected yet', 'Archiving a list of cards lands with the backend phase.');
     }
 };
 
@@ -674,9 +756,12 @@ class extends Component
     {{-- Nested components --}}
     <livewire:project::card-detail />
     <livewire:project::board-templates />
-</div>
-
-@push('scripts')
+{{--
+    Kept inside the component's root element on purpose. Livewire renders one
+    root node and discards everything after it, so a @push below the closing tag
+    never reaches the page.
+--}}
+@script
 <script>
     (function initBoard() {
         function mount() {
@@ -710,4 +795,5 @@ class extends Component
         mount();
     })();
 </script>
-@endpush
+@endscript
+</div>

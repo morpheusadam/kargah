@@ -3,6 +3,7 @@
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Links & bots.
@@ -15,6 +16,11 @@ new
 #[Title('Links & Bots — Kargah')]
 class extends Component
 {
+    // Held ready. The only interactive controls are filter buttons driven by
+    // $set and a live search box, and both show their result in the grid, so
+    // there is no action here worth a toast.
+    use InteractsWithToasts;
+
     #[Url]
     public string $kind = 'all';
 

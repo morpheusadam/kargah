@@ -2,6 +2,7 @@
 
 use Livewire\Attributes\Title;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Cross-network composer.
@@ -15,6 +16,8 @@ new
 #[Title('Publish — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     public string $body = "Shipped the drag-and-drop board in Kargah this week. Cards keep their order after a refresh, which sounds trivial until you try it without a full page reload.\n\nIt is Livewire 4 single-file components plus a thin Sortable wrapper — no SPA, no build step to babysit. Runs on a small shared host and still feels instant.\n\nWriting up how the ordering works next. Happy to share the code if anyone wants a look.";
 
     public array $targets = ['telegram', 'linkedin', 'x'];
@@ -67,23 +70,50 @@ class extends Component
         return array_key_exists($key, $this->overrides);
     }
 
+    /** Display name for a network key, for anything the user reads. */
+    protected function labelFor(string $key): string
+    {
+        $network = collect($this->networks())->firstWhere('key', $key);
+
+        return $network['label'] ?? $key;
+    }
+
     public function toggleTarget(string $key): void
     {
+        $network = collect($this->networks())->firstWhere('key', $key);
+        $label = $network['label'] ?? $key;
+
         $this->targets = in_array($key, $this->targets, true)
             ? array_values(array_diff($this->targets, [$key]))
             : [...$this->targets, $key];
+
+        if ($network && ! $network['connected']) {
+            $this->toastWarning($label.' is not connected', 'Connect the account before publishing to it.');
+
+            return;
+        }
+
+        in_array($key, $this->targets, true)
+            ? $this->toastSuccess($label.' added', 'It is now a target for this post.')
+            : $this->toastSuccess($label.' removed', 'It is no longer a target for this post.');
     }
 
     /** Fork this network's copy off the shared text, or fold it back in. */
     public function toggleOverride(string $key): void
     {
+        $label = $this->labelFor($key);
+
         if ($this->isOverridden($key)) {
             unset($this->overrides[$key]);
+
+            $this->toastSuccess($label.' follows the shared text again', 'Its own copy was discarded.');
 
             return;
         }
 
         $this->overrides[$key] = $this->body;
+
+        $this->toastSuccess($label.' now has its own copy', 'Editing it leaves the other networks alone.');
     }
 
     /** Cut the overridden copy down to whatever this network allows. */
@@ -95,23 +125,54 @@ class extends Component
             return;
         }
 
+        $before = mb_strlen($this->textFor($key));
+
         $this->overrides[$key] = rtrim(mb_substr($this->textFor($key), 0, $network['limit']));
+
+        $cut = $before - mb_strlen($this->overrides[$key]);
+
+        if ($cut < 1) {
+            $this->toastInfo($network['label'].' copy already fits', 'Nothing needed trimming.');
+
+            return;
+        }
+
+        $this->toastSuccess(
+            'Trimmed '.number_format($cut).' '.($cut === 1 ? 'character' : 'characters'),
+            $network['label'].' copy now fits its '.number_format($network['limit']).'-character limit.',
+        );
     }
 
     public function removeMedia(int $index): void
     {
+        $name = $this->media[$index]['name'] ?? null;
+
         unset($this->media[$index]);
         $this->media = array_values($this->media);
+
+        if ($name === null) {
+            return;
+        }
+
+        $left = count($this->media);
+
+        $this->toastSuccess('Removed '.$name, $left === 0
+            ? 'No attachments left on this post.'
+            : $left.' '.($left === 1 ? 'attachment' : 'attachments').' left on this post.');
     }
 
     public function attachMedia(): void
     {
         // Upload handling lands with the backend; the picker writes into $media.
+
+        $this->toastInfo('The media picker is not wired up yet', 'Uploads arrive with the backend.');
     }
 
     public function submit(): void
     {
         // Queues one job per target network. Backend work.
+
+        $this->toastInfo('Nothing was sent', 'Publishing and scheduling arrive with the backend.');
     }
 };
 

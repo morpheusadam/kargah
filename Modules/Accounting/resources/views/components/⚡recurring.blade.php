@@ -4,6 +4,7 @@ use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Attributes\Validate;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Recurring invoice schedules.
@@ -20,6 +21,8 @@ new
 #[Title('Recurring invoices — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     public const CURRENCIES = ['USD' => '$', 'GBP' => '£', 'EUR' => '€'];
 
     #[Url]
@@ -106,13 +109,28 @@ class extends Component
 
     public function toggleSchedule(int $id): void
     {
+        $touched = null;
+
         foreach ($this->schedules as $index => $schedule) {
             if ($schedule['id'] === $id) {
                 $this->schedules[$index]['active'] = ! $schedule['active'];
+
+                $touched = $this->schedules[$index];
             }
         }
 
         // Backend phase arms or disarms the queued job here.
+
+        if ($touched === null) {
+            $this->toastError('Schedule not found', 'Nothing on this page matches that schedule.');
+
+            return;
+        }
+
+        $this->toastSuccess(
+            $touched['active'] ? 'Schedule resumed' : 'Schedule paused',
+            $touched['title'] . ' for ' . $touched['client'] . '.',
+        );
     }
 
     public function openForm(): void
@@ -132,11 +150,13 @@ class extends Component
         $this->validate();
 
         // Persistence lands in the backend phase; the modal then closes on success.
+        $this->toastInfo('Not connected yet', 'Creating a schedule lands with the backend phase. Nothing was saved.');
     }
 
     public function runNow(int $id): void
     {
         // Issues the next invoice ahead of its scheduled date.
+        $this->toastInfo('Not connected yet', 'Running a schedule early lands with the backend phase. No invoice was issued.');
     }
 
     /* ---- Money ---- */

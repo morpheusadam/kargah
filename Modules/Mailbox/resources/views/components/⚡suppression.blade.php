@@ -3,6 +3,7 @@
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Suppression list.
@@ -16,6 +17,8 @@ new
 #[Title('Suppression list — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     #[Url]
     public string $reason = 'all';
 
@@ -102,6 +105,8 @@ class extends Component
         ];
     }
 
+    // Opening and dismissing the confirmation dialog speak for themselves.
+
     public function confirmRemoval(string $email): void
     {
         $this->confirming = $email;
@@ -116,16 +121,23 @@ class extends Component
     {
         // Deletes the suppression entry and writes an audit record naming who did it.
         $this->confirming = null;
+
+        // The dialog shuts and the row stays. Saying so matters more here than
+        // anywhere else on the page: believing an address was unsuppressed is
+        // how someone mails a hard bounce or a complaint a second time.
+        $this->toastInfo('Not connected yet', $email.' is still suppressed. Removal lands with the backend phase.');
     }
 
     public function addManually(string $email): void
     {
         // Inserts a manual suppression entry.
+        $this->toastInfo('Not connected yet', 'Manual suppressions are not stored until the backend phase.');
     }
 
     public function exportCsv(): void
     {
         // Streams the whole list so it can be uploaded to a provider's own suppression store.
+        $this->toastInfo('Not connected yet', 'The export needs the stored suppression list.');
     }
 };
 

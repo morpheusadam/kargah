@@ -3,6 +3,7 @@
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * File browser.
@@ -15,6 +16,8 @@ new
 #[Title('Files — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     public string $search = '';
 
     /** grid | list — kept in the URL so a layout choice survives a refresh. */
@@ -254,14 +257,19 @@ class extends Component
         ];
     }
 
-    /** Walk into a child folder of the current path. */
+    /**
+     * Walk into a child folder of the current path.
+     *
+     * No toast: the breadcrumb and the grid both redraw at the new path, which
+     * says more than a notification would.
+     */
     public function openFolder(string $name): void
     {
         $this->path = rtrim($this->path, '/').'/'.$name;
         $this->selected = null;
     }
 
-    /** Jump to any ancestor from the breadcrumb. */
+    /** Jump to any ancestor from the breadcrumb. No toast, for the same reason. */
     public function goTo(string $path): void
     {
         $this->path = $path === '' ? '/' : $path;
@@ -270,9 +278,17 @@ class extends Component
 
     public function setView(string $view): void
     {
+        $requested = $view;
         $this->view = in_array($view, ['grid', 'list'], true) ? $view : 'grid';
+
+        // Switching between grid and list is its own confirmation. Only an
+        // unknown value, which quietly falls back to grid, is worth reporting.
+        if ($requested !== $this->view) {
+            $this->toastWarning('Unknown layout', 'Showing the grid instead.');
+        }
     }
 
+    /** Open or close the preview drawer. The drawer sliding in is the feedback. */
     public function select(string $name): void
     {
         $this->selected = $this->selected === $name ? null : $name;
@@ -287,11 +303,15 @@ class extends Component
     public function uploadFiles(): void
     {
         // Backend: validate each queued file, store it, then record version 1.
+
+        $this->toastInfo('Upload is not available yet', 'Writing to the private disk needs the backend, so nothing was stored.');
     }
 
     public function createFolder(string $name): void
     {
         // Backend: create the folder under the current path.
+
+        $this->toastInfo('Folder was not created', 'Creating folders on the private disk needs the backend.');
     }
 };
 

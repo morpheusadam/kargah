@@ -3,11 +3,14 @@
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 new
 #[Title('Invoices — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     #[Url]
     public string $status = 'all';
 

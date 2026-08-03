@@ -2,11 +2,14 @@
 
 use Livewire\Attributes\Title;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 new
 #[Title('Reports — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     public string $period = 'ytd';
 
     public function with(): array

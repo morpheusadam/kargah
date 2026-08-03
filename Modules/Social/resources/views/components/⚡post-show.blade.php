@@ -3,6 +3,7 @@
 use Illuminate\Support\Carbon;
 use Livewire\Attributes\Title;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * One post, seen from every network it landed on.
@@ -14,6 +15,8 @@ new
 #[Title('Post — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     public string $post = '';
 
     public string $range = '7d';
@@ -104,6 +107,10 @@ class extends Component
     public function retry(string $network): void
     {
         // Re-queues the failed delivery for this network. Backend work.
+
+        $label = $this->networks()[$network]['label'] ?? $network;
+
+        $this->toastInfo('Retry is not wired up yet', 'Nothing was re-queued for '.$label.'.');
     }
 };
 

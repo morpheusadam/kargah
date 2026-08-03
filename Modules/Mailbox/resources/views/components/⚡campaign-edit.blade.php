@@ -4,6 +4,7 @@ use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Attributes\Validate;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Campaign builder.
@@ -20,6 +21,8 @@ new
 #[Title('New campaign — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     #[Url]
     public int $step = 1;
 
@@ -103,52 +106,67 @@ class extends Component
                 'news.kargah.dev' => 'news.kargah.dev — marketing',
                 'tx.kargah.dev'   => 'tx.kargah.dev — transactional',
             ],
-            'checks' => [
-                [
-                    'label'    => 'SPF record on news.kargah.dev',
-                    'detail'   => 'v=spf1 include:spf.brevo.com include:amazonses.com include:mailgun.org -all — 7 of the 10 permitted DNS lookups used.',
-                    'status'   => 'pass',
-                    'blocking' => true,
-                ],
-                [
-                    'label'    => 'DKIM signing key',
-                    'detail'   => '2048-bit key at mail._domainkey.news.kargah.dev resolves and matches the key held by Brevo.',
-                    'status'   => 'pass',
-                    'blocking' => true,
-                ],
-                [
-                    'label'    => 'DMARC policy',
-                    'detail'   => 'Published as p=none, so failures are only reported, never rejected. Move to p=quarantine once a fortnight of reports looks clean.',
-                    'status'   => 'warn',
-                    'blocking' => false,
-                ],
-                [
-                    'label'    => 'List-Unsubscribe header',
-                    'detail'   => 'List-Unsubscribe and List-Unsubscribe-Post: List-Unsubscribe=One-Click are both set. Required by Gmail and Yahoo for anyone sending in bulk.',
-                    'status'   => 'pass',
-                    'blocking' => true,
-                ],
-                [
-                    'label'    => 'Suppression list applied',
-                    'detail'   => '6 addresses removed — 4 hard bounces and 2 complaints, all permanent across every provider.',
-                    'status'   => 'pass',
-                    'blocking' => true,
-                ],
-                [
-                    'label'    => 'Daily quota sufficient',
-                    'detail'   => '164 recipients against 600 marketing sends left today across Brevo, SES and Mailgun.',
-                    'status'   => 'pass',
-                    'blocking' => true,
-                ],
-                [
-                    'label'    => 'Seed test send',
-                    'detail'   => 'No test send recorded. Sending one to a Gmail, Outlook and Yahoo seed address shows how the message renders and where it lands.',
-                    'status'   => 'fail',
-                    'blocking' => false,
-                ],
+            'checks' => $this->checks(),
+        ];
+    }
+
+    /**
+     * The deliverability gate. A blocking check that fails stops the send —
+     * naming which one is the whole point, so it lives in its own method and
+     * both the review step and send() read the same list.
+     *
+     * @return list<array{label: string, detail: string, status: string, blocking: bool}>
+     */
+    private function checks(): array
+    {
+        return [
+            [
+                'label'    => 'SPF record on news.kargah.dev',
+                'detail'   => 'v=spf1 include:spf.brevo.com include:amazonses.com include:mailgun.org -all — 7 of the 10 permitted DNS lookups used.',
+                'status'   => 'pass',
+                'blocking' => true,
+            ],
+            [
+                'label'    => 'DKIM signing key',
+                'detail'   => '2048-bit key at mail._domainkey.news.kargah.dev resolves and matches the key held by Brevo.',
+                'status'   => 'pass',
+                'blocking' => true,
+            ],
+            [
+                'label'    => 'DMARC policy',
+                'detail'   => 'Published as p=none, so failures are only reported, never rejected. Move to p=quarantine once a fortnight of reports looks clean.',
+                'status'   => 'warn',
+                'blocking' => false,
+            ],
+            [
+                'label'    => 'List-Unsubscribe header',
+                'detail'   => 'List-Unsubscribe and List-Unsubscribe-Post: List-Unsubscribe=One-Click are both set. Required by Gmail and Yahoo for anyone sending in bulk.',
+                'status'   => 'pass',
+                'blocking' => true,
+            ],
+            [
+                'label'    => 'Suppression list applied',
+                'detail'   => '6 addresses removed — 4 hard bounces and 2 complaints, all permanent across every provider.',
+                'status'   => 'pass',
+                'blocking' => true,
+            ],
+            [
+                'label'    => 'Daily quota sufficient',
+                'detail'   => '164 recipients against 600 marketing sends left today across Brevo, SES and Mailgun.',
+                'status'   => 'pass',
+                'blocking' => true,
+            ],
+            [
+                'label'    => 'Seed test send',
+                'detail'   => 'No test send recorded. Sending one to a Gmail, Outlook and Yahoo seed address shows how the message renders and where it lands.',
+                'status'   => 'fail',
+                'blocking' => false,
             ],
         ];
     }
+
+    // The stepper and the "Step n of 4" counter are both on screen while you
+    // move, so navigation announces itself and needs no toast.
 
     public function goToStep(int $step): void
     {
@@ -168,26 +186,47 @@ class extends Component
     public function insertToken(string $token): void
     {
         // Inserts at the caret once the editor is wired up.
+        $this->toastInfo('Not connected yet', 'Tokens are inserted once the editor is wired up.');
     }
 
     public function generatePlainText(): void
     {
         // Strips the HTML body down to a text/plain alternative part.
+        $this->toastInfo('Not connected yet', 'The plain-text part is generated in the backend phase.');
     }
 
     public function sendTest(): void
     {
         // Sends one copy to each seed address.
+        $this->toastInfo('Not connected yet', 'Seed sends need a live provider.');
     }
 
     public function saveDraft(): void
     {
         // Persists the campaign without queueing it.
+        $this->toastInfo('Not connected yet', 'Campaigns are not persisted until the backend phase.');
     }
 
     public function send(): void
     {
+        // A bulk send that fails a blocking check would be filtered on arrival,
+        // so say which gate stopped it rather than reporting a generic refusal.
+        $failed = collect($this->checks())
+            ->where('status', 'fail')
+            ->where('blocking', true)
+            ->pluck('label');
+
+        if ($failed->isNotEmpty()) {
+            $this->toastError(
+                'Pre-flight check failed',
+                $failed->implode(' · ').' — fix this before the campaign can go out.'
+            );
+
+            return;
+        }
+
         // Hands the campaign to the router, which fans it out across providers.
+        $this->toastInfo('Not connected yet', 'The send router lands with the backend phase.');
     }
 };
 

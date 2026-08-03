@@ -2,11 +2,17 @@
 
 use Livewire\Attributes\Title;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 new
 #[Title('Campaigns — Kargah')]
 class extends Component
 {
+    // Nothing on this page toasts yet. The status filter is a `$set` and the
+    // table re-draws under it, so confirming the click would only be noise —
+    // the trait is here for the actions the backend phase adds.
+    use InteractsWithToasts;
+
     public string $filter = 'all';
 
     public function with(): array

@@ -2,21 +2,40 @@
 
 use Livewire\Attributes\Title;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 new
 #[Title('Social accounts — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     public function with(): array
     {
         return [
-            'accounts' => [
-                ['key' => 'telegram',  'network' => 'Telegram',  'handle' => '@kargah_bot',    'icon' => 'ki-paper-plane',        'connected' => true,  'note' => 'Bot API token'],
-                ['key' => 'linkedin',  'network' => 'LinkedIn',  'handle' => 'in/morpheusadam','icon' => 'ki-abstract-41', 'connected' => true,  'note' => 'OAuth'],
-                ['key' => 'x',         'network' => 'X',         'handle' => '—',              'icon' => 'ki-abstract-39', 'connected' => false, 'note' => 'OAuth 2.0'],
-                ['key' => 'instagram', 'network' => 'Instagram', 'handle' => '—',              'icon' => 'ki-instagram',   'connected' => false, 'note' => 'Graph API'],
-            ],
+            'accounts' => $this->accounts(),
         ];
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public function accounts(): array
+    {
+        return [
+            ['key' => 'telegram',  'network' => 'Telegram',  'handle' => '@kargah_bot',    'icon' => 'ki-paper-plane', 'connected' => true,  'note' => 'Bot API token'],
+            ['key' => 'linkedin',  'network' => 'LinkedIn',  'handle' => 'in/morpheusadam','icon' => 'ki-abstract-41', 'connected' => true,  'note' => 'OAuth'],
+            ['key' => 'x',         'network' => 'X',         'handle' => '—',              'icon' => 'ki-abstract-39', 'connected' => false, 'note' => 'OAuth 2.0'],
+            ['key' => 'instagram', 'network' => 'Instagram', 'handle' => '—',              'icon' => 'ki-instagram',   'connected' => false, 'note' => 'Graph API'],
+        ];
+    }
+
+    public function disconnect(string $key): void
+    {
+        // Revokes the token and cancels every queued post for this network. Backend work.
+
+        $account = collect($this->accounts())->firstWhere('key', $key);
+        $label = $account['network'] ?? $key;
+
+        $this->toastInfo('Disconnecting is not wired up yet', $label.' is still connected.');
     }
 };
 
@@ -51,7 +70,8 @@ class extends Component
                     @if ($a['connected'])
                         <div class="flex flex-col items-end gap-2 shrink-0">
                             <span class="kt-badge kt-badge-sm kt-badge-success">Connected</span>
-                            <button class="kt-btn kt-btn-sm kt-btn-ghost text-destructive">Disconnect</button>
+                            <button wire:click="disconnect('{{ $a['key'] }}')" wire:loading.attr="disabled"
+                                    class="kt-btn kt-btn-sm kt-btn-ghost text-destructive">Disconnect</button>
                         </div>
                     @else
                         <a href="{{ route('social.account-connect') }}?network={{ $a['key'] }}" wire:navigate

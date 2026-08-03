@@ -3,6 +3,7 @@
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Contact import.
@@ -15,6 +16,8 @@ new
 #[Title('Import contacts — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     #[Url]
     public int $step = 1;
 
@@ -86,6 +89,9 @@ class extends Component
         ];
     }
 
+    // Upload · Map · Confirm is drawn at the top of the page and the panel
+    // changes under it, so stepping needs no toast of its own.
+
     public function goToStep(int $step): void
     {
         $this->step = max(1, min(3, $step));
@@ -104,11 +110,13 @@ class extends Component
     public function clearFile(): void
     {
         // Drops the staged upload and returns to step one.
+        $this->toastInfo('Not connected yet', 'The upload is a fixture until file handling lands.');
     }
 
     public function import(): void
     {
         // Queues the import job; suppressed rows never reach the contacts table.
+        $this->toastInfo('Not connected yet', 'CSV import lands with the backend phase.');
     }
 };
 

@@ -3,6 +3,7 @@
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Repository detail.
@@ -15,6 +16,8 @@ new
 #[Title('Repository — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     /** Route parameter — the repository id. */
     public string $repo = '1';
 
@@ -120,12 +123,16 @@ class extends Component
     public function resync(): void
     {
         // Backend: refresh the cached repo, commits, issues and deployments.
+
+        $this->toastInfo('Resync is not available yet', 'Pulling from GitHub needs the backend. Everything on this page is still fixture data.');
     }
 
     /** Attach this repository to a board in the Projects module. */
     public function linkBoard(int $boardId): void
     {
         // Backend: store the repo-to-board association.
+
+        $this->toastInfo('Board was not linked', 'Storing the repository-to-board association needs the backend.');
     }
 };
 

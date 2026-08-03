@@ -2,6 +2,7 @@
 
 use Livewire\Attributes\Title;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Invoice document view.
@@ -15,6 +16,8 @@ new
 #[Title('Invoice — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     public const CURRENCIES = ['USD' => '$', 'GBP' => '£', 'EUR' => '€'];
 
     public string $invoiceId = '1';
@@ -98,21 +101,25 @@ class extends Component
     public function downloadPdf(): void
     {
         // Streams the rendered PDF once the invoice store exists.
+        $this->toastInfo('Not connected yet', 'The PDF download lands with the backend phase.');
     }
 
     public function sendReminder(): void
     {
         // Queues a reminder email through the mail module.
+        $this->toastInfo('Not connected yet', 'Reminders land with the backend phase. Nothing was emailed.');
     }
 
     public function markAsPaid(): void
     {
         // Records the payment and closes the invoice.
+        $this->toastInfo('Not connected yet', 'Recording a payment lands with the backend phase. The invoice is unchanged.');
     }
 
     public function duplicate(): void
     {
         // Copies this invoice into a new draft.
+        $this->toastInfo('Not connected yet', 'Duplicating an invoice lands with the backend phase. No draft was created.');
     }
 
     protected function money(float $amount): string

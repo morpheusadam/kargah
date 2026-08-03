@@ -2,11 +2,17 @@
 
 use Livewire\Attributes\Title;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 new
 #[Title('Contacts — Kargah')]
 class extends Component
 {
+    // Picking a list is a `$set` and the chosen list is highlighted while its
+    // contacts appear, so it stays silent. The trait is here for the actions
+    // the backend phase adds.
+    use InteractsWithToasts;
+
     public string $activeList = 'agencies-uk';
 
     public string $search = '';

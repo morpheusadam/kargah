@@ -2,11 +2,16 @@
 
 use Livewire\Attributes\Title;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 new
 #[Title('Archive — Kargah')]
 class extends Component
 {
+    // No action method here yet: the Restore button carries no wire:click, so
+    // there is nothing to report. The trait is in place for when it does.
+    use InteractsWithToasts;
+
     public string $search = '';
 
     public function with(): array

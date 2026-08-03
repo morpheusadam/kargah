@@ -1,6 +1,7 @@
 <?php
 
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * File preview drawer.
@@ -12,6 +13,8 @@ use Livewire\Component;
 new
 class extends Component
 {
+    use InteractsWithToasts;
+
     /** The selected file, passed down from the browser. */
     public array $file = [];
 
@@ -35,23 +38,33 @@ class extends Component
     public function createLink(): void
     {
         // Backend: sign a temporary URL with the chosen expiry.
+
+        $this->toastInfo('Share link was not created', 'Signing an expiring URL needs the backend. The link shown here is a sample.');
     }
 
     /** Withdraw the active shareable link. */
     public function revokeLink(): void
     {
         // Backend: delete the share token so the URL stops resolving.
+
+        // Say plainly that the link is still live — a false "revoked" here
+        // would leave a shared file reachable while the owner believed it was not.
+        $this->toastInfo('Revoking is not available yet', 'The existing link stays live until the backend can withdraw the token.');
     }
 
     /** Roll the file back to an earlier stored version. */
     public function restoreVersion(int $version): void
     {
         // Backend: copy the stored version over the current one, keeping history.
+
+        $this->toastInfo('Version was not restored', 'Rolling back to version '.$version.' needs the backend. The current file is untouched.');
     }
 
     public function download(): void
     {
         // Backend: stream the file from the private disk.
+
+        $this->toastInfo('Download is not available yet', 'Streaming from the private disk needs the backend.');
     }
 };
 

@@ -3,6 +3,7 @@
 use Livewire\Attributes\On;
 use Livewire\Attributes\Validate;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Card detail drawer.
@@ -20,6 +21,8 @@ use Livewire\Component;
 new
 class extends Component
 {
+    use InteractsWithToasts;
+
     public bool $open = false;
 
     public ?int $cardId = null;
@@ -291,13 +294,21 @@ class extends Component
         $this->newChecklistItem = '';
 
         $this->open = true;
+
+        $this->toastSuccess('Card open', $this->title.' is in the drawer on the right.');
     }
 
     public function close(): void
     {
+        $wasOpen = $this->open;
+
         $this->open = false;
         $this->labelPopoverOpen = false;
         $this->duePopoverOpen = false;
+
+        if ($wasOpen) {
+            $this->toastSuccess('Card closed', 'Nothing you typed was saved.');
+        }
     }
 
     /* Title and description ---------------------------------------------- */
@@ -305,12 +316,20 @@ class extends Component
     public function editTitle(): void
     {
         $this->editingTitle = true;
+
+        $this->toastSuccess('Title editor open', 'Esc puts the old title back.');
     }
 
     public function cancelTitle(): void
     {
+        $wasEditing = $this->editingTitle;
+
         $this->editingTitle = false;
         $this->title = $this->card()['title'] ?? '';
+
+        if ($wasEditing) {
+            $this->toastSuccess('Rename abandoned', 'The card kept its old title.');
+        }
     }
 
     /** Rename the card. */
@@ -320,17 +339,27 @@ class extends Component
 
         // Backend: persist the new title, then close the editor.
         $this->editingTitle = false;
+
+        $this->toastInfo('Not connected yet', 'The new title goes back on the next refresh.');
     }
 
     public function editDescription(): void
     {
         $this->editingDescription = true;
+
+        $this->toastSuccess('Description editor open', 'Markdown is kept as you write it.');
     }
 
     public function cancelDescription(): void
     {
+        $wasEditing = $this->editingDescription;
+
         $this->editingDescription = false;
         $this->description = $this->card()['description'] ?? '';
+
+        if ($wasEditing) {
+            $this->toastSuccess('Edit abandoned', 'The card kept its old description.');
+        }
     }
 
     /** Store the description. */
@@ -338,6 +367,8 @@ class extends Component
     {
         // Backend: persist the description as written, markdown included.
         $this->editingDescription = false;
+
+        $this->toastInfo('Not connected yet', 'The description goes back on the next refresh.');
     }
 
     /* Labels, due date, assignee ----------------------------------------- */
@@ -346,6 +377,10 @@ class extends Component
     {
         $this->labelPopoverOpen = ! $this->labelPopoverOpen;
         $this->duePopoverOpen = false;
+
+        $this->labelPopoverOpen
+            ? $this->toastSuccess('Label picker open', 'Tick the labels this card should carry.')
+            : $this->toastSuccess('Label picker closed');
     }
 
     /** Add or remove a label on this card. */
@@ -356,12 +391,22 @@ class extends Component
             : [...$this->cardLabels, $key];
 
         // Backend: persist the card's labels.
+        $name = $this->labels()[$key]['name'] ?? $key;
+
+        $this->toastSuccess(
+            in_array($key, $this->cardLabels, true) ? $name.' put on the card' : $name.' taken off the card',
+            'On screen only — labels are stored with the backend phase.',
+        );
     }
 
     public function toggleDuePopover(): void
     {
         $this->duePopoverOpen = ! $this->duePopoverOpen;
         $this->labelPopoverOpen = false;
+
+        $this->duePopoverOpen
+            ? $this->toastSuccess('Due date picker open', 'Pick a date, or remove the one already set.')
+            : $this->toastSuccess('Due date picker closed');
     }
 
     /** Set the due date. */
@@ -369,6 +414,8 @@ class extends Component
     {
         // Backend: persist the due date and schedule the reminder.
         $this->duePopoverOpen = false;
+
+        $this->toastInfo('Not connected yet', 'Due dates and their reminders land with the backend phase.');
     }
 
     public function clearDueDate(): void
@@ -377,36 +424,48 @@ class extends Component
 
         // Backend: clear the due date and cancel the reminder.
         $this->duePopoverOpen = false;
+
+        $this->toastSuccess('Due date removed', 'On screen only — it returns on the next refresh.');
     }
 
     /** Fired when the assignee select changes; empty means unassigned. */
     public function updatedAssignee(string $memberKey): void
     {
         // Backend: persist the assignment and notify the member.
+        $this->toastInfo('Not connected yet', 'Nobody is notified until the backend phase lands.');
     }
 
     /* Checklist ----------------------------------------------------------- */
 
     public function toggleChecklistItem(int $itemId): void
     {
+        $done = false;
+
         foreach ($this->checklist as $index => $item) {
             if ($item['id'] === $itemId) {
                 $this->checklist[$index]['done'] = ! $item['done'];
+                $done = $this->checklist[$index]['done'];
             }
         }
 
         // Backend: persist the tick.
+        $this->toastSuccess(
+            $done ? 'Item ticked' : 'Item unticked',
+            'On screen only — ticks are stored with the backend phase.',
+        );
     }
 
     /** Append an item to the checklist. */
     public function addChecklistItem(): void
     {
         // Backend: persist the item, then clear $newChecklistItem.
+        $this->toastInfo('Not connected yet', 'Checklist items land with the backend phase.');
     }
 
     public function deleteChecklistItem(int $itemId): void
     {
         // Backend: delete the item.
+        $this->toastInfo('Not connected yet', 'Checklist items land with the backend phase.');
     }
 
     /* Attachments and comments -------------------------------------------- */
@@ -414,12 +473,14 @@ class extends Component
     public function removeAttachment(string $name): void
     {
         // Backend: delete the file from the disk and the row from the card.
+        $this->toastInfo('Not connected yet', $name.' stays on the card until the backend phase lands.');
     }
 
     /** Post a comment on the card. */
     public function addComment(): void
     {
         // Backend: persist the comment, then clear $newComment.
+        $this->toastInfo('Not connected yet', 'Comments are posted once the backend phase lands.');
     }
 
     /* Right rail actions --------------------------------------------------- */
@@ -427,21 +488,25 @@ class extends Component
     public function moveCard(): void
     {
         // Backend: move the card to another list or board.
+        $this->toastInfo('Not connected yet', 'Moving a card from here lands with the backend phase.');
     }
 
     public function copyCard(): void
     {
         // Backend: duplicate the card, its labels and its checklist.
+        $this->toastInfo('Not connected yet', 'Copying a card lands with the backend phase.');
     }
 
     public function archiveCard(): void
     {
         // Backend: archive the card so it leaves the board but stays readable.
+        $this->toastInfo('Not connected yet', 'Archiving a card lands with the backend phase.');
     }
 
     public function deleteCard(): void
     {
         // Backend: delete the card and everything attached to it.
+        $this->toastInfo('Not connected yet', 'Deleting a card lands with the backend phase.');
     }
 };
 
@@ -823,9 +888,12 @@ class extends Component
             </div>
         @endif
     </aside>
-</div>
-
-@push('scripts')
+{{--
+    Kept inside the component's root element on purpose. Livewire renders one
+    root node and discards everything after it, so a @push below the closing tag
+    never reaches the page.
+--}}
+@script
 <script>
     (function initMarkdownToolbar() {
         if (window.kargahMarkdownToolbar) return;
@@ -871,4 +939,5 @@ class extends Component
         });
     })();
 </script>
-@endpush
+@endscript
+</div>

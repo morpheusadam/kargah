@@ -2,6 +2,7 @@
 
 use Livewire\Attributes\Title;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Backup detail and restore.
@@ -13,6 +14,8 @@ new
 #[Title('Backup — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     /** Route parameter — the backup id. */
     public string $backup = '1';
 
@@ -101,18 +104,29 @@ class extends Component
     public function download(): void
     {
         // Backend: stream the archive from the private disk with a signed response.
+
+        $this->toastInfo('Download is not available yet', 'Streaming the archive needs the backend.');
     }
 
     /** Re-hash the archive and compare it to the stored checksum. */
     public function verifyChecksum(): void
     {
         // Backend: hash_file the archive and flag a mismatch.
+
+        // Never "checksum verified" — nothing was hashed, so the archive is
+        // neither proven intact nor proven damaged.
+        $this->toastInfo('Checksum was not verified', 'Re-hashing the archive needs the backend. The stored value is unchecked.');
     }
 
     /** Unpack the archive over the live install. */
     public function restore(): void
     {
         // Backend: put the app in maintenance mode, unpack, migrate, then release.
+
+        $this->toastInfo(
+            'Restore is not available yet',
+            'Nothing was overwritten. A real restore replaces the database, the stored files and the vault with the contents of this archive.'
+        );
     }
 };
 

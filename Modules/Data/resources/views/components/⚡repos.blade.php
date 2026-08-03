@@ -2,6 +2,7 @@
 
 use Livewire\Attributes\Title;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * GitHub repositories.
@@ -13,6 +14,11 @@ new
 #[Title('GitHub Repos — Kargah')]
 class extends Component
 {
+    // Held ready. "Connect GitHub" / "Resync" is a plain button with no
+    // wire:click, so this page has no action to report on yet — the sync toast
+    // lives on the repository detail page, which does have one.
+    use InteractsWithToasts;
+
     public string $search = '';
 
     public string $sort = 'pushed';

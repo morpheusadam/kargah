@@ -3,6 +3,7 @@
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Validate;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Credential editor.
@@ -15,6 +16,8 @@ new
 #[Title('New credential — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     #[Validate('required|string|max:120')]
     public string $name = '';
 
@@ -90,11 +93,21 @@ class extends Component
     public function toggleSecret(): void
     {
         $this->secretRevealed = ! $this->secretRevealed;
+
+        // Only the reveal is worth saying out loud — that is the state with a
+        // cost. Re-masking is silent because the field shows it immediately.
+        if ($this->secretRevealed) {
+            $this->toastSuccess('Secret is now readable on screen', 'Hide it again when you have finished checking it.');
+        }
     }
 
     public function toggleTotp(): void
     {
         $this->totpRevealed = ! $this->totpRevealed;
+
+        if ($this->totpRevealed) {
+            $this->toastSuccess('TOTP seed is now readable on screen', 'Anyone who can see this seed can generate your codes.');
+        }
     }
 
     /** Build a random secret from the generator settings. */
@@ -124,12 +137,20 @@ class extends Component
 
         $this->secret = $out;
         $this->secretRevealed = true;
+
+        // Length only — the generated value never goes into a toast.
+        $this->toastSuccess(
+            'Secret generated',
+            mb_strlen($this->secret).' characters, visible in the field. Nothing is stored until you save.'
+        );
     }
 
     /** Encrypt the secret with the app key and store the entry. */
     public function save(): void
     {
         // Backend: validate, Crypt::encryptString the secret and TOTP, then persist.
+
+        $this->toastInfo('Saving is not wired up yet', 'Encrypting and storing this credential needs the backend, so nothing was kept.');
     }
 };
 

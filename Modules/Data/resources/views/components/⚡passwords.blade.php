@@ -2,6 +2,7 @@
 
 use Livewire\Attributes\Title;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Credential vault.
@@ -13,6 +14,8 @@ new
 #[Title('Passwords — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     public string $search = '';
 
     public ?int $revealed = null;
@@ -31,6 +34,17 @@ class extends Component
     public function reveal(int $id): void
     {
         $this->revealed = $this->revealed === $id ? null : $id;
+
+        // The cell swaps a mask for a placeholder — nothing is decrypted and no
+        // access is recorded yet. Saying "revealed and logged" here would be a
+        // claim about something that has not happened. Re-masking stays silent:
+        // the row shows it.
+        if ($this->revealed === $id) {
+            $this->toastInfo(
+                'Reveal is not available yet',
+                'Decrypting an entry and recording who read it both need the backend.'
+            );
+        }
     }
 };
 

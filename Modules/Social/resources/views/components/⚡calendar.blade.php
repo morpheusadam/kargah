@@ -4,6 +4,7 @@ use Illuminate\Support\Carbon;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Publishing calendar.
@@ -15,6 +16,8 @@ new
 #[Title('Calendar — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     #[Url]
     public string $network = 'all';
 
@@ -82,6 +85,8 @@ class extends Component
     public function reschedule(int $post, string $at): void
     {
         // Moving an entry on the calendar rewrites the queued job. Backend work.
+
+        $this->toastInfo('Rescheduling is not wired up yet', 'The post is still queued for its original time.');
     }
 };
 
@@ -211,9 +216,12 @@ class extends Component
         </div>
 
     </div>
-</div>
-
-@push('scripts')
+{{--
+    Kept inside the component's root element on purpose. Livewire renders one
+    root node and discards everything after it, so a @push below the closing tag
+    never reaches the page.
+--}}
+@script
 <script src="/assets/vendors/fullcalendar/index.global.min.js"></script>
 <script>
 (function () {
@@ -271,4 +279,5 @@ class extends Component
     mount();
 })();
 </script>
-@endpush
+@endscript
+</div>

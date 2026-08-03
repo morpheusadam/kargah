@@ -3,6 +3,7 @@
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Validate;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Expense editor.
@@ -16,6 +17,8 @@ new
 #[Title('Record expense — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     public const CURRENCIES = [
         'USD' => ['symbol' => '$', 'label' => 'USD — US dollar'],
         'GBP' => ['symbol' => '£', 'label' => 'GBP — Pound sterling'],
@@ -76,6 +79,7 @@ class extends Component
         $this->validate();
 
         // Persistence lands in the backend phase.
+        $this->toastInfo('Not connected yet', 'Saving an expense lands with the backend phase. ' . $this->money((float) $this->amount) . ' was not recorded.');
     }
 
     public function saveAndAddAnother(): void
@@ -83,12 +87,15 @@ class extends Component
         $this->validate();
 
         // Persistence lands in the backend phase; the form then resets to blank.
+        $this->toastInfo('Not connected yet', 'Saving an expense lands with the backend phase. ' . $this->money((float) $this->amount) . ' was not recorded.');
     }
 
     public function useSuggestion(string $vendor, string $category): void
     {
         $this->vendor = $vendor;
         $this->category = $category;
+
+        $this->toastSuccess('Suggestion applied', 'Vendor set to ' . $vendor . ', category ' . $category . '.');
     }
 
     protected function symbol(): string

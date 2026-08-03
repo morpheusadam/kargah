@@ -3,6 +3,7 @@
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Validate;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Link editor.
@@ -15,6 +16,8 @@ new
 #[Title('New link — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     #[Validate('required|string|max:120')]
     public string $title = '';
 
@@ -60,17 +63,33 @@ class extends Component
     public function addTag(): void
     {
         $tag = trim(mb_strtolower($this->tagInput));
+        $duplicate = in_array($tag, $this->tags, true);
+        $full = count($this->tags) >= 8;
 
-        if ($tag !== '' && ! in_array($tag, $this->tags, true) && count($this->tags) < 8) {
+        if ($tag !== '' && ! $duplicate && ! $full) {
             $this->tags[] = $tag;
         }
 
         $this->tagInput = '';
+
+        // A chip that lands appears right under the field, so a success toast
+        // would be noise. The two ways this silently does nothing are not.
+        if ($tag === '') {
+            return;
+        }
+
+        if ($duplicate) {
+            $this->toastWarning('Tag already on this link', $tag);
+        } elseif ($full) {
+            $this->toastWarning('Tag not added', 'A link carries at most eight tags.');
+        }
     }
 
     public function addSuggested(string $tag): void
     {
         $this->tagInput = $tag;
+
+        // addTag() reports the outcome; a second toast here would double up.
         $this->addTag();
     }
 
@@ -78,22 +97,33 @@ class extends Component
     {
         unset($this->tags[$index]);
         $this->tags = array_values($this->tags);
+
+        // The chip disappears as you click it — that is the confirmation.
     }
 
     public function toggleToken(): void
     {
         $this->tokenRevealed = ! $this->tokenRevealed;
+
+        // Worth flagging in one direction only: re-masking is visible in the field.
+        if ($this->tokenRevealed) {
+            $this->toastSuccess('Bot token is now readable on screen', 'A token grants full control of the bot. Hide it when you are done.');
+        }
     }
 
     /** Call getMe on the Telegram API to confirm the token works. */
     public function testBot(): void
     {
         // Backend: GET https://api.telegram.org/bot<token>/getMe and report the result.
+
+        $this->toastInfo('Bot test is not available yet', 'Calling getMe needs the backend, so the token is still unchecked.');
     }
 
     public function save(): void
     {
         // Backend: validate, encrypt the bot token, persist the link and its tags.
+
+        $this->toastInfo('Saving is not wired up yet', 'Storing the link and encrypting the bot token both need the backend.');
     }
 };
 

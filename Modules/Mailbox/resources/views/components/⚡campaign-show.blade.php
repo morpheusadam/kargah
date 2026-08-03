@@ -3,6 +3,7 @@
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Campaign report.
@@ -16,6 +17,8 @@ new
 #[Title('Campaign report — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     public string $campaign = '1';
 
     #[Url]
@@ -96,11 +99,13 @@ class extends Component
     public function exportCsv(): void
     {
         // Streams the recipient table with its per-recipient events.
+        $this->toastInfo('Not connected yet', 'The export needs the stored recipient events.');
     }
 
     public function resendToUnopened(): void
     {
         // Clones the campaign with the non-openers as its audience.
+        $this->toastInfo('Not connected yet', 'Re-sending to non-openers lands with the backend phase.');
     }
 };
 

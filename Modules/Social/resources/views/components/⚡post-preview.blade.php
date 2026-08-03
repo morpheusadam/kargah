@@ -2,6 +2,7 @@
 
 use Livewire\Attributes\Reactive;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * One network's rendering of the draft.
@@ -13,6 +14,8 @@ use Livewire\Component;
  */
 new class extends Component
 {
+    use InteractsWithToasts;
+
     #[Reactive]
     public array $network = [];
 

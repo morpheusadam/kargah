@@ -3,6 +3,7 @@
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Unified social notifications.
@@ -14,6 +15,8 @@ new
 #[Title('Notifications — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     #[Url]
     public string $network = 'all';
 
@@ -34,6 +37,13 @@ class extends Component
             ],
         ];
     }
+
+    public function markAllRead(): void
+    {
+        // Clears the unread flag on every notification. Backend work.
+
+        $this->toastInfo('Marking as read is not wired up yet', 'The unread notifications are unchanged.');
+    }
 };
 
 ?>
@@ -45,7 +55,7 @@ class extends Component
             <h1 class="text-xl font-semibold text-mono">Notifications</h1>
             <p class="text-sm text-secondary-foreground mt-1">Every network in one feed.</p>
         </div>
-        <button class="kt-btn kt-btn-outline gap-2">
+        <button wire:click="markAllRead" wire:loading.attr="disabled" class="kt-btn kt-btn-outline gap-2">
             <i class="ki-filled ki-check-circle"></i> Mark all read
         </button>
     </div>

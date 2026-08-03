@@ -3,6 +3,7 @@
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Unified inbox.
@@ -19,6 +20,8 @@ new
 #[Title('Inbox — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     #[Url]
     public string $folder = 'inbox';
 
@@ -183,6 +186,10 @@ class extends Component
 
     // ----------------------------------------------------------------- actions
 
+    // Row-level interactions stay silent: the list, the reading pane and the
+    // checkboxes already show their own result, and a toast per click would
+    // bury the ones that carry information.
+
     public function select(int $id): void
     {
         $this->selected = $id;
@@ -209,11 +216,22 @@ class extends Component
     {
         $all = collect($this->threads())->pluck('id')->all();
         $this->checked = count($this->checked) === count($all) ? [] : $all;
+
+        // One click that changes every row is worth naming — the header
+        // checkbox alone does not say how many it just took.
+        $this->checked === []
+            ? $this->toastSuccess('Selection cleared')
+            : $this->toastSuccess(count($this->checked).' conversations selected');
     }
 
     public function clearChecked(): void
     {
+        $had = $this->checked !== [];
         $this->checked = [];
+
+        if ($had) {
+            $this->toastSuccess('Selection cleared');
+        }
     }
 
     /** Open the composer. Prefills the recipient from the message being answered. */
@@ -222,35 +240,71 @@ class extends Component
         $thread = collect($this->threads())->firstWhere('id', $this->selected);
 
         if (! $thread) {
+            // Silent failure is worse than none: say why nothing opened.
+            $this->toastError('No conversation open', 'Pick one from the list before replying.');
+
             return;
         }
 
         $this->replyMode = $mode;
         $this->replyTo = $mode === 'forward' ? '' : $thread['email'];
         $this->replyBody = '';
+
+        // The composer names its own mode in the header, so opening it needs
+        // no confirmation.
     }
 
     public function cancelReply(): void
     {
+        $wasOpen = $this->replyMode !== null;
+
         $this->replyMode = null;
         $this->replyTo = '';
         $this->replyBody = '';
+
+        // Also called by select(), where nothing was open and nothing was lost.
+        if ($wasOpen) {
+            $this->toastSuccess('Draft discarded', 'Nothing was sent.');
+        }
     }
 
     // Everything below is queued by the backend phase; the signatures are final.
-    public function send(): void {}
+    // Each one reports honestly that it did nothing rather than claiming it did.
 
-    public function toggleStar(int $id): void {}
+    public function send(): void
+    {
+        $this->toastInfo('Not connected yet', 'Sending arrives with the backend phase.');
+    }
 
-    public function archive(): void {}
+    public function toggleStar(int $id): void
+    {
+        $this->toastInfo('Not connected yet', 'Starring needs the local mail store.');
+    }
 
-    public function delete(): void {}
+    public function archive(): void
+    {
+        $this->toastInfo('Not connected yet', 'Archiving needs the local mail store.');
+    }
 
-    public function markUnread(): void {}
+    public function delete(): void
+    {
+        $this->toastInfo('Not connected yet', 'Deleting needs the local mail store.');
+    }
 
-    public function convertToTask(): void {}
+    public function markUnread(): void
+    {
+        $this->toastInfo('Not connected yet', 'Read state needs the local mail store.');
+    }
 
-    public function sync(): void {}
+    public function convertToTask(): void
+    {
+        $this->toastInfo('Not connected yet', 'Creating a task from mail lands with the backend phase.');
+    }
+
+    public function sync(): void
+    {
+        $this->toastInfo('Not connected yet', 'IMAP sync lands with the backend phase.');
+    }
 };
 
 ?>

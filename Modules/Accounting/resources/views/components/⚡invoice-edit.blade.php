@@ -3,6 +3,7 @@
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Validate;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Invoice builder.
@@ -17,6 +18,8 @@ new
 #[Title('Invoice builder — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     /** Currency codes this workspace can invoice in. */
     public const CURRENCIES = [
         'USD' => ['symbol' => '$', 'label' => 'USD — US dollar'],
@@ -99,17 +102,23 @@ class extends Component
     public function addItem(): void
     {
         $this->items[] = ['description' => '', 'qty' => '1', 'price' => '0.00'];
+
+        $this->toastSuccess('Line added', 'The invoice now has ' . count($this->items) . ' lines.');
     }
 
     public function removeItem(int $index): void
     {
         if (count($this->items) <= 1) {
+            $this->toastError('Line kept', 'An invoice needs at least one line.');
+
             return;
         }
 
         unset($this->items[$index]);
 
         $this->items = array_values($this->items);
+
+        $this->toastSuccess('Line removed', 'Total is now ' . $this->money($this->total()) . '.');
     }
 
     public function moveItem(int $index, int $direction): void
@@ -117,10 +126,14 @@ class extends Component
         $target = $index + $direction;
 
         if ($target < 0 || $target >= count($this->items)) {
+            $this->toastError('Line not moved', 'That line is already at the ' . ($direction < 0 ? 'top' : 'bottom') . '.');
+
             return;
         }
 
         [$this->items[$index], $this->items[$target]] = [$this->items[$target], $this->items[$index]];
+
+        $this->toastSuccess('Line moved', 'Now at position ' . ($target + 1) . ' of ' . count($this->items) . '.');
     }
 
     /* ---- Actions the backend will implement. Signatures are final. ---- */
@@ -130,11 +143,13 @@ class extends Component
         $this->validate();
 
         // Persistence lands in the backend phase.
+        $this->toastInfo('Not connected yet', 'Saving a draft lands with the backend phase. Nothing was stored.');
     }
 
     public function preview(): void
     {
         // Renders the document view once invoices are stored.
+        $this->toastInfo('Not connected yet', 'The preview opens once invoices are stored.');
     }
 
     public function send(): void
@@ -142,6 +157,7 @@ class extends Component
         $this->validate();
 
         // Queues the invoice email once the mail transport is wired.
+        $this->toastInfo('Not connected yet', 'Sending an invoice lands with the backend phase. Nothing was emailed.');
     }
 
     /* ---- Money. Every figure on this page goes through money(). ---- */

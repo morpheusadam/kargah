@@ -3,6 +3,7 @@
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Queue and history.
@@ -14,6 +15,8 @@ new
 #[Title('Posts — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     #[Url]
     public string $tab = 'queued';
 
@@ -163,11 +166,17 @@ class extends Component
     public function retry(int $post, ?string $network = null): void
     {
         // Re-queues the delivery job for one network, or all failed ones. Backend work.
+
+        $this->toastInfo('Retry is not wired up yet', $network === null
+            ? 'Nothing was re-queued for this post.'
+            : 'Nothing was re-queued for '.($this->networks()[$network]['label'] ?? $network).'.');
     }
 
     public function cancel(int $post): void
     {
         // Removes the queued job before it fires. Backend work.
+
+        $this->toastInfo('Cancelling is not wired up yet', 'The post is still in the queue.');
     }
 };
 

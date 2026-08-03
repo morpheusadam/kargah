@@ -4,6 +4,7 @@ use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Attributes\Validate;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Connect a network.
@@ -16,6 +17,8 @@ new
 #[Title('Connect an account — Kargah')]
 class extends Component
 {
+    use InteractsWithToasts;
+
     #[Url]
     public string $network = '';
 
@@ -131,11 +134,17 @@ class extends Component
         $this->validate();
 
         // Sends a "Kargah is connected" message through the Bot API. Backend work.
+
+        $this->toastInfo('No test message was sent', 'The Bot API call arrives with the backend.');
     }
 
     public function authorise(string $network): void
     {
         // Redirects to the provider's consent screen and stores the token on return.
+
+        $label = $this->catalogue()[$network]['label'] ?? $network;
+
+        $this->toastInfo('Authorising is not wired up yet', $label.' was not opened and nothing was stored.');
     }
 
     public function save(): void
@@ -143,6 +152,8 @@ class extends Component
         $this->validate();
 
         // Persists the credential, encrypted. Backend work.
+
+        $this->toastInfo('Nothing was saved', 'Storing credentials arrives with the backend.');
     }
 };
 

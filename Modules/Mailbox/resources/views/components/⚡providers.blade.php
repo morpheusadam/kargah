@@ -2,6 +2,7 @@
 
 use Livewire\Attributes\Title;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Delivery providers.
@@ -14,6 +15,11 @@ new
 #[Title('Providers — Kargah')]
 class extends Component
 {
+    // Read-only overview — every control on it is a link through to
+    // provider-edit, so there is nothing to confirm here. The trait is in
+    // place for the actions the backend phase adds.
+    use InteractsWithToasts;
+
     public function with(): array
     {
         return [

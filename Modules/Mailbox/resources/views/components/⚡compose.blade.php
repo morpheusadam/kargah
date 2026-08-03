@@ -3,6 +3,7 @@
 use Livewire\Attributes\On;
 use Livewire\Attributes\Validate;
 use Livewire\Component;
+use Modules\Core\Concerns\InteractsWithToasts;
 
 /**
  * Compose window.
@@ -18,6 +19,8 @@ use Livewire\Component;
 new
 class extends Component
 {
+    use InteractsWithToasts;
+
     public bool $open = false;
 
     public string $from = 'nima@kargah.dev';
@@ -81,6 +84,9 @@ class extends Component
         $this->open = true;
     }
 
+    // Opening and closing the window are their own confirmation — the modal
+    // appears or it does not — so neither says anything.
+
     public function close(): void
     {
         $this->open = false;
@@ -91,36 +97,46 @@ class extends Component
     public function addRecipient(string $field): void
     {
         // Parsing and validation land here in the backend phase.
+        $this->toastInfo('Not connected yet', 'Recipient parsing lands with the backend phase.');
     }
 
     public function removeRecipient(string $field, int $index): void
     {
         // Removal is a list splice once recipients are persisted.
+        $this->toastInfo('Not connected yet', 'Recipients cannot be edited until they are persisted.');
     }
 
     public function removeAttachment(string $name): void
     {
         // Detaches the upload from the draft.
+        $this->toastInfo('Not connected yet', 'Attachments arrive with the backend phase.');
     }
 
     public function send(): void
     {
         // Queues the message on the transactional stream.
+        $this->toastInfo('Not connected yet', 'The transactional stream lands with the backend phase.');
     }
 
     public function schedule(): void
     {
         // Stores the draft with a send_at timestamp for the scheduler.
+        $this->toastInfo('Not connected yet', 'Scheduling needs the send queue.');
     }
 
     public function saveDraft(): void
     {
         // Writes the draft to the local mail store and syncs it to IMAP Drafts.
+        $this->toastInfo('Not connected yet', 'Drafts are kept in memory until the mail store exists.');
     }
 
     public function discard(): void
     {
         $this->close();
+
+        // The one action here that really does something: the window is gone
+        // and what was typed went with it.
+        $this->toastSuccess('Draft discarded', 'Nothing was sent.');
     }
 };
 
