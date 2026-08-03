@@ -274,3 +274,29 @@
 @media (prefers-reduced-motion: reduce) {
     .kargah-mark-glow { animation: none; }
 }
+
+/*
+ * Autofill.
+ *
+ * Chrome paints its own background on a filled field with a specificity no
+ * ordinary rule can beat — that pale block behind a remembered email is the
+ * browser, not this stylesheet. There is no property to switch it off, so the
+ * two working moves are: cover it with an inset shadow the size of the field,
+ * and push the background transition so far out it never actually runs.
+ */
+.kargah-field input:-webkit-autofill,
+.kargah-field input:-webkit-autofill:hover,
+.kargah-field input:-webkit-autofill:focus,
+.kargah-field input:-webkit-autofill:active {
+    -webkit-text-fill-color: var(--foreground);
+    -webkit-background-clip: text;
+    box-shadow: 0 0 0 1000px transparent inset;
+    transition: background-color 100000s ease-in-out 0s;
+    caret-color: var(--foreground);
+}
+
+/* Firefox has its own, milder version of the same idea. */
+.kargah-field input:autofill {
+    background: transparent;
+    color: var(--foreground);
+}

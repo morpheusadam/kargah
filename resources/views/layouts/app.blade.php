@@ -30,20 +30,28 @@
         var stored = localStorage.getItem('kargah.theme');
         var mode = (stored === 'light' || stored === 'dark') ? stored : 'dark';
 
-        document.documentElement.classList.remove('light', 'dark');
-        document.documentElement.classList.add(mode);
+        var apply = function (next) {
+            document.documentElement.classList.remove('light', 'dark');
+            document.documentElement.classList.add(next);
+
+            try {
+                localStorage.setItem('kargah.theme', next);
+                // KTUI's theme module reads its own key and, in _bindMode, strips
+                // both classes off <html> before applying whatever it finds there.
+                // Keeping the two in step is what stops it undoing this on load.
+                localStorage.setItem('kt-theme', next);
+            } catch (e) { /* private mode */ }
+        };
+
+        apply(mode);
 
         window.kargahTheme = {
             current: function () {
                 return document.documentElement.classList.contains('dark') ? 'dark' : 'light';
             },
-            set: function (next) {
-                document.documentElement.classList.remove('light', 'dark');
-                document.documentElement.classList.add(next);
-                try { localStorage.setItem('kargah.theme', next); } catch (e) { /* private mode */ }
-            },
+            set: apply,
             toggle: function () {
-                this.set(this.current() === 'dark' ? 'light' : 'dark');
+                apply(this.current() === 'dark' ? 'light' : 'dark');
             }
         };
     })();

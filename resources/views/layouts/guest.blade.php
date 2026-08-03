@@ -1,5 +1,7 @@
 <!DOCTYPE html>
-<html class="h-full" data-kt-theme="true" data-kt-theme-mode="dark" dir="ltr" lang="{{ str_replace('_', '-', app()->getLocale()) }}">
+{{-- `dark` is on the element itself, not added by a script. There is no moment
+     in the page's life when this screen is light. --}}
+<html class="h-full dark" data-kt-theme="true" data-kt-theme-mode="dark" dir="ltr" lang="{{ str_replace('_', '-', app()->getLocale()) }}">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
@@ -24,22 +26,44 @@
 
 {{--
     The signed-out screens are dark, full stop — the design is built around the
-    glow and there is no light variant of it. A stored preference from inside the
-    app must not leak out here, so this ignores localStorage rather than reading
-    it. Applied before first paint, so there is no flash.
+    glow and there is no light variant of it. `dark` is on <html> server-side and
+    nothing on this page loads that could take it off again: see the note by the
+    scripts at the bottom.
 --}}
-<script>
-    document.documentElement.classList.remove('light');
-    document.documentElement.classList.add('dark');
-</script>
 
 {{-- The guest shell is deliberately bare: each guest page owns its own staging. --}}
 {{ $slot }}
 
 @include('partials.toasts')
 
-<script src="/assets/js/core.bundle.js"></script>
-<script src="/assets/vendors/ktui/ktui.min.js"></script>
+{{--
+    The theme bundle is deliberately not loaded here.
+
+    KTUI's theme module reads its own `kt-theme` key and, in _bindMode, strips
+    both `dark` and `light` off <html> before applying whatever it found. A stale
+    'light' in that key was what made this page load dark and then snap to light.
+
+    The only vendor behaviour this screen used was the password reveal, which is
+    a dozen lines. Dropping the two bundles removes the fight, and takes about
+    1.1 MB off a page that needs none of it.
+--}}
+<script>
+    (function () {
+        document.addEventListener('click', function (e) {
+            var trigger = e.target.closest('[data-kt-toggle-password-trigger]');
+            if (!trigger) return;
+
+            var field = trigger.closest('[data-kt-toggle-password]');
+            var input = field && field.querySelector('input');
+            if (!input) return;
+
+            var revealed = input.type === 'text';
+            input.type = revealed ? 'password' : 'text';
+            field.classList.toggle('toggle-password-active', !revealed);
+            trigger.setAttribute('aria-label', revealed ? 'Show password' : 'Hide password');
+        });
+    })();
+</script>
 
 @livewireScripts
 @stack('scripts')
