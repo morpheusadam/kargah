@@ -32,6 +32,7 @@ Route::middleware('auth')->prefix('accounting')->name('accounting.')->group(func
 
     Route::livewire('/expenses', 'accounting::expenses')->name('expenses');
     Route::livewire('/expenses/create', 'accounting::expense-edit')->name('expense-create');
+    Route::livewire('/expenses/{expense}/edit', 'accounting::expense-edit')->name('expense-edit');
 
     Route::livewire('/clients', 'accounting::clients')->name('clients');
     Route::livewire('/clients/{client}', 'accounting::client-show')->name('client-show');

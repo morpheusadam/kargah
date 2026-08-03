@@ -1,21 +1,33 @@
 <?php
 
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
+use Illuminate\Validation\Rule;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
-use Livewire\Attributes\Validate;
 use Livewire\Component;
+use Modules\Accounting\Console\GenerateRecurringInvoices;
+use Modules\Accounting\Models\RecurringInvoice;
+use Modules\Accounting\Support\Currencies;
 use Modules\Core\Concerns\InteractsWithToasts;
+use Modules\Core\Models\Company;
+use Modules\Core\Models\Customer;
 
 /**
- * Recurring invoice schedules.
+ * Recurring schedules, reading from and writing to `recurring_invoices`.
  *
- * A schedule is a template plus a cadence; the run itself is a queued job the
- * backend owns. Everything on this page is about the template — which client, how
- * much, how often, and whether the schedule is armed. Pausing is deliberately a
- * switch rather than a delete, because a paused retainer usually comes back.
+ * A schedule is a template plus a cadence. It raises **drafts** and never
+ * issues: issuing freezes an exchange rate onto an invoice and that is a
+ * decision a person makes with the document in front of them, not one a cron
+ * job makes at half past nine.
  *
- * The schedules array is seeded in mount() rather than with(), so toggling a switch
- * survives the round trip. That is component state, not persistence.
+ * "Raise now" runs exactly the same code as the scheduled job, deliberately.
+ * It claims the same occurrence by the same key, so an impatient second click
+ * is as harmless as a second cron run — the invoice number is derived from the
+ * schedule and the occurrence date, and there is only one of those.
+ *
+ * Pausing is a flag rather than a delete, because a paused retainer usually
+ * comes back and the drafts it has already raised have to keep making sense.
  */
 new
 #[Title('Recurring invoices — Kargah')]
@@ -23,176 +35,429 @@ class extends Component
 {
     use InteractsWithToasts;
 
-    public const CURRENCIES = ['USD' => '$', 'GBP' => '£', 'EUR' => '€'];
+    public const TABS = ['all' => 'All', 'active' => 'Active', 'paused' => 'Paused'];
 
     #[Url]
     public string $filter = 'all';
 
-    /** @var array<int, array<string, mixed>> */
-    public array $schedules = [];
+    public bool $formOpen = false;
 
-    public bool $showForm = false;
+    /** Null while creating, the schedule key while editing. */
+    public ?int $editingId = null;
 
-    #[Validate('required|string')]
-    public string $formClient = 'northwind';
+    public ?string $formCustomerId = null;
 
-    #[Validate('required|string|max:120')]
+    public ?string $formCompanyId = null;
+
     public string $formTitle = '';
 
-    #[Validate('required|numeric|min:0')]
-    public string $formAmount = '0.00';
+    public string $formCurrency = Currencies::USD;
 
-    #[Validate('required|string|size:3')]
-    public string $formCurrency = 'USD';
+    /** A percentage as a decimal string: '20' is twenty per cent. */
+    public string $formTaxPercent = '0';
 
-    #[Validate('required|string')]
     public string $formCadence = 'monthly';
 
-    #[Validate('required|date')]
-    public string $formStartsOn = '2026-09-01';
+    public string $formNextRunOn = '';
 
-    #[Validate('required|string')]
-    public string $formEnds = 'never';
+    /** Blank keeps whatever day the schedule starts on. */
+    public string $formDayOfMonth = '';
 
-    public bool $formAutoSend = true;
+    /** @var array<int, array{description: string, quantity: string, unit_price: string}> */
+    public array $formLines = [];
+
+    public string $formNotes = '';
+
+    public string $formTerms = '';
+
+    public bool $formActive = true;
+
+    private ?Collection $resolvedSchedules = null;
 
     public function mount(): void
     {
-        $this->schedules = [
-            ['id' => 1, 'client' => 'Northwind Ltd',   'title' => 'Retainer — product design',      'amount' => 2400.00, 'currency' => 'USD', 'cadence' => 'monthly',   'nextRun' => '01 Sep 2026', 'issued' => 11, 'active' => true],
-            ['id' => 2, 'client' => 'Acme Studio',     'title' => 'Hosting and maintenance',        'amount' => 320.00,  'currency' => 'USD', 'cadence' => 'monthly',   'nextRun' => '05 Sep 2026', 'issued' => 7,  'active' => true],
-            ['id' => 3, 'client' => 'Bluepeak',        'title' => 'Quarterly support block',        'amount' => 1750.00, 'currency' => 'EUR', 'cadence' => 'quarterly', 'nextRun' => '01 Oct 2026', 'issued' => 3,  'active' => true],
-            ['id' => 4, 'client' => 'Harbour & Finch', 'title' => 'Weekly content sprint',          'amount' => 480.00,  'currency' => 'GBP', 'cadence' => 'weekly',    'nextRun' => '—',          'issued' => 22, 'active' => false],
-            ['id' => 5, 'client' => 'Meridian Design', 'title' => 'Annual licence and handover',    'amount' => 4200.00, 'currency' => 'USD', 'cadence' => 'yearly',    'nextRun' => '14 Jan 2027', 'issued' => 1,  'active' => true],
+        $this->resetForm();
+    }
+
+    /* Reading the schedules --------------------------------------------------- */
+
+    private function schedules(): Collection
+    {
+        return $this->resolvedSchedules ??= RecurringInvoice::query()
+            ->with(['customer', 'company'])
+            ->when($this->filter === 'active', fn ($query) => $query->active())
+            ->when($this->filter === 'paused', fn ($query) => $query->paused())
+            ->orderByDesc('is_active')
+            ->orderBy('next_run_on')
+            ->get();
+    }
+
+    private function counts(): array
+    {
+        return [
+            'all' => RecurringInvoice::query()->count(),
+            'active' => RecurringInvoice::query()->active()->count(),
+            'paused' => RecurringInvoice::query()->paused()->count(),
         ];
+    }
+
+    /** The soonest date an active schedule will raise something. */
+    private function nextRun(): ?Carbon
+    {
+        $date = RecurringInvoice::query()->active()->min('next_run_on');
+
+        return $date === null ? null : Carbon::parse($date);
     }
 
     public function with(): array
     {
-        $rows = array_values(array_filter($this->schedules, function (array $s): bool {
-            return $this->filter === 'all'
-                || ($this->filter === 'active' && $s['active'])
-                || ($this->filter === 'paused' && ! $s['active']);
-        }));
+        $counts = $this->counts();
 
-        $active = array_filter($this->schedules, fn (array $s) => $s['active']);
+        $dueNow = RecurringInvoice::query()->due()->count();
+        $next = $this->nextRun();
 
         return [
-            'tabs' => ['all' => 'All', 'active' => 'Active', 'paused' => 'Paused'],
-            'rows' => array_map(fn (array $s) => $s + ['formatted' => $this->money((float) $s['amount'], $s['currency'])], $rows),
-            'cadences' => [
-                'weekly' => 'Every week',
-                'fortnightly' => 'Every two weeks',
-                'monthly' => 'Every month',
-                'quarterly' => 'Every quarter',
-                'yearly' => 'Every year',
-            ],
-            'clients' => [
-                'northwind' => 'Northwind Ltd',
-                'acme' => 'Acme Studio',
-                'bluepeak' => 'Bluepeak',
-                'harbour' => 'Harbour & Finch',
-                'meridian' => 'Meridian Design',
-            ],
-            'currencies' => ['USD' => 'USD — US dollar', 'GBP' => 'GBP — Pound sterling', 'EUR' => 'EUR — Euro'],
-            'endings' => ['never' => 'Never', 'date' => 'On a date', 'count' => 'After a number of invoices'],
+            'tabs' => self::TABS,
+            'counts' => $counts,
+            'schedules' => $this->schedules(),
+            'cadences' => RecurringInvoice::CADENCES,
+            'currencies' => Currencies::supported(),
+            'customers' => Customer::query()->active()->with('company')->orderBy('name')->get(),
+            'companies' => Company::query()->active()->orderBy('name')->get(),
+            'formSymbol' => Currencies::symbol(
+                in_array($this->formCurrency, Currencies::supported(), true) ? $this->formCurrency : Currencies::USD,
+            ),
             'summary' => [
-                ['label' => 'Active schedules', 'value' => (string) count($active), 'tone' => 'text-mono'],
-                ['label' => 'Monthly recurring revenue', 'value' => $this->money($this->monthlyValue(), 'USD'), 'tone' => 'text-success'],
-                ['label' => 'Next run', 'value' => $this->nextRun(), 'tone' => 'text-primary'],
+                [
+                    'label' => 'Active schedules',
+                    'value' => (string) $counts['active'],
+                    'detail' => $counts['paused'] === 0
+                        ? 'None paused.'
+                        : $counts['paused'].' paused.',
+                    'tone' => 'text-mono',
+                ],
+                [
+                    'label' => 'Due to raise a draft',
+                    'value' => (string) $dueNow,
+                    'detail' => $dueNow === 0
+                        ? 'Nothing is waiting on the job.'
+                        : 'The next run will raise '.$dueNow.' '.str('draft')->plural($dueNow).'.',
+                    'tone' => $dueNow === 0 ? 'text-mono' : 'text-warning',
+                ],
+                [
+                    'label' => 'Next run',
+                    'value' => $next?->format('j M Y') ?? '—',
+                    'detail' => $next === null
+                        ? 'No active schedule to run.'
+                        : 'Drafts only — nothing is ever issued automatically.',
+                    'tone' => 'text-primary',
+                ],
             ],
-            'formSymbol' => self::CURRENCIES[$this->formCurrency] ?? '$',
         ];
     }
 
-    /* ---- Schedule state. UI state today, a database write tomorrow. ---- */
-
-    public function toggleSchedule(int $id): void
+    public function billedTo(RecurringInvoice $schedule): string
     {
-        $touched = null;
-
-        foreach ($this->schedules as $index => $schedule) {
-            if ($schedule['id'] === $id) {
-                $this->schedules[$index]['active'] = ! $schedule['active'];
-
-                $touched = $this->schedules[$index];
-            }
-        }
-
-        // Backend phase arms or disarms the queued job here.
-
-        if ($touched === null) {
-            $this->toastError('Schedule not found', 'Nothing on this page matches that schedule.');
-
-            return;
-        }
-
-        $this->toastSuccess(
-            $touched['active'] ? 'Schedule resumed' : 'Schedule paused',
-            $touched['title'] . ' for ' . $touched['client'] . '.',
-        );
+        return $schedule->company?->name ?? $schedule->customer?->name ?? 'No client on this schedule';
     }
 
-    public function openForm(): void
+    /* The form ---------------------------------------------------------------- */
+
+    private function resetForm(): void
+    {
+        $this->editingId = null;
+        $this->formCustomerId = null;
+        $this->formCompanyId = null;
+        $this->formTitle = '';
+        $this->formCurrency = Currencies::USD;
+        $this->formTaxPercent = '0';
+        $this->formCadence = 'monthly';
+        $this->formNextRunOn = today()->addMonthNoOverflow()->toDateString();
+        $this->formDayOfMonth = '';
+        $this->formLines = [$this->blankLine()];
+        $this->formNotes = '';
+        $this->formTerms = 'Payment due within 30 days of the invoice date.';
+        $this->formActive = true;
+    }
+
+    private function blankLine(): array
+    {
+        return ['description' => '', 'quantity' => '1', 'unit_price' => '0'];
+    }
+
+    public function openForm(?int $id = null): void
     {
         $this->resetValidation();
+        $this->resetForm();
 
-        $this->showForm = true;
+        if ($id !== null) {
+            $schedule = RecurringInvoice::query()->find($id);
+
+            if ($schedule === null) {
+                $this->toastError('That schedule is gone', 'It was deleted while this page was open.');
+
+                return;
+            }
+
+            $this->editingId = (int) $schedule->getKey();
+            $this->formCustomerId = $schedule->customer_id === null ? null : (string) $schedule->customer_id;
+            $this->formCompanyId = $schedule->company_id === null ? null : (string) $schedule->company_id;
+            $this->formTitle = (string) $schedule->title;
+            $this->formCurrency = $schedule->currency;
+            $this->formTaxPercent = $this->trimZeros((string) $schedule->tax_percent);
+            $this->formCadence = $schedule->cadence;
+            $this->formNextRunOn = $schedule->next_run_on->toDateString();
+            $this->formDayOfMonth = $schedule->day_of_month === null ? '' : (string) $schedule->day_of_month;
+            $this->formLines = $schedule->templateLines();
+            $this->formNotes = (string) $schedule->notes;
+            $this->formTerms = (string) $schedule->terms;
+            $this->formActive = (bool) $schedule->is_active;
+        }
+
+        $this->formOpen = true;
+
+        $this->toastSuccess(
+            $this->editingId === null ? 'New schedule' : 'Editing '.$this->formTitle,
+            'A schedule raises drafts. Nothing it raises is ever issued for you.',
+        );
     }
 
     public function closeForm(): void
     {
-        $this->showForm = false;
+        $wasOpen = $this->formOpen;
+
+        $this->formOpen = false;
+
+        if ($wasOpen) {
+            $this->toastSuccess('Form closed', 'Nothing was saved.');
+        }
     }
 
-    public function createSchedule(): void
+    public function addFormLine(): void
+    {
+        $this->formLines[] = $this->blankLine();
+    }
+
+    public function removeFormLine(int $index): void
+    {
+        if (count($this->formLines) <= 1) {
+            $this->toastError('Line kept', 'A schedule needs at least one line to bill.');
+
+            return;
+        }
+
+        unset($this->formLines[$index]);
+
+        $this->formLines = array_values($this->formLines);
+    }
+
+    protected function rules(): array
+    {
+        return [
+            'formTitle' => ['required', 'string', 'max:120'],
+            'formCurrency' => ['required', Rule::in(Currencies::supported())],
+            'formTaxPercent' => ['required', 'numeric', 'min:0', 'max:100'],
+            'formCadence' => ['required', Rule::in(array_keys(RecurringInvoice::CADENCES))],
+            'formNextRunOn' => ['required', 'date'],
+            'formDayOfMonth' => ['nullable', 'integer', 'min:1', 'max:31'],
+            'formCustomerId' => ['nullable', 'exists:customers,id'],
+            'formCompanyId' => ['nullable', 'exists:companies,id'],
+            'formLines' => ['required', 'array', 'min:1'],
+            'formLines.*.description' => ['required', 'string', 'max:255'],
+            'formLines.*.quantity' => ['required', 'numeric', 'min:0'],
+            'formLines.*.unit_price' => ['required', 'numeric', 'min:0'],
+        ];
+    }
+
+    protected function validationAttributes(): array
+    {
+        return [
+            'formTitle' => 'name',
+            'formCurrency' => 'currency',
+            'formTaxPercent' => 'tax rate',
+            'formCadence' => 'cadence',
+            'formNextRunOn' => 'first invoice date',
+            'formDayOfMonth' => 'day of the month',
+            'formCustomerId' => 'client',
+            'formCompanyId' => 'company',
+        ];
+    }
+
+    public function saveSchedule(): void
     {
         $this->validate();
 
-        // Persistence lands in the backend phase; the modal then closes on success.
-        $this->toastInfo('Not connected yet', 'Creating a schedule lands with the backend phase. Nothing was saved.');
+        $attributes = [
+            'customer_id' => $this->formCustomerId === null || $this->formCustomerId === '' ? null : (int) $this->formCustomerId,
+            'company_id' => $this->formCompanyId === null || $this->formCompanyId === '' ? null : (int) $this->formCompanyId,
+            'title' => trim($this->formTitle),
+            'currency' => $this->formCurrency,
+            'tax_percent' => RecurringInvoice::decimal($this->formTaxPercent, '0'),
+            'cadence' => $this->formCadence,
+            'day_of_month' => $this->formDayOfMonth === '' ? null : (int) $this->formDayOfMonth,
+            'next_run_on' => $this->formNextRunOn,
+            'lines' => array_map(fn (array $line): array => [
+                'description' => trim((string) $line['description']),
+                'quantity' => RecurringInvoice::decimal($line['quantity'] ?? '1', '1'),
+                'unit_price' => RecurringInvoice::decimal($line['unit_price'] ?? '0', '0'),
+            ], array_values($this->formLines)),
+            'notes' => trim($this->formNotes) === '' ? null : trim($this->formNotes),
+            'terms' => trim($this->formTerms) === '' ? null : trim($this->formTerms),
+            'is_active' => $this->formActive,
+        ];
+
+        $schedule = $this->editingId === null
+            ? RecurringInvoice::query()->create($attributes + ['created_by' => auth()->id()])
+            : tap(RecurringInvoice::query()->findOrFail($this->editingId))->update($attributes);
+
+        $this->formOpen = false;
+        $this->resolvedSchedules = null;
+
+        $schedule->refresh();
+
+        $this->toastSuccess(
+            $schedule->title.($this->editingId === null ? ' created' : ' updated'),
+            $schedule->formattedTotal().' '.strtolower($schedule->cadenceLabel())
+            .', next on '.$schedule->next_run_on->format('j F Y').'. Raised as a draft.',
+        );
+
+        $this->editingId = null;
     }
 
-    public function runNow(int $id): void
+    /* Running ------------------------------------------------------------------ */
+
+    public function toggleSchedule(int $id): void
     {
-        // Issues the next invoice ahead of its scheduled date.
-        $this->toastInfo('Not connected yet', 'Running a schedule early lands with the backend phase. No invoice was issued.');
-    }
+        $schedule = RecurringInvoice::query()->find($id);
 
-    /* ---- Money ---- */
+        if ($schedule === null) {
+            $this->toastError('That schedule is gone', 'It was deleted while this page was open.');
 
-    protected function money(float $amount, string $currency = 'USD'): string
-    {
-        return (self::CURRENCIES[$currency] ?? '$') . number_format($amount, 2);
-    }
-
-    /** Everything normalised to a monthly figure so the headline number means something. */
-    protected function monthlyValue(): float
-    {
-        $perMonth = ['weekly' => 4.33, 'fortnightly' => 2.17, 'monthly' => 1, 'quarterly' => 1 / 3, 'yearly' => 1 / 12];
-
-        $total = 0.0;
-
-        foreach ($this->schedules as $schedule) {
-            if (! $schedule['active']) {
-                continue;
-            }
-
-            $total += ((float) $schedule['amount']) * ($perMonth[$schedule['cadence']] ?? 1);
+            return;
         }
 
-        return round($total, 2);
+        $schedule->forceFill(['is_active' => ! $schedule->is_active])->save();
+
+        $this->resolvedSchedules = null;
+
+        $this->toastSuccess(
+            $schedule->is_active ? $schedule->title.' resumed' : $schedule->title.' paused',
+            $schedule->is_active
+                ? 'The next draft is due on '.$schedule->next_run_on->format('j F Y').'.'
+                : 'It raises nothing until you resume it. What it has already raised is untouched.',
+        );
     }
 
-    protected function nextRun(): string
+    /**
+     * Raise the next occurrence now, ahead of its date.
+     *
+     * The same code path the scheduled job takes, run against the schedule's
+     * own next occurrence — so an impatient second click is as harmless as a
+     * second cron run.
+     *
+     * **One period at a time.** Raising early moves the schedule on, so the
+     * occurrence after it is more than a full period away and this refuses to
+     * bring that one forward too. Without the guard a double click bills a
+     * client for next month as well, which is a footgun rather than a feature.
+     */
+    public function raiseNow(int $id): void
     {
-        foreach ($this->schedules as $schedule) {
-            if ($schedule['active'] && $schedule['nextRun'] !== '—') {
-                return $schedule['nextRun'];
-            }
+        $schedule = RecurringInvoice::query()->find($id);
+
+        if ($schedule === null) {
+            $this->toastError('That schedule is gone', 'It was deleted while this page was open.');
+
+            return;
         }
 
-        return '—';
+        if (! $schedule->is_active) {
+            $this->toastError(
+                $schedule->title.' is paused',
+                'Resume it first — a paused schedule raises nothing, by design.',
+            );
+
+            return;
+        }
+
+        if ($schedule->next_run_on->isAfter($schedule->advanceFrom(today()))) {
+            $this->toastError(
+                'Nothing to raise yet',
+                'The next draft is due on '.$schedule->next_run_on->format('j F Y')
+                .'. Raising early brings one period forward, not two.',
+            );
+
+            return;
+        }
+
+        $raised = app(GenerateRecurringInvoices::class)->generate($schedule, $schedule->next_run_on);
+
+        $this->resolvedSchedules = null;
+        $schedule->refresh();
+
+        if ($raised === []) {
+            $this->toastSuccess(
+                'Nothing to raise',
+                'That occurrence has already been raised. The next one is due on '
+                .$schedule->next_run_on->format('j F Y').'.',
+            );
+
+            return;
+        }
+
+        $invoice = $raised[0];
+
+        $this->toastSuccess(
+            $invoice->number.' raised as a draft',
+            $invoice->formattedTotal().' for '.$this->billedTo($schedule).'. It is not issued — open it, check it, then issue it.',
+        );
+    }
+
+    /**
+     * Stop a schedule for good.
+     *
+     * Soft deleted, so what it raised keeps its provenance. The invoices
+     * themselves are ordinary invoices and are not touched.
+     */
+    public function deleteSchedule(int $id): void
+    {
+        $schedule = RecurringInvoice::query()->find($id);
+
+        if ($schedule === null) {
+            $this->toastError('That schedule is gone', 'It was deleted while this page was open.');
+
+            return;
+        }
+
+        $schedule->delete();
+
+        $this->resolvedSchedules = null;
+
+        if ($this->editingId === $id) {
+            $this->formOpen = false;
+            $this->editingId = null;
+        }
+
+        $this->toastSuccess(
+            $schedule->title.' deleted',
+            'It raises nothing further. Every draft it already raised is untouched.',
+        );
+    }
+
+    public function filterBy(string $filter): void
+    {
+        $this->filter = array_key_exists($filter, self::TABS) ? $filter : 'all';
+        $this->resolvedSchedules = null;
+    }
+
+    private function trimZeros(string $value): string
+    {
+        if (! str_contains($value, '.')) {
+            return $value;
+        }
+
+        $trimmed = rtrim(rtrim($value, '0'), '.');
+
+        return $trimmed === '' ? '0' : $trimmed;
     }
 };
 
@@ -206,18 +471,24 @@ class extends Component
             <h1 class="text-xl font-semibold text-mono">Recurring invoices</h1>
             <p class="text-sm text-secondary-foreground mt-1">Set a retainer once and stop remembering to bill it.</p>
         </div>
-        <button wire:click="openForm" class="kt-btn kt-btn-primary gap-2">
-            <i class="ki-filled ki-plus"></i> New schedule
-        </button>
+        <div class="flex items-center gap-2">
+            <a href="{{ route('accounting.invoices') }}" wire:navigate class="kt-btn kt-btn-outline gap-2">
+                <i class="ki-filled ki-bill"></i> Invoices
+            </a>
+            <button wire:click="openForm" class="kt-btn kt-btn-primary gap-2">
+                <i class="ki-filled ki-plus"></i> New schedule
+            </button>
+        </div>
     </div>
 
     {{-- Summary --}}
     <div class="grid grid-cols-1 sm:grid-cols-3 gap-5">
-        @foreach ($summary as $s)
+        @foreach ($summary as $card)
             <div class="kt-card">
                 <div class="kt-card-content p-5">
-                    <div class="text-sm text-secondary-foreground">{{ $s['label'] }}</div>
-                    <div class="text-2xl font-semibold mt-1 {{ $s['tone'] }}">{{ $s['value'] }}</div>
+                    <div class="text-sm text-secondary-foreground">{{ $card['label'] }}</div>
+                    <div class="text-2xl font-semibold mt-1 {{ $card['tone'] }}">{{ $card['value'] }}</div>
+                    <div class="text-xs text-muted-foreground mt-1">{{ $card['detail'] }}</div>
                 </div>
             </div>
         @endforeach
@@ -228,13 +499,16 @@ class extends Component
         <div class="kt-card-header flex-wrap gap-3">
             <div class="flex gap-1">
                 @foreach ($tabs as $key => $label)
-                    <button wire:click="$set('filter', '{{ $key }}')"
-                            class="kt-btn kt-btn-sm {{ $filter === $key ? 'kt-btn-primary' : 'kt-btn-ghost' }}">
+                    <button wire:click="filterBy('{{ $key }}')"
+                            class="kt-btn kt-btn-sm gap-1.5 {{ $filter === $key ? 'kt-btn-primary' : 'kt-btn-ghost' }}">
                         {{ $label }}
+                        <span class="kt-badge kt-badge-sm kt-badge-outline">{{ $counts[$key] }}</span>
                     </button>
                 @endforeach
             </div>
-            <span class="text-sm text-muted-foreground">{{ count($rows) }} {{ count($rows) === 1 ? 'schedule' : 'schedules' }}</span>
+            <span class="text-sm text-muted-foreground">
+                Every run raises a draft. Issuing stays a decision you make.
+            </span>
         </div>
 
         <div class="kt-card-table">
@@ -242,69 +516,82 @@ class extends Component
                 <table class="kt-table align-middle text-sm">
                     <thead>
                         <tr>
-                            <th class="min-w-[220px]">Client</th>
+                            <th class="min-w-[200px]">Client</th>
                             <th class="min-w-[200px]">Template</th>
-                            <th class="w-[130px] text-end">Amount</th>
+                            <th class="w-[140px] text-end">Next draft</th>
                             <th class="w-[150px]">Cadence</th>
                             <th class="w-[130px]">Next run</th>
-                            <th class="w-[110px]">Enabled</th>
-                            <th class="w-[60px]"></th>
+                            <th class="w-[120px]">Enabled</th>
+                            <th class="w-[130px]"></th>
                         </tr>
                     </thead>
                     <tbody>
-                        @forelse ($rows as $row)
-                            <tr wire:key="schedule-{{ $row['id'] }}" class="{{ $row['active'] ? '' : 'opacity-60' }}">
+                        @forelse ($schedules as $schedule)
+                            <tr wire:key="schedule-{{ $schedule->id }}" class="{{ $schedule->is_active ? '' : 'opacity-60' }}">
                                 <td>
                                     <div class="flex items-center gap-3 min-w-0">
                                         <span class="inline-flex items-center justify-center size-8 rounded-lg bg-primary/10 text-primary text-xs font-semibold shrink-0">
-                                            {{ strtoupper(substr($row['client'], 0, 2)) }}
+                                            {{ $schedule->company?->initials() ?? $schedule->customer?->initials() ?? '—' }}
                                         </span>
-                                        <span class="font-medium text-mono truncate">{{ $row['client'] }}</span>
+                                        <span class="font-medium text-mono truncate">{{ $this->billedTo($schedule) }}</span>
                                     </div>
                                 </td>
                                 <td class="text-secondary-foreground">
-                                    {{ $row['title'] }}
-                                    <span class="block text-xs text-muted-foreground mt-0.5">{{ $row['issued'] }} issued so far</span>
+                                    {{ $schedule->title }}
+                                    <span class="block text-xs text-muted-foreground mt-0.5">
+                                        {{ count($schedule->templateLines()) }}
+                                        {{ count($schedule->templateLines()) === 1 ? 'line' : 'lines' }}
+                                        @if ($schedule->last_run_on)
+                                            — last raised {{ $schedule->last_run_on->format('j M Y') }}
+                                        @else
+                                            — nothing raised yet
+                                        @endif
+                                    </span>
                                 </td>
-                                <td class="text-end font-medium text-mono whitespace-nowrap">{{ $row['formatted'] }}</td>
+                                <td class="text-end whitespace-nowrap">
+                                    <span class="font-medium text-mono">{{ $schedule->formattedTotal() }}</span>
+                                    <span class="block text-xs text-muted-foreground mt-0.5">{{ $schedule->currency }}</span>
+                                </td>
                                 <td>
-                                    <span class="kt-badge kt-badge-sm kt-badge-outline">{{ $cadences[$row['cadence']] ?? $row['cadence'] }}</span>
+                                    <span class="kt-badge kt-badge-sm kt-badge-outline">{{ $schedule->cadenceLabel() }}</span>
                                 </td>
-                                <td class="{{ $row['nextRun'] === '—' ? 'text-muted-foreground' : 'text-secondary-foreground' }}">
-                                    {{ $row['nextRun'] }}
+                                <td class="{{ $schedule->isDue() ? 'text-warning' : 'text-secondary-foreground' }}">
+                                    {{ $schedule->next_run_on->format('j M Y') }}
+                                    @if ($schedule->isDue())
+                                        <span class="block text-xs">Due now</span>
+                                    @endif
                                 </td>
                                 <td>
                                     <label class="flex items-center gap-2 cursor-pointer">
                                         <input type="checkbox" class="kt-switch kt-switch-sm"
-                                               wire:click="toggleSchedule({{ $row['id'] }})"
-                                               wire:loading.attr="disabled" wire:target="toggleSchedule({{ $row['id'] }})"
-                                               @checked($row['active'])
-                                               aria-label="{{ $row['active'] ? 'Pause' : 'Enable' }} the {{ $row['client'] }} schedule">
-                                        <span class="text-xs {{ $row['active'] ? 'text-success' : 'text-muted-foreground' }}">
-                                            {{ $row['active'] ? 'On' : 'Paused' }}
+                                               wire:click="toggleSchedule({{ $schedule->id }})"
+                                               wire:loading.attr="disabled" wire:target="toggleSchedule({{ $schedule->id }})"
+                                               @checked($schedule->is_active)
+                                               aria-label="{{ $schedule->is_active ? 'Pause' : 'Resume' }} the {{ $schedule->title }} schedule">
+                                        <span class="text-xs {{ $schedule->is_active ? 'text-success' : 'text-muted-foreground' }}">
+                                            {{ $schedule->is_active ? 'On' : 'Paused' }}
                                         </span>
                                     </label>
                                 </td>
                                 <td class="text-end">
-                                    <div data-kt-dropdown="true" data-kt-dropdown-trigger="click" data-kt-dropdown-placement="bottom-end">
-                                        <button class="kt-btn kt-btn-icon kt-btn-ghost size-7" data-kt-dropdown-toggle="true"
-                                                title="Schedule actions" aria-label="Schedule actions">
-                                            <i class="ki-filled ki-dots-vertical text-sm"></i>
+                                    <div class="flex items-center justify-end gap-1">
+                                        <button wire:click="raiseNow({{ $schedule->id }})"
+                                                wire:loading.attr="disabled" wire:target="raiseNow({{ $schedule->id }})"
+                                                class="kt-btn kt-btn-icon kt-btn-ghost size-7"
+                                                title="Raise the next draft now" aria-label="Raise the next draft now">
+                                            <i class="ki-filled ki-rocket text-sm"></i>
                                         </button>
-                                        <div class="kt-dropdown-menu w-[200px]" data-kt-dropdown-menu="true">
-                                            <div class="p-2 flex flex-col gap-1">
-                                                <button wire:click="runNow({{ $row['id'] }})" class="kt-btn kt-btn-ghost justify-start gap-2">
-                                                    <i class="ki-filled ki-rocket"></i> Issue now
-                                                </button>
-                                                <a href="{{ route('accounting.invoice-create') }}" wire:navigate class="kt-btn kt-btn-ghost justify-start gap-2">
-                                                    <i class="ki-filled ki-pencil"></i> Edit template
-                                                </a>
-                                                <button wire:click="toggleSchedule({{ $row['id'] }})" class="kt-btn kt-btn-ghost justify-start gap-2">
-                                                    <i class="ki-filled ki-{{ $row['active'] ? 'pause' : 'play' }}"></i>
-                                                    {{ $row['active'] ? 'Pause schedule' : 'Resume schedule' }}
-                                                </button>
-                                            </div>
-                                        </div>
+                                        <button wire:click="openForm({{ $schedule->id }})"
+                                                class="kt-btn kt-btn-icon kt-btn-ghost size-7"
+                                                title="Edit schedule" aria-label="Edit schedule">
+                                            <i class="ki-filled ki-pencil text-sm"></i>
+                                        </button>
+                                        <button wire:click="deleteSchedule({{ $schedule->id }})"
+                                                wire:loading.attr="disabled" wire:target="deleteSchedule({{ $schedule->id }})"
+                                                class="kt-btn kt-btn-icon kt-btn-ghost size-7 text-destructive"
+                                                title="Delete schedule" aria-label="Delete schedule">
+                                            <i class="ki-filled ki-trash text-sm"></i>
+                                        </button>
                                     </div>
                                 </td>
                             </tr>
@@ -314,7 +601,9 @@ class extends Component
                                     <div class="flex flex-col items-center justify-center text-center py-14">
                                         <i class="ki-filled ki-arrows-circle text-3xl text-muted-foreground mb-3"></i>
                                         <p class="text-sm text-secondary-foreground mb-4">
-                                            {{ $filter === 'all' ? 'No recurring schedules yet — set one up for anything you bill on a rhythm.' : 'Nothing matches this filter.' }}
+                                            {{ $filter === 'all'
+                                                ? 'No recurring schedules yet — set one up for anything you bill on a rhythm.'
+                                                : 'Nothing matches this filter.' }}
                                         </p>
                                         <button wire:click="openForm" class="kt-btn kt-btn-primary kt-btn-sm gap-2">
                                             <i class="ki-filled ki-plus"></i> New schedule
@@ -329,32 +618,52 @@ class extends Component
         </div>
     </div>
 
-    {{-- Create schedule --}}
-    <div class="kt-modal kt-modal-center z-50 {{ $showForm ? 'open' : '' }}"
+    {{-- The form. State-driven, never KTUI: the morph strips a class KTUI added. --}}
+    <div class="kt-modal kt-modal-center z-50 {{ $formOpen ? 'open' : '' }}"
          role="dialog" aria-modal="true" aria-labelledby="recurring_form_title">
 
         <div class="kt-modal-backdrop" wire:click="closeForm"></div>
 
-        <div class="kt-modal-content max-w-[560px] w-full">
+        <div class="kt-modal-content max-w-[720px] w-full">
             <div class="kt-modal-header">
-                <h3 class="kt-modal-title" id="recurring_form_title">New recurring schedule</h3>
-                <button wire:click="closeForm" class="kt-btn kt-btn-icon kt-btn-ghost size-8" title="Close" aria-label="Close">
+                <h3 class="kt-modal-title" id="recurring_form_title">
+                    {{ $editingId ? 'Edit schedule' : 'New recurring schedule' }}
+                </h3>
+                <button wire:click="closeForm" class="kt-btn kt-btn-icon kt-btn-ghost size-8"
+                        title="Close" aria-label="Close">
                     <i class="ki-filled ki-cross text-base"></i>
                 </button>
             </div>
 
-            <div class="kt-modal-body max-h-[70vh]">
+            <div class="kt-modal-body max-h-[70vh] kt-scrollable-y">
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
 
-                    <div class="flex flex-col gap-1.5 sm:col-span-2">
-                        <label class="kt-form-label" for="recurring_client">Client</label>
-                        <select id="recurring_client" wire:model.live="formClient"
-                                class="kt-select @error('formClient') border-destructive @enderror">
-                            @foreach ($clients as $key => $name)
-                                <option value="{{ $key }}">{{ $name }}</option>
+                    <div class="flex flex-col gap-1.5">
+                        <label class="kt-form-label" for="recurring_customer">Client</label>
+                        <select id="recurring_customer" wire:model.live="formCustomerId"
+                                class="kt-select @error('formCustomerId') border-destructive @enderror">
+                            <option value="">No named contact</option>
+                            @foreach ($customers as $customer)
+                                <option value="{{ $customer->id }}">
+                                    {{ $customer->name }}@if ($customer->company) — {{ $customer->company->name }}@endif
+                                </option>
                             @endforeach
                         </select>
-                        @error('formClient')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
+                        @error('formCustomerId')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
+                    </div>
+
+                    <div class="flex flex-col gap-1.5">
+                        <label class="kt-form-label" for="recurring_company">Company</label>
+                        <select id="recurring_company" wire:model.live="formCompanyId"
+                                class="kt-select @error('formCompanyId') border-destructive @enderror">
+                            <option value="">Billed to the person, not a company</option>
+                            @foreach ($companies as $company)
+                                <option value="{{ $company->id }}">
+                                    {{ $company->name }}{{ $company->is_domestic ? ' — domestic' : '' }}
+                                </option>
+                            @endforeach
+                        </select>
+                        @error('formCompanyId')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
                     </div>
 
                     <div class="flex flex-col gap-1.5 sm:col-span-2">
@@ -366,25 +675,24 @@ class extends Component
                     </div>
 
                     <div class="flex flex-col gap-1.5">
-                        <label class="kt-form-label" for="recurring_amount">Amount</label>
-                        <div class="kt-input-group">
-                            <span class="kt-input-addon">{{ $formSymbol }}</span>
-                            <input id="recurring_amount" type="number" step="0.01" min="0"
-                                   wire:model.live.debounce.400ms="formAmount"
-                                   class="kt-input text-end @error('formAmount') border-destructive @enderror">
-                        </div>
-                        @error('formAmount')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
-                    </div>
-
-                    <div class="flex flex-col gap-1.5">
                         <label class="kt-form-label" for="recurring_currency">Currency</label>
                         <select id="recurring_currency" wire:model.live="formCurrency"
                                 class="kt-select @error('formCurrency') border-destructive @enderror">
-                            @foreach ($currencies as $code => $label)
-                                <option value="{{ $code }}">{{ $label }}</option>
+                            @foreach ($currencies as $code)
+                                <option value="{{ $code }}">{{ $code }}</option>
                             @endforeach
                         </select>
                         @error('formCurrency')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
+                    </div>
+
+                    <div class="flex flex-col gap-1.5">
+                        <label class="kt-form-label" for="recurring_tax">Tax rate</label>
+                        <div class="kt-input-group">
+                            <input id="recurring_tax" type="text" inputmode="decimal" wire:model.blur="formTaxPercent"
+                                   class="kt-input text-end @error('formTaxPercent') border-destructive @enderror">
+                            <span class="kt-input-addon">%</span>
+                        </div>
+                        @error('formTaxPercent')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
                     </div>
 
                     <div class="flex flex-col gap-1.5">
@@ -399,29 +707,85 @@ class extends Component
                     </div>
 
                     <div class="flex flex-col gap-1.5">
-                        <label class="kt-form-label" for="recurring_start">First invoice on</label>
-                        <input id="recurring_start" type="date" wire:model="formStartsOn"
-                               class="kt-input @error('formStartsOn') border-destructive @enderror">
-                        @error('formStartsOn')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
+                        <label class="kt-form-label" for="recurring_next">Next invoice on</label>
+                        <input id="recurring_next" type="date" wire:model.blur="formNextRunOn"
+                               class="kt-input @error('formNextRunOn') border-destructive @enderror">
+                        @error('formNextRunOn')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
+                    </div>
+
+                    @if ($formCadence !== 'weekly')
+                        <div class="flex flex-col gap-1.5 sm:col-span-2">
+                            <label class="kt-form-label" for="recurring_day">Bill on this day of the month</label>
+                            <input id="recurring_day" type="text" inputmode="numeric" wire:model.blur="formDayOfMonth"
+                                   placeholder="Blank keeps the day the schedule starts on"
+                                   class="kt-input max-w-[220px] @error('formDayOfMonth') border-destructive @enderror">
+                            <p class="kt-form-description mt-1">
+                                Clamped to the length of the month, so the 31st still bills in February.
+                            </p>
+                            @error('formDayOfMonth')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
+                        </div>
+                    @endif
+
+                    {{-- The line template --}}
+                    <div class="sm:col-span-2 flex flex-col gap-3 border-t border-border pt-4">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <div class="text-sm font-medium text-mono">Lines</div>
+                                <p class="kt-form-description mt-1">Copied onto every draft this schedule raises.</p>
+                            </div>
+                            <button wire:click="addFormLine" class="kt-btn kt-btn-ghost kt-btn-sm gap-2 text-primary">
+                                <i class="ki-filled ki-plus"></i> Add line
+                            </button>
+                        </div>
+
+                        @foreach ($formLines as $i => $line)
+                            <div class="flex flex-wrap items-start gap-2" wire:key="form-line-{{ $i }}">
+                                <input type="text" wire:model.blur="formLines.{{ $i }}.description"
+                                       placeholder="What are you billing for?"
+                                       aria-label="Line {{ $i + 1 }} description"
+                                       class="kt-input kt-input-sm grow min-w-[180px] @error('formLines.'.$i.'.description') border-destructive @enderror">
+                                <input type="text" inputmode="decimal" wire:model.blur="formLines.{{ $i }}.quantity"
+                                       aria-label="Line {{ $i + 1 }} quantity"
+                                       class="kt-input kt-input-sm w-[80px] text-end @error('formLines.'.$i.'.quantity') border-destructive @enderror">
+                                <div class="kt-input-group w-[150px]">
+                                    <span class="kt-input-addon kt-input-addon-sm">{{ $formSymbol }}</span>
+                                    <input type="text" inputmode="decimal" wire:model.blur="formLines.{{ $i }}.unit_price"
+                                           aria-label="Line {{ $i + 1 }} unit price"
+                                           class="kt-input kt-input-sm text-end @error('formLines.'.$i.'.unit_price') border-destructive @enderror">
+                                </div>
+                                <button wire:click="removeFormLine({{ $i }})" @disabled(count($formLines) === 1)
+                                        class="kt-btn kt-btn-icon kt-btn-ghost size-8 text-destructive disabled:opacity-30"
+                                        title="Remove line" aria-label="Remove line">
+                                    <i class="ki-filled ki-trash text-sm"></i>
+                                </button>
+                            </div>
+                        @endforeach
+
+                        @foreach ($errors->get('formLines.*') as $messages)
+                            <span class="text-xs text-destructive">{{ $messages[0] }}</span>
+                        @endforeach
                     </div>
 
                     <div class="flex flex-col gap-1.5 sm:col-span-2">
-                        <label class="kt-form-label" for="recurring_ends">Ends</label>
-                        <select id="recurring_ends" wire:model.live="formEnds"
-                                class="kt-select @error('formEnds') border-destructive @enderror">
-                            @foreach ($endings as $key => $label)
-                                <option value="{{ $key }}">{{ $label }}</option>
-                            @endforeach
-                        </select>
-                        @error('formEnds')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
+                        <label class="kt-form-label" for="recurring_notes">Notes on every draft</label>
+                        <textarea id="recurring_notes" rows="2" wire:model.blur="formNotes" class="kt-textarea w-full"
+                                  placeholder="Anything the client should read alongside the figures."></textarea>
+                    </div>
+
+                    <div class="flex flex-col gap-1.5 sm:col-span-2">
+                        <label class="kt-form-label" for="recurring_terms">Payment terms</label>
+                        <textarea id="recurring_terms" rows="2" wire:model.blur="formTerms" class="kt-textarea w-full"
+                                  placeholder="When and how you expect to be paid."></textarea>
                     </div>
 
                     <div class="sm:col-span-2 flex items-start justify-between gap-4 border-t border-border pt-4">
                         <div class="min-w-0">
-                            <label class="kt-form-label" for="recurring_autosend">Send automatically</label>
-                            <p class="kt-form-description mt-1">Off means each run lands in Drafts for you to check first.</p>
+                            <label class="kt-form-label" for="recurring_active">Armed</label>
+                            <p class="kt-form-description mt-1">
+                                Off means the schedule raises nothing until you switch it back on.
+                            </p>
                         </div>
-                        <input id="recurring_autosend" type="checkbox" class="kt-switch shrink-0" wire:model.live="formAutoSend">
+                        <input id="recurring_active" type="checkbox" class="kt-switch shrink-0" wire:model.live="formActive">
                     </div>
 
                 </div>
@@ -429,13 +793,13 @@ class extends Component
 
             <div class="kt-modal-footer">
                 <button wire:click="closeForm" class="kt-btn kt-btn-ghost">Cancel</button>
-                <button wire:click="createSchedule" wire:loading.attr="disabled" wire:target="createSchedule"
+                <button wire:click="saveSchedule" wire:loading.attr="disabled" wire:target="saveSchedule"
                         class="kt-btn kt-btn-primary gap-2">
-                    <span wire:loading.remove wire:target="createSchedule" class="inline-flex items-center gap-2">
-                        <i class="ki-filled ki-check"></i> Create schedule
+                    <span wire:loading.remove wire:target="saveSchedule" class="inline-flex items-center gap-2">
+                        <i class="ki-filled ki-check"></i> {{ $editingId ? 'Save schedule' : 'Create schedule' }}
                     </span>
-                    <span wire:loading wire:target="createSchedule" class="inline-flex items-center gap-2">
-                        <i class="ki-filled ki-loading animate-spin"></i> Creating…
+                    <span wire:loading wire:target="saveSchedule" class="inline-flex items-center gap-2">
+                        <i class="ki-filled ki-loading animate-spin"></i> Saving…
                     </span>
                 </button>
             </div>

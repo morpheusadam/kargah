@@ -50,6 +50,7 @@ class SmokeTest extends TestCase
             'recurring' => ['/accounting/recurring'],
             'expenses' => ['/accounting/expenses'],
             'expense-create' => ['/accounting/expenses/create'],
+            'expense-edit' => ['/accounting/expenses/1/edit'],
             'clients' => ['/accounting/clients'],
             'client-show' => ['/accounting/clients/1'],
             'reports' => ['/accounting/reports'],

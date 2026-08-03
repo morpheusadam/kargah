@@ -29,6 +29,10 @@ $urls = [
     '/mail/inbox',
     '/accounting/invoices',
     '/accounting/clients/1',
+    '/accounting/expenses',
+    '/accounting/reports',
+    '/accounting/recurring',
+    '/accounting/invoices/1',
 ];
 
 /** Render one URL as the first user and give back milliseconds plus the size. */

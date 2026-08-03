@@ -180,3 +180,79 @@ once PHP has run, so `"bg-{$colour}"` is simply absent from the stylesheet.
 `/accounting/clients/{id}` gained a Projects tab reading real cards through
 `Modules\Project\Contracts\CardReader` — arrays, not models, so Accounting never holds one of
 Project's entities. The money on that page is still a fixture, and still says so.
+
+---
+
+## Phase 3 — Accounting
+
+**`brick/math` truncates a float to an integer, and every guard against it was dead code.**
+`BigNumber::of()` accepts `int|string|BigNumber`. Hand it a float and PHP coerces to `int` first,
+so `BigDecimal::of(34.1527)` is `34` — a whole lira per dollar — behind nothing louder than a
+deprecation notice. Worse: a guard written as `is_float($x)` on a parameter typed `string` never
+fires, because the type coercion happens before the function body. Every entry point into the
+money layer now declares `string|float` *specifically so it can refuse the float by name*, and
+`MoneyTest::test_the_maths_library_truncates_a_float_to_an_integer` pins the underlying behaviour
+so nobody relaxes the guards thinking they are paranoia.
+
+**`RoundingMode` is an enum; the spec's `RoundingMode::HALF_UP` does not exist.**
+The installed brick/math spells the cases `HalfUp`, `Down`, `Ceiling`. 03-accounting.md's example
+will not parse as written.
+
+**SQLite loses decimal precision, and the spec's stated maximum is wrong there.**
+SQLite has no DECIMAL storage class: NUMERIC affinity stores a non-integer as a double, so
+`99,999,999,999,999.999999` — the figure 03-accounting.md quotes — comes back as the integer
+100000000000000. Measured, not assumed. The real ceiling is **fourteen significant digits**, set
+by PHP's `precision` ini rather than by the double, so ±99,999,999.999999 is exact. Accepted
+rather than worked around: integer minor units or money in a `varchar` would be exact everywhere
+and would cost `SUM()` and `ORDER BY` on every report, to buy headroom no freelance invoice will
+use. MySQL and MariaDB, the primary target, are exact throughout. The rule that follows is now in
+the spec: **never do money arithmetic in SQL** — totals are computed in PHP through `brick/money`,
+and the database is only storage.
+
+**`Invoice::isIssued()` reads `sent_at`, not `issued_on`.**
+`issued_on` is the date printed on the document, and back-dating a draft is ordinary — you write
+Monday's invoice on Wednesday. Reading it as "has been issued" made every back-dated draft refuse
+to be issued at all. `sent_at` is the moment `InvoiceIssuer` froze the rates, which is the moment
+the numbers stopped being allowed to change.
+
+**A `date` cast writes a datetime, which broke two natural keys.**
+Eloquent writes a `date` cast through the connection format, so a DATE column receives
+`2026-06-24 00:00:00` while `updateOrCreate` looks for `2026-06-24` — and the second run of the
+rate fetcher hit the unique index it exists to satisfy. `ExchangeRate::as_of` uses an `Attribute`
+that writes a bare date instead. This is load-bearing for every "runs twice, changes nothing"
+requirement that keys on a date.
+
+**Realised FX is stored; unrealised is computed and written nowhere.**
+`payments.fx_gain_loss` is the difference between what the payment currency was worth at issue and
+what it was worth at settlement, in the invoice's currency, because that is the number the owner
+is up or down by. Revaluing a still-open invoice at today's rate is a *report* —
+`PaymentRecorder::unrealised()` returns the rate, the figure and the difference and touches no
+table, because nothing has happened yet. A test asserts the ledger is unchanged by it.
+
+**The TCMB EVDS key is not on this machine, and that does not stop the build.**
+`accounting:fetch-rates` skips that source cleanly, logs which rates are therefore unavailable and
+why, and still runs Frankfurter and CoinGecko, which need no key. A domestic Turkish invoice
+simply cannot show a lira equivalent until a key is configured — which is the honest behaviour,
+since the alternative is inventing a legally significant number.
+
+**Three things the spec got wrong about the rate APIs.**
+CoinGecko's "free tier: 10k calls/month" is the Demo plan and needs a key; the genuinely keyless
+endpoint is rate-limited per minute, which one daily call is comfortably inside. Frankfurter has
+moved to `api.frankfurter.dev/v1` with `base`/`symbols` rather than `from`/`to`. And ECB data is
+not same-day, so `as_of` comes from the response body, never from the clock — with a ten-day
+lookback for weekends and holidays.
+
+**No PDF library was installed; `barryvdh/laravel-dompdf` was added.**
+Pure PHP, no binary, no daemon — the only kind of PDF generation shared hosting will run.
+wkhtmltopdf and headless Chrome both need a process that cannot be started there.
+
+**Recurring invoices generate drafts, never issued invoices.**
+Issuing freezes an exchange rate onto a legal document. That is a decision a person makes, not one
+a cron job makes at 3am against whatever rate happened to be current.
+
+**A known environment problem, left alone deliberately.**
+A real (non-test) rate fetch fails on this machine with `cURL error 60: unable to get local issuer
+certificate` — `C:\Users\morph\PHP\8.3\php.ini` sets neither `curl.cainfo` nor `openssl.cafile`
+and the install ships no `cacert.pem`. Tests never touch the network so nothing here is blocked,
+but the scheduled job cannot work on this machine until a CA bundle is installed. Not fixed
+because it changes PHP globally for every project on the machine.
