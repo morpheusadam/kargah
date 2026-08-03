@@ -50,9 +50,45 @@ final class NotificationEvents
                 'label' => 'A card is due today',
                 'default' => ['in_app' => true, 'email' => false],
             ],
+            'card.overdue' => [
+                'group' => 'Projects',
+                'label' => 'A card has gone past its due date',
+                'default' => ['in_app' => true, 'email' => false],
+            ],
             'card.assigned' => [
                 'group' => 'Projects',
                 'label' => 'A card is assigned to me',
+                'default' => ['in_app' => true, 'email' => false],
+            ],
+            /*
+             * The five below come from watching a card, a list or a board.
+             * They are the ones a person opts into, so they default to on
+             * in-app and off by email — an inbox filling up with "a card
+             * moved" is how someone turns the whole feature off.
+             */
+            'card.commented' => [
+                'group' => 'Projects',
+                'label' => 'Someone comments on a card I watch',
+                'default' => ['in_app' => true, 'email' => false],
+            ],
+            'card.due_changed' => [
+                'group' => 'Projects',
+                'label' => 'The dates change on a card I watch',
+                'default' => ['in_app' => true, 'email' => false],
+            ],
+            'card.moved' => [
+                'group' => 'Projects',
+                'label' => 'A card I watch moves list',
+                'default' => ['in_app' => true, 'email' => false],
+            ],
+            'card.archived' => [
+                'group' => 'Projects',
+                'label' => 'A card I watch is archived',
+                'default' => ['in_app' => true, 'email' => false],
+            ],
+            'card.new_in_list' => [
+                'group' => 'Projects',
+                'label' => 'A card is added to a list or board I watch',
                 'default' => ['in_app' => true, 'email' => false],
             ],
             'email.received' => [

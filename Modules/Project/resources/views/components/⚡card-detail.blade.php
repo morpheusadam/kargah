@@ -15,6 +15,7 @@ use Modules\Project\Models\CardPlacement;
 use Modules\Project\Models\Checklist;
 use Modules\Project\Models\ChecklistItem;
 use Modules\Project\Services\CardService;
+use Modules\Project\Services\Watching;
 use Modules\Project\Support\Position;
 
 /**
@@ -446,6 +447,15 @@ class extends Component
         $wasOn
             ? $card->members()->detach($user->id)
             : $card->members()->attach($user->id);
+
+        if (! $wasOn) {
+            // Being added to a card always notifies, regardless of watch state
+            // — that is Trello's rule and it is the right one. It has to be
+            // called by hand rather than by an observer, because
+            // `BelongsToMany::attach()` fires no Eloquent model events, so
+            // there is no hook on `card_members` the way there is on comments.
+            app(Watching::class)->notifyMemberAdded($card, $user->id, auth()->id());
+        }
 
         $this->cardChanged();
 
@@ -1477,6 +1487,14 @@ class extends Component
                             component resolves that from the card id alone.
                         --}}
                         <livewire:project::card-custom-fields :card-id="$card->id" />
+
+                        {{--
+                            Watching a card gets you its comments, date changes,
+                            moves and archiving. Watching the list or board it
+                            sits on gets you the same for everything in them —
+                            that part lives on those pages, not here.
+                        --}}
+                        <livewire:project::card-watch :card-id="$card->id" />
 
                         {{-- Checklist --}}
                         <div class="flex flex-col gap-3">
