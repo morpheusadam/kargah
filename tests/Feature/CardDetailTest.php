@@ -687,29 +687,24 @@ class CardDetailTest extends TestCase
     /* No fixtures left behind ------------------------------------------------------ */
 
     /**
-     * A success toast on a method that writes nothing is worse than no method
-     * at all. Attachments are the one honest exception — there is no table for
-     * them until the Data module lands — and it reports as info, not success.
+     * `removeAttachment()` was the one honest exception to "no fixtures left
+     * behind" — there was no attachments table until the Data module landed.
+     * `AttachmentService` shipped in phase 6, so the stub is gone along with
+     * the sentence; `CardAttachmentTest` covers what replaced it, and this
+     * test now guards against the sentence ever creeping back in.
      */
-    public function test_only_the_attachments_action_still_says_it_is_not_connected(): void
+    public function test_the_drawer_no_longer_says_attachments_are_not_connected(): void
     {
         $drawer = file_get_contents(base_path('Modules/Project/resources/views/components/⚡card-detail.blade.php'));
-        $templates = file_get_contents(base_path('Modules/Project/resources/views/components/⚡board-templates.blade.php'));
 
-        $this->assertSame(1, substr_count($drawer, 'Not connected yet'), 'Only removeAttachment() may still say so.');
-        $this->assertStringNotContainsString('Not connected yet', $templates);
-
-        $this->assertStringContainsString(
-            "toastInfo('Not connected yet', 'File attachments arrive with the Data module.')",
-            $drawer,
-        );
+        $this->assertStringNotContainsString('Not connected yet', $drawer);
+        $this->assertStringNotContainsString('File attachments arrive with the Data module.', $drawer);
     }
 
     public function test_the_attachments_section_shows_its_empty_state_rather_than_invented_files(): void
     {
         $this->drawer()
-            ->assertSee('Nothing can be attached yet.')
-            ->assertSee('File attachments arrive with the Data module.')
+            ->assertSee('No files attached yet.')
             ->assertDontSee('landing-copy-v2.md');
     }
 

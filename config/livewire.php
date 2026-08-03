@@ -140,7 +140,22 @@ return [
 
     'temporary_file_upload' => [
         'disk' => env('LIVEWIRE_TEMPORARY_FILE_UPLOAD_DISK'), // Example: 'local', 's3'             | Default: 'default'
-        'rules' => null,                                      // Example: ['file', 'mimes:png,jpg'] | Default: ['required', 'file', 'max:12288'] (12MB)
+        /*
+         * 25 MB, matching what the upload forms themselves validate.
+         *
+         * Left at `null` this falls back to Livewire's own 12 MB default, which
+         * is enforced the moment a file is *queued* — before a component's own
+         * rule ever runs. So the Files page and the card drawer both said 25 MB
+         * and both refused anything over 12, with a message about the wrong
+         * limit. Two numbers, one of them a lie.
+         *
+         * This is the ceiling Kargah asks for. PHP's own `upload_max_filesize`
+         * and `post_max_size` are the real ones on a shared host and are
+         * commonly lower — a deploy that wants the full 25 MB has to raise
+         * those too, and if it cannot, this number should come down to match
+         * rather than the forms keep promising it.
+         */
+        'rules' => ['required', 'file', 'max:25600'],
         'directory' => null,                                  // Example: 'tmp'                     | Default: 'livewire-tmp'
         'middleware' => null,                                 // Example: 'throttle:5,1'            | Default: 'throttle:60,1'
         'preview_mimes' => [                                  // Supported file types for temporary pre-signed file URLs...

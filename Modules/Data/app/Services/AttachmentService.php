@@ -245,6 +245,10 @@ class AttachmentService implements AttachmentServiceContract
             'uploaded_by' => $attachment->uploaded_by,
             'uploaded_at' => $attachment->created_at?->toDateTimeString(),
             'download_url' => route('data.file-download', ['attachment' => $attachment->id]),
+            // The same bytes, shown rather than saved. A card cover or a board
+            // background is an image on a page and wants this one; a paperclip
+            // in a file list wants `download_url`.
+            'inline_url' => route('data.file-inline', ['attachment' => $attachment->id]),
         ];
     }
 }

@@ -17,6 +17,23 @@ Route::middleware('auth')->prefix('data')->name('data.')->group(function () {
         ->whereNumber('attachment')
         ->name('file-download');
 
+    /*
+     * The same bytes, offered to the tab rather than to the downloads folder.
+     *
+     * A card cover is an `<img src>` pointing at a stored attachment, and it
+     * wants a URL that is stable and does not expire. `file-download` sends
+     * `Content-Disposition: attachment`, which is a request to save rather than
+     * display; `file-share` is signed and expires, which is right for something
+     * handed to an outsider and wrong for a picture on your own board.
+     *
+     * So: behind `auth`, inline, permanent. The service already knew how — it
+     * takes an `inline` flag — there was simply no authenticated route asking
+     * for it.
+     */
+    Route::get('/files/{attachment}/inline', [AttachmentController::class, 'inline'])
+        ->whereNumber('attachment')
+        ->name('file-inline');
+
     Route::livewire('/passwords', 'data::passwords')->name('passwords');
     Route::livewire('/passwords/create', 'data::credential-create')->name('credential-create');
 

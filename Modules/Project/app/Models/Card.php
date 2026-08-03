@@ -18,7 +18,9 @@ use Illuminate\Support\Str;
 use Modules\Core\Concerns\Linkable;
 use Modules\Core\Models\Company;
 use Modules\Core\Models\Customer;
+use Modules\Data\Contracts\AttachmentService;
 use Modules\Project\Database\Factories\CardFactory;
+use Modules\Project\Support\Palette;
 use Spatie\Activitylog\LogOptions;
 use Spatie\Activitylog\Traits\LogsActivity;
 
@@ -39,6 +41,10 @@ class Card extends Model
         'completed_at',
         'archived_at',
         'created_by',
+        'cover_type',
+        'cover_colour',
+        'cover_attachment_id',
+        'cover_size',
     ];
 
     protected function casts(): array
@@ -292,6 +298,63 @@ class Card extends Model
         $items = $this->checklists->flatMap->items;
 
         return [$items->where('is_done', true)->count(), $items->count()];
+    }
+
+    /**
+     * The cover this card should show, resolved to what a renderer needs and
+     * nothing more — a plain array, never the attachment itself.
+     *
+     * An image cover names an attachment id rather than a URL, because the
+     * URL belongs to Data and this is the one place that reaches for it. That
+     * is also what makes a deleted attachment harmless: `AttachmentService::
+     * find()` returns null for a soft-deleted or missing row, this method
+     * reports "no cover" for it, and the card stays renderable rather than
+     * carrying a picture that no longer exists. Nothing here rewrites the
+     * stale column — a card whose cover attachment comes back (restored from
+     * the archive) is covered again without anything having to remember to
+     * reattach it.
+     *
+     * Read by this card's own drawer and by the board card front, which is
+     * why it lives here rather than in a Livewire component either of them
+     * would have to duplicate — the same reason `dueBadgeColour()` does.
+     *
+     * @return null|array{type: 'colour'|'image', size: 'half'|'full', colour: ?string, url: ?string}
+     */
+    public function coverPresentation(): ?array
+    {
+        $size = $this->cover_size === 'full' ? 'full' : 'half';
+
+        if ($this->cover_type === 'colour' && $this->cover_colour !== null && Palette::has($this->cover_colour)) {
+            return ['type' => 'colour', 'size' => $size, 'colour' => $this->cover_colour, 'url' => null];
+        }
+
+        if ($this->cover_type === 'image' && $this->cover_attachment_id !== null) {
+            $attachment = app(AttachmentService::class)->find((int) $this->cover_attachment_id);
+
+            if ($attachment === null) {
+                return null;
+            }
+
+            // `inline_url`, not `download_url` — the latter carries
+            // `Content-Disposition: attachment`, which asks the browser to save
+            // a picture the card only wants to show.
+            return ['type' => 'image', 'size' => $size, 'colour' => null, 'url' => $attachment['inline_url']];
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether the card front should hide its badges — the due date, the
+     * checklist count, the comment count — in favour of the cover picture.
+     * Only a *full* cover that actually resolves does this; a half cover, or
+     * a full cover pointing at a deleted attachment, leaves the badges shown.
+     */
+    public function coverHidesBadges(): bool
+    {
+        $cover = $this->coverPresentation();
+
+        return $cover !== null && $cover['size'] === 'full';
     }
 
     /**

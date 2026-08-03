@@ -6,7 +6,9 @@ use Illuminate\Support\Collection;
 use Livewire\Attributes\On;
 use Livewire\Attributes\Validate;
 use Livewire\Component;
+use Livewire\WithFileUploads;
 use Modules\Core\Concerns\InteractsWithToasts;
+use Modules\Data\Contracts\AttachmentService;
 use Modules\Project\Models\Board;
 use Modules\Project\Models\BoardList;
 use Modules\Project\Models\Card;
@@ -16,6 +18,7 @@ use Modules\Project\Models\Checklist;
 use Modules\Project\Models\ChecklistItem;
 use Modules\Project\Services\CardService;
 use Modules\Project\Services\Watching;
+use Modules\Project\Support\Palette;
 use Modules\Project\Support\Position;
 
 /**
@@ -53,6 +56,16 @@ new
 class extends Component
 {
     use InteractsWithToasts;
+    use WithFileUploads;
+
+    /** Extensions `uploadAttachment()` accepts. Mirrors what `⚡files.blade.php` already lists icons for. */
+    private const ALLOWED_ATTACHMENT_TYPES = [
+        'jpg', 'jpeg', 'png', 'gif', 'webp', 'svg',
+        'pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'txt', 'md', 'zip',
+    ];
+
+    /** Extensions a cover picker offers — the ones a browser can actually paint as an `<img>`. */
+    private const COVER_IMAGE_TYPES = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
 
     public bool $open = false;
 
@@ -90,11 +103,16 @@ class extends Component
 
     public bool $mirrorPopoverOpen = false;
 
+    public bool $coverPopoverOpen = false;
+
     /** The board the mirror picker is showing lists from, as a string id. */
     public string $mirrorBoard = '';
 
     /** The list the mirror will be added to, as a string id. */
     public string $mirrorList = '';
+
+    /** @var array<int, \Livewire\Features\SupportFileUploads\TemporaryUploadedFile> */
+    public array $uploads = [];
 
     /** Per-request memo. Private, so Livewire neither ships nor rehydrates it. */
     private ?Card $resolvedCard = null;
@@ -220,6 +238,28 @@ class extends Component
             ->get();
     }
 
+    /**
+     * Everything attached to the open card, through the contract — never
+     * `Modules\Data\Models\Attachment`. Icon and tone are added on top of the
+     * plain array the service hands back, for the list this file draws.
+     *
+     * @return Collection<int, array>
+     */
+    private function attachments(): Collection
+    {
+        $card = $this->card();
+
+        if ($card === null) {
+            return collect();
+        }
+
+        return app(AttachmentService::class)->forTarget($card)->map(function (array $attachment): array {
+            [$icon, $tone] = $this->attachmentIcon($attachment['extension']);
+
+            return $attachment + ['icon' => $icon, 'tone' => $tone];
+        });
+    }
+
     public function with(): array
     {
         $card = $this->card();
@@ -242,6 +282,10 @@ class extends Component
             'checklistDone' => $done,
             'checklistTotal' => $total,
             'checklistPercent' => $total > 0 ? (int) round($done / $total * 100) : 0,
+            'attachments' => $this->attachments(),
+            'attachmentImageTypes' => self::COVER_IMAGE_TYPES,
+            'cover' => $card?->coverPresentation(),
+            'coverColours' => Palette::keys(),
             'formatting' => [
                 ['icon' => 'ki-text-bold', 'wrap' => '**', 'title' => 'Bold'],
                 ['icon' => 'ki-text-italic', 'wrap' => '_', 'title' => 'Italic'],
@@ -277,10 +321,12 @@ class extends Component
         $this->duePopoverOpen = false;
         $this->movePopoverOpen = false;
         $this->mirrorPopoverOpen = false;
+        $this->coverPopoverOpen = false;
         $this->mirrorBoard = (string) ($card->list?->board_id ?? '');
         $this->mirrorList = '';
         $this->newComment = '';
         $this->newChecklistItem = '';
+        $this->uploads = [];
 
         $this->resetValidation();
     }
@@ -313,6 +359,7 @@ class extends Component
         $this->duePopoverOpen = false;
         $this->movePopoverOpen = false;
         $this->mirrorPopoverOpen = false;
+        $this->coverPopoverOpen = false;
     }
 
     /* Title and description ---------------------------------------------- */
@@ -402,6 +449,7 @@ class extends Component
         $this->duePopoverOpen = false;
         $this->movePopoverOpen = false;
         $this->mirrorPopoverOpen = false;
+        $this->coverPopoverOpen = false;
     }
 
     /** Opening a picker is not worth announcing. */
@@ -413,6 +461,7 @@ class extends Component
         $this->duePopoverOpen = false;
         $this->movePopoverOpen = false;
         $this->mirrorPopoverOpen = false;
+        $this->coverPopoverOpen = false;
     }
 
     /**
@@ -520,6 +569,7 @@ class extends Component
         $this->duePopoverOpen = false;
         $this->movePopoverOpen = false;
         $this->mirrorPopoverOpen = false;
+        $this->coverPopoverOpen = false;
     }
 
     /**
@@ -805,15 +855,123 @@ class extends Component
     /* Attachments and comments -------------------------------------------- */
 
     /**
-     * There is no attachments table yet.
+     * Icon and tone per extension. Whole class strings in a map, never
+     * `text-{$tone}` — the Tailwind scanner reads this file as text and
+     * cannot see a class assembled at run time. Kept local rather than
+     * imported from `⚡files.blade.php`: that map is private to a component
+     * this one must not reach into, and it is eleven lines to repeat.
      *
-     * Files land with the Data module, which owns the disk, the size accounting
-     * and the download route. Until then the section renders its empty state
-     * and this says so rather than pretending to delete a row.
+     * @return array<string, array{0: string, 1: string}>
      */
-    public function removeAttachment(string $name): void
+    private function attachmentIcon(string $extension): array
     {
-        $this->toastInfo('Not connected yet', 'File attachments arrive with the Data module.');
+        return match ($extension) {
+            'pdf' => ['ki-document', 'text-destructive'],
+            'doc', 'docx' => ['ki-document', 'text-primary'],
+            'csv', 'xlsx', 'xls' => ['ki-file-sheet', 'text-success'],
+            'md', 'txt' => ['ki-notepad', 'text-secondary-foreground'],
+            'svg', 'png', 'jpg', 'jpeg', 'webp', 'gif' => ['ki-picture', 'text-info'],
+            'zip' => ['ki-archive', 'text-warning'],
+            default => ['ki-document', 'text-muted-foreground'],
+        };
+    }
+
+    /**
+     * Store every queued upload against the open card.
+     *
+     * Goes through `AttachmentService` exactly like `⚡files.blade.php`
+     * does — this component never opens a file handle. Size and type are
+     * both checked before anything is stored: `max:25600` keeps a shared
+     * host's disk from a careless video, and `mimes:` keeps the card
+     * attachments list from becoming a place to park an executable.
+     */
+    public function uploadAttachment(): void
+    {
+        $card = $this->card();
+
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        if ($this->uploads === []) {
+            $this->toastWarning('Nothing to upload', 'Choose a file first.');
+
+            return;
+        }
+
+        $this->validate([
+            'uploads.*' => ['file', 'max:25600', 'mimes:'.implode(',', self::ALLOWED_ATTACHMENT_TYPES)],
+        ]);
+
+        $service = app(AttachmentService::class);
+
+        foreach ($this->uploads as $upload) {
+            $service->attach($card, $upload, auth()->id());
+        }
+
+        $stored = count($this->uploads);
+        $names = collect($this->uploads)->map(fn ($u) => $u->getClientOriginalName())->join(', ', ' and ');
+        $this->uploads = [];
+
+        $this->toastSuccess(
+            'Stored '.$stored.' '.str('file')->plural($stored),
+            $names.' — attached to '.$card->title.'.',
+        );
+    }
+
+    /**
+     * Remove one of this card's attachments.
+     *
+     * The bytes stay on disk — `AttachmentService::delete()` soft deletes the
+     * row, the same as everywhere else it is called from. When the removed
+     * file was the card's own cover, the cover is cleared in the same
+     * request rather than left pointing at a row that is now gone: nothing
+     * *breaks* either way, because `Card::coverPresentation()` treats a
+     * missing attachment as "no cover" on its own — but doing it here as
+     * well means the card's `cover_type` does not sit stale in the database
+     * until somebody happens to open this drawer again.
+     */
+    public function deleteAttachment(int $attachmentId): void
+    {
+        $card = $this->card();
+
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        $service = app(AttachmentService::class);
+        $attachment = $service->find($attachmentId);
+
+        if ($attachment === null || $attachment['target_type'] !== $card->getMorphClass() || $attachment['target_id'] !== $card->id) {
+            $this->toastError('That file is gone', 'It was already removed, or never belonged to this card.');
+
+            return;
+        }
+
+        $service->delete($attachmentId);
+
+        $wasCover = $card->cover_type === 'image' && $card->cover_attachment_id === $attachmentId;
+
+        if ($wasCover) {
+            $card->update(['cover_type' => null, 'cover_colour' => null, 'cover_attachment_id' => null, 'cover_size' => 'half']);
+        }
+
+        $this->forgetCard();
+
+        if ($wasCover) {
+            $this->cardChanged();
+        }
+
+        $this->toastSuccess(
+            $attachment['name'].' removed',
+            $wasCover
+                ? 'It was the card cover, so the cover was cleared as well. The bytes are still on disk.'
+                : 'It is off the card. The bytes are still on disk and can be restored from Files.',
+        );
     }
 
     /** Post a comment on the card. */
@@ -864,6 +1022,7 @@ class extends Component
         $this->startPopoverOpen = false;
         $this->duePopoverOpen = false;
         $this->mirrorPopoverOpen = false;
+        $this->coverPopoverOpen = false;
 
         if ($this->movePopoverOpen) {
             $this->moveToList = (string) ($this->card()?->originPlacement?->board_list_id ?? '');
@@ -943,6 +1102,7 @@ class extends Component
         $this->startPopoverOpen = false;
         $this->duePopoverOpen = false;
         $this->movePopoverOpen = false;
+        $this->coverPopoverOpen = false;
 
         if ($this->mirrorPopoverOpen) {
             $this->mirrorBoard = (string) ($this->card()?->list?->board_id ?? '');
@@ -954,6 +1114,125 @@ class extends Component
     public function updatedMirrorBoard(): void
     {
         $this->mirrorList = '';
+    }
+
+    /* Cover ----------------------------------------------------------------- */
+
+    public function toggleCoverPopover(): void
+    {
+        $this->coverPopoverOpen = ! $this->coverPopoverOpen;
+        $this->labelPopoverOpen = false;
+        $this->memberPopoverOpen = false;
+        $this->startPopoverOpen = false;
+        $this->duePopoverOpen = false;
+        $this->movePopoverOpen = false;
+        $this->mirrorPopoverOpen = false;
+    }
+
+    /**
+     * Set the cover to a plain colour band.
+     *
+     * Needs no attachment — Trello ships the colour half of a cover without
+     * the file layer, and so does this. Setting the same colour and size the
+     * card already carries writes nothing: this drawer always reads the card
+     * fresh, so a no-op write here would cost a query for a change nobody
+     * made. Picking a colour changes the drawer in front of the person doing
+     * it, so — unlike an upload or a delete — it does not toast.
+     */
+    public function setCoverColour(string $colour): void
+    {
+        $card = $this->card();
+
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        if (! Palette::has($colour)) {
+            $this->toastError('That colour does not exist', 'Pick one from the list.');
+
+            return;
+        }
+
+        if ($card->cover_type === 'colour' && $card->cover_colour === $colour) {
+            return;
+        }
+
+        $card->update(['cover_type' => 'colour', 'cover_colour' => $colour, 'cover_attachment_id' => null]);
+
+        $this->cardChanged();
+    }
+
+    /**
+     * Set the cover to a picture, taken from one of this card's own
+     * attachments — never someone else's, which is what the ownership check
+     * below is for.
+     */
+    public function setCoverImage(int $attachmentId): void
+    {
+        $card = $this->card();
+
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        $attachment = app(AttachmentService::class)->find($attachmentId);
+
+        if ($attachment === null || $attachment['target_type'] !== $card->getMorphClass() || $attachment['target_id'] !== $card->id) {
+            $this->toastError('That file is not on this card', 'Attach it first, then pick it as the cover.');
+
+            return;
+        }
+
+        if ($card->cover_type === 'image' && $card->cover_attachment_id === $attachmentId) {
+            return;
+        }
+
+        $card->update(['cover_type' => 'image', 'cover_attachment_id' => $attachmentId, 'cover_colour' => null]);
+
+        $this->cardChanged();
+    }
+
+    /** Half shows the badges alongside the cover; full replaces them with it. */
+    public function toggleCoverSize(): void
+    {
+        $card = $this->card();
+
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        if ($card->cover_type === null) {
+            return;
+        }
+
+        $card->update(['cover_size' => $card->cover_size === 'full' ? 'half' : 'full']);
+
+        $this->cardChanged();
+    }
+
+    public function removeCover(): void
+    {
+        $card = $this->card();
+
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        if ($card->cover_type === null) {
+            return;
+        }
+
+        $card->update(['cover_type' => null, 'cover_colour' => null, 'cover_attachment_id' => null, 'cover_size' => 'half']);
+
+        $this->cardChanged();
     }
 
     /**
@@ -1387,6 +1666,73 @@ class extends Component
                                     </div>
                                 </div>
                             </div>
+
+                            {{--
+                                A cover is a colour band or a picture taken from one
+                                of this card's own attachments, half or full height.
+                                A full cover replaces the badges on the card front
+                                with the picture — that rule is drawn on the board,
+                                not here, but the size toggle below is what sets it.
+                            --}}
+                            <div class="flex flex-col gap-2">
+                                <span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Cover</span>
+                                <div class="relative">
+                                    <button wire:click="toggleCoverPopover" class="kt-btn kt-btn-outline kt-btn-sm gap-2"
+                                            aria-expanded="{{ $coverPopoverOpen ? 'true' : 'false' }}">
+                                        @if ($cover && $cover['type'] === 'colour')
+                                            <span class="size-3 rounded-sm {{ \Modules\Project\Support\Palette::dot($cover['colour']) }}"></span> {{ \Modules\Project\Support\Palette::name($cover['colour']) }}
+                                        @elseif ($cover && $cover['type'] === 'image')
+                                            <i class="ki-filled ki-picture text-sm"></i> Photo
+                                        @else
+                                            <i class="ki-filled ki-brush text-sm"></i> No cover
+                                        @endif
+                                    </button>
+
+                                    <div class="kt-dropdown absolute z-20 mt-1 start-0 w-[280px] p-4 flex flex-col gap-3 {{ $coverPopoverOpen ? 'open' : '' }}">
+                                        <div>
+                                            <h4 class="text-sm font-semibold text-mono">Cover</h4>
+                                            <p class="text-[11px] text-muted-foreground mt-1">A full cover replaces the badges on the card front with the picture.</p>
+                                        </div>
+
+                                        <div>
+                                            <span class="text-xs text-muted-foreground">Colour</span>
+                                            <div class="flex flex-wrap gap-1.5 mt-1.5">
+                                                @foreach ($coverColours as $colourKey)
+                                                    <button wire:click="setCoverColour('{{ $colourKey }}')" wire:key="cover-colour-{{ $colourKey }}"
+                                                            class="size-7 rounded-md {{ \Modules\Project\Support\Palette::dot($colourKey) }} {{ $cover && $cover['type'] === 'colour' && $cover['colour'] === $colourKey ? 'ring-2 ring-offset-1 ring-primary' : '' }}"
+                                                            title="{{ \Modules\Project\Support\Palette::name($colourKey) }}"
+                                                            aria-label="Set the cover to {{ \Modules\Project\Support\Palette::name($colourKey) }}"></button>
+                                                @endforeach
+                                            </div>
+                                        </div>
+
+                                        @php($coverImageChoices = $attachments->whereIn('extension', $attachmentImageTypes))
+                                        @if ($coverImageChoices->isNotEmpty())
+                                            <div>
+                                                <span class="text-xs text-muted-foreground">From an attachment</span>
+                                                <div class="flex flex-wrap gap-1.5 mt-1.5">
+                                                    @foreach ($coverImageChoices as $image)
+                                                        <button wire:click="setCoverImage({{ $image['id'] }})" wire:key="cover-pick-{{ $image['id'] }}"
+                                                                class="kt-btn kt-btn-sm kt-btn-outline gap-1.5 {{ $cover && $cover['type'] === 'image' && $card->cover_attachment_id === $image['id'] ? 'border-primary text-primary' : '' }}">
+                                                            <i class="ki-filled ki-picture text-sm"></i> {{ \Illuminate\Support\Str::limit($image['name'], 16) }}
+                                                        </button>
+                                                    @endforeach
+                                                </div>
+                                            </div>
+                                        @else
+                                            <p class="text-[11px] text-muted-foreground">Attach an image below to use it as a cover.</p>
+                                        @endif
+
+                                        @if ($cover)
+                                            <label class="flex items-center gap-2 text-sm text-secondary-foreground">
+                                                <input type="checkbox" class="kt-checkbox" wire:click="toggleCoverSize" @checked($cover['size'] === 'full')>
+                                                Full cover — hides the badges on the card front
+                                            </label>
+                                            <button wire:click="removeCover" class="kt-btn kt-btn-sm kt-btn-ghost self-start">Remove cover</button>
+                                        @endif
+                                    </div>
+                                </div>
+                            </div>
                         </div>
 
                         {{--
@@ -1552,9 +1898,10 @@ class extends Component
                         </div>
 
                         {{--
-                            Attachments. There is no attachments table yet: files
-                            land with the Data module, which owns the disk and the
-                            download route. The empty state is the honest render.
+                            Attachments, through `Modules\Data\Contracts\AttachmentService`.
+                            An image extension gets a "use as cover" button; the cover
+                            itself is picked from here, alongside a plain colour, from
+                            the picker up in the labels/dates row.
                         --}}
                         <div class="flex flex-col gap-3">
                             <div class="flex items-center gap-2">
@@ -1562,10 +1909,56 @@ class extends Component
                                 <h3 class="text-sm font-semibold text-mono">Attachments</h3>
                             </div>
 
-                            <div class="rounded-lg border border-dashed border-border px-4 py-6 text-center">
+                            <label class="rounded-lg border border-dashed border-border bg-accent/60 px-4 py-5 flex flex-col items-center gap-2 text-center cursor-pointer">
                                 <i class="ki-filled ki-cloud-add text-2xl text-muted-foreground"></i>
-                                <p class="text-sm text-muted-foreground mt-2">Nothing can be attached yet.</p>
-                                <p class="text-xs text-muted-foreground mt-1">File attachments arrive with the Data module.</p>
+                                <span class="text-sm text-secondary-foreground">Choose files, up to 25 MB each</span>
+                                <input type="file" multiple class="hidden" wire:model="uploads">
+                            </label>
+
+                            <div wire:loading wire:target="uploads" class="text-xs text-secondary-foreground">
+                                <i class="ki-filled ki-loading animate-spin"></i> Receiving…
+                            </div>
+
+                            @error('uploads.*')<span class="text-xs text-destructive">{{ $message }}</span>@enderror
+
+                            @if (count($uploads) > 0)
+                                <div class="flex items-center gap-2">
+                                    <button wire:click="uploadAttachment" wire:loading.attr="disabled" wire:target="uploadAttachment"
+                                            class="kt-btn kt-btn-sm kt-btn-primary gap-1">
+                                        <span wire:loading.remove wire:target="uploadAttachment">
+                                            Store {{ count($uploads) }} {{ str('file')->plural(count($uploads)) }}
+                                        </span>
+                                        <span wire:loading wire:target="uploadAttachment"><i class="ki-filled ki-loading animate-spin"></i> Storing…</span>
+                                    </button>
+                                </div>
+                            @endif
+
+                            <div class="flex flex-col gap-1.5">
+                                @forelse ($attachments as $file)
+                                    <div class="flex items-center gap-2.5 rounded-md border border-border px-3 py-2" wire:key="attachment-{{ $file['id'] }}">
+                                        <i class="ki-filled {{ $file['icon'] }} {{ $file['tone'] }} text-lg shrink-0"></i>
+                                        <div class="min-w-0 grow">
+                                            <a href="{{ $file['download_url'] }}" class="text-sm font-medium text-mono truncate hover:underline block">{{ $file['name'] }}</a>
+                                            <span class="text-xs text-muted-foreground">{{ $file['size'] }}</span>
+                                        </div>
+
+                                        @if (in_array($file['extension'], $attachmentImageTypes, true))
+                                            <button wire:click="setCoverImage({{ $file['id'] }})"
+                                                    class="kt-btn kt-btn-icon kt-btn-ghost size-7 {{ $cover && $cover['type'] === 'image' && $card->cover_attachment_id === $file['id'] ? 'text-primary' : '' }}"
+                                                    title="Use as cover" aria-label="Use {{ $file['name'] }} as the card cover">
+                                                <i class="ki-filled ki-picture text-sm"></i>
+                                            </button>
+                                        @endif
+
+                                        <button wire:click="deleteAttachment({{ $file['id'] }})" wire:confirm="Remove {{ $file['name'] }}?"
+                                                wire:loading.attr="disabled" wire:target="deleteAttachment({{ $file['id'] }})"
+                                                class="kt-btn kt-btn-icon kt-btn-ghost size-7" title="Remove attachment" aria-label="Remove {{ $file['name'] }}">
+                                            <i class="ki-filled ki-trash text-xs"></i>
+                                        </button>
+                                    </div>
+                                @empty
+                                    <p class="text-sm text-muted-foreground px-1 py-1.5">No files attached yet.</p>
+                                @endforelse
                             </div>
                         </div>
 

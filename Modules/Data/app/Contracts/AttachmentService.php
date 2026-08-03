@@ -30,8 +30,16 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  *     id: int, name: string, mime: ?string, size_bytes: int, size: string,
  *     extension: string, checksum: ?string, disk: string, path: string,
  *     target_type: string, target_id: int, uploaded_by: ?int,
- *     uploaded_at: ?string, download_url: string
+ *     uploaded_at: ?string, download_url: string, inline_url: string
  * }
+ *
+ * Two URLs, and picking the wrong one is a visible bug rather than a style
+ * choice. `download_url` sends `Content-Disposition: attachment` — the right
+ * answer for a paperclip in a file list, and the wrong one for an `<img src>`,
+ * where it asks the browser to save a picture it was only meant to show.
+ * `inline_url` is the same bytes behind the same `auth`, displayed. Neither
+ * expires; the signed, expiring link is a separate thing, for handing a file to
+ * somebody outside.
  */
 interface AttachmentService
 {

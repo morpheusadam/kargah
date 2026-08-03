@@ -23,6 +23,18 @@ class AttachmentController extends Controller
     }
 
     /**
+     * The same bytes as `download`, shown rather than saved.
+     *
+     * Behind `auth` and permanent, which is what an `<img src>` on a card cover
+     * needs: `download` asks the browser to save the file, and the signed share
+     * link expires, so neither suits a picture that should just be there.
+     */
+    public function inline(AttachmentService $attachments, int $attachment): StreamedResponse
+    {
+        return $attachments->stream($attachment, inline: true);
+    }
+
+    /**
      * A shared file, opened in the tab rather than downloaded.
      *
      * Behind `signed` and outside the auth group, which is the whole point: the

@@ -138,9 +138,14 @@ class DataModuleTest extends TestCase
         // The shape other modules are allowed to depend on.
         $this->assertSame(
             ['id', 'name', 'mime', 'size_bytes', 'size', 'extension', 'checksum', 'disk', 'path',
-                'target_type', 'target_id', 'uploaded_by', 'uploaded_at', 'download_url'],
+                'target_type', 'target_id', 'uploaded_by', 'uploaded_at', 'download_url', 'inline_url'],
             array_keys($stored),
         );
+
+        // Two URLs, and choosing wrongly is a visible bug rather than a style
+        // point: one asks the browser to save the file, the other to show it.
+        $this->assertStringEndsWith('/download', $stored['download_url']);
+        $this->assertStringEndsWith('/inline', $stored['inline_url']);
     }
 
     public function test_an_upload_is_stored_with_its_size_and_a_sha256_of_the_bytes(): void
