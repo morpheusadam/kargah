@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Support\Facades\Route;
+use Modules\Project\Http\Controllers\BoardExportController;
 use Modules\Project\Http\Controllers\CalendarFeedController;
 
 /*
@@ -14,7 +15,19 @@ Route::middleware('auth')->prefix('projects')->name('projects.')->group(function
     Route::livewire('/table', 'project::table')->name('table');
     Route::livewire('/calendar', 'project::calendar')->name('calendar');
     Route::livewire('/dashboard', 'project::board-dashboard')->name('dashboard');
+    Route::livewire('/activity', 'project::board-activity')->name('activity');
+    Route::livewire('/print', 'project::board-print')->name('print');
     Route::livewire('/{board}/settings', 'project::board-settings')->name('board-settings');
+
+    /*
+     * The board as a file. Behind `auth`, unlike the `.ics` feed above: that
+     * one publishes titles and dates to a calendar client that has never had a
+     * session, whereas this dumps every description on the board.
+     */
+    Route::get('/{board}/export/{format}', BoardExportController::class)
+        ->where('board', '[A-Za-z0-9-]+')
+        ->where('format', 'csv|json')
+        ->name('export');
 });
 
 /*

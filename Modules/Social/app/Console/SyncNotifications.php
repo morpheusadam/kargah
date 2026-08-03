@@ -13,11 +13,12 @@ use Modules\Social\Support\Networks;
 /**
  * Bring back what happened on the networks that will say.
  *
- * Only two of the four can. Mastodon and Bluesky publish a notifications
+ * Only two of the five can. Mastodon and Bluesky publish a notifications
  * endpoint any account holder may call; LinkedIn's needs partner access nobody
- * self-serving has, and Telegram's `getUpdates` would consume the update queue
- * the bot itself depends on. Those two are skipped by name rather than left to
- * show an empty feed that reads as 'nothing happened'.
+ * self-serving has, Telegram's `getUpdates` would consume the update queue the
+ * bot itself depends on, and a Discord incoming webhook has no read side at
+ * all. Those three are skipped by name rather than left to show an empty feed
+ * that reads as 'nothing happened'.
  *
  * Running it twice leaves the same rows: every write is an `updateOrCreate` on
  * (social_account_id, remote_id), which is the unique index the migration

@@ -96,6 +96,27 @@ new class extends Component
                     </div>
                     @break
 
+                {{-- Discord: a channel message, webhook name with its BOT tag, body underneath --}}
+                @case('discord')
+                    <div class="rounded-xl bg-accent/40 p-3">
+                        <div class="flex gap-2.5">
+                            <span class="inline-flex items-center justify-center size-10 rounded-full bg-primary/10 text-primary shrink-0">
+                                <i class="ki-filled ki-message-programming text-base"></i>
+                            </span>
+                            <div class="min-w-0 grow">
+                                <div class="flex items-center gap-1.5">
+                                    <span class="text-sm font-semibold text-primary truncate">{{ $handle }}</span>
+                                    <span class="kt-badge kt-badge-sm kt-badge-primary">BOT</span>
+                                    <span class="text-[11px] text-muted-foreground">Today at {{ now()->format('H:i') }}</span>
+                                </div>
+                                <div class="text-sm leading-relaxed text-mono mt-0.5">
+                                    <span class="whitespace-pre-wrap">{{ $kept }}</span>@if ($cut)<span class="whitespace-pre-wrap line-through text-destructive/70 bg-destructive/10 rounded-sm">{{ $cut }}</span>@endif
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    @break
+
                 {{-- LinkedIn: post card with author block, body, then the reaction bar --}}
                 @case('linkedin')
                     <div class="rounded-xl border border-border">

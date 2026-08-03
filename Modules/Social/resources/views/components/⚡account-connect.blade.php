@@ -15,10 +15,10 @@ use Modules\Social\Support\Networks;
  * Every network here is a token you paste rather than an OAuth round trip, and
  * that is a deliberate choice rather than an unfinished one: an OAuth callback
  * needs a registered redirect URI per install, and Kargah's whole point is that
- * it runs on shared hosting somebody set up in an afternoon. Mastodon, Bluesky
- * and Telegram all issue a scoped, revocable credential from their own settings
- * screen. LinkedIn does not, which is why its field asks for a member token and
- * the page says it expires after sixty days.
+ * it runs on shared hosting somebody set up in an afternoon. Mastodon, Bluesky,
+ * Telegram and Discord all issue a scoped, revocable credential from their own
+ * settings screen. LinkedIn does not, which is why its field asks for a member
+ * token and the page says it expires after sixty days.
  *
  * **Checking is a real call.** `verify()` asks the network who the credentials
  * belong to and echoes the answer back, so 'connected' means Kargah reached

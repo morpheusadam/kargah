@@ -199,6 +199,14 @@ class SocialDatabaseSeeder extends Seeder
                 'display_name' => 'Kargah build log',
                 'is_active' => false,
             ],
+            [
+                'network' => Networks::DISCORD,
+                // A webhook posts to one channel, so the channel is what the
+                // queue and the calendar should name — not a server or a bot.
+                'handle' => '#build-log',
+                'display_name' => 'Kargah build log',
+                'is_active' => false,
+            ],
         ];
     }
 

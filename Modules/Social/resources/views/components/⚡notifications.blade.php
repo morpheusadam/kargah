@@ -17,10 +17,11 @@ use Modules\Social\Support\Networks;
  * every fifteen minutes; nothing here calls a network, because a page render
  * must never wait on someone else's API.
  *
- * Two of the four networks cannot appear here at all. LinkedIn's notifications
- * API needs partner access nobody self-serving has, and Telegram's `getUpdates`
- * would consume the update queue the bot itself depends on. The filter row says
- * so rather than offering a tab that is empty for a reason nobody can see.
+ * Three of the five networks cannot appear here at all. LinkedIn's
+ * notifications API needs partner access nobody self-serving has, Telegram's
+ * `getUpdates` would consume the update queue the bot itself depends on, and a
+ * Discord incoming webhook can only write. The filter row says so rather than
+ * offering a tab that is empty for a reason nobody can see.
  */
 new
 #[Title('Notifications — Kargah')]

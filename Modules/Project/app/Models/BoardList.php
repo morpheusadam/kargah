@@ -32,6 +32,7 @@ class BoardList extends Model
         'archived_at',
         'created_by',
         'colour',
+        'wip_limit',
     ];
 
     protected function casts(): array
@@ -39,6 +40,7 @@ class BoardList extends Model
         return [
             'position' => 'decimal:10',
             'archived_at' => 'datetime',
+            'wip_limit' => 'integer',
         ];
     }
 
@@ -85,6 +87,63 @@ class BoardList extends Model
     public function headerColourClass(): ?string
     {
         return $this->colour === null ? null : Palette::tone($this->colour);
+    }
+
+    /* WIP limit --------------------------------------------------------------
+     *
+     * Trello ships this as a Power-Up. It is a column here, because the whole
+     * feature is one nullable integer and a comparison, and because a limit
+     * nobody can see is not a limit.
+     *
+     * Nothing *enforces* it — a drop into a full list still succeeds. That is
+     * deliberate and it is what Trello does: the point of a work-in-progress
+     * limit is to make the overflow visible to the person causing it, not to
+     * refuse the work. A board tool that silently rejects a drag teaches people
+     * to stop using the board.
+     */
+
+    /** Per-user state about this list — today, whether it is folded away. */
+    public function userStates(): HasMany
+    {
+        return $this->hasMany(BoardListUserState::class);
+    }
+
+    public function hasWipLimit(): bool
+    {
+        // Zero is a limit, not an absence: a list nothing may enter is a
+        // legitimate thing to want, and `empty()` would read it as unset.
+        return $this->wip_limit !== null;
+    }
+
+    /**
+     * How a card count stands against this list's limit: `null` when there is
+     * no limit, `'at'` when the list is exactly full, `'over'` past it.
+     *
+     * The caller passes the count rather than this reading it, because the
+     * board already knows — it just rendered the cards — and a second count
+     * query per column is a query per column.
+     */
+    public function wipState(int $count): ?string
+    {
+        if (! $this->hasWipLimit()) {
+            return null;
+        }
+
+        return match (true) {
+            $count > $this->wip_limit => 'over',
+            $count === $this->wip_limit => 'at',
+            default => null,
+        };
+    }
+
+    /** The whole class string for the count badge, given where it stands. */
+    public function wipBadgeClass(int $count): string
+    {
+        return match ($this->wipState($count)) {
+            'over' => 'kt-badge kt-badge-sm kt-badge-destructive',
+            'at' => 'kt-badge kt-badge-sm kt-badge-warning',
+            default => 'kt-badge kt-badge-sm kt-badge-outline',
+        };
     }
 
     /**

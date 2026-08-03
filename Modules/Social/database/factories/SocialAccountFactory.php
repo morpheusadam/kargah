@@ -59,6 +59,11 @@ class SocialAccountFactory extends Factory
                     'identifier' => 'kargah.bsky.social',
                     'member_urn' => 'urn:li:person:AbCdEfGh',
                     'chat_id' => '@kargah_buildlog',
+                    // Shaped like a real one on purpose: `DiscordPublisher`
+                    // checks the host and the path before it will send
+                    // anywhere, so a placeholder secret would be refused
+                    // before the faked request was ever made.
+                    'webhook_url' => 'https://discord.com/api/webhooks/1145000000000000000/'.$secret,
                     default => $secret,
                 };
             }
@@ -92,6 +97,7 @@ class SocialAccountFactory extends Factory
             Networks::BLUESKY => '@kargah'.$n.'.bsky.social',
             Networks::LINKEDIN => 'in/morpheusadam-'.$n,
             Networks::TELEGRAM => '@kargah_buildlog_'.$n,
+            Networks::DISCORD => '#build-log-'.$n,
             default => '@kargah'.$n,
         };
     }

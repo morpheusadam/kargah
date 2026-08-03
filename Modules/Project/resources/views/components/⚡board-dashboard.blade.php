@@ -303,6 +303,9 @@ class extends Component
             <span class="kt-btn kt-btn-sm kt-btn-primary gap-1.5">
                 <i class="ki-filled ki-chart-simple text-sm"></i> Dashboard
             </span>
+            <a href="{{ route('projects.activity', ['board' => $activeBoard]) }}" wire:navigate class="kt-btn kt-btn-sm kt-btn-ghost gap-1.5">
+                <i class="ki-filled ki-time text-sm"></i> Activity
+            </a>
         </div>
     </div>
 

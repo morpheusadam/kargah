@@ -9,9 +9,11 @@ use Livewire\Component;
 use Modules\Core\Concerns\InteractsWithToasts;
 use Modules\Project\Models\Board;
 use Modules\Project\Models\BoardList;
+use Modules\Project\Models\BoardListUserState;
 use Modules\Project\Models\Card;
 use Modules\Project\Models\CardPlacement;
 use Modules\Project\Services\CardService;
+use Modules\Project\Services\ListOperations;
 use Modules\Project\Services\PlacementConflict;
 use Modules\Project\Support\Position;
 use Modules\Project\Support\SearchCompiler;
@@ -28,13 +30,16 @@ use Modules\Project\Support\SearchQuery;
  * id no longer identifies what was dragged, which is why every card element
  * carries `data-placement-id` as well and `moveCard()` takes a placement.
  *
- * **The board canvas is an island.** Toggling the filter panel, the board
- * picker or a list menu skips re-rendering every card on the board. Anything
- * that *does* change what a card looks like has to name the island, or the new
- * markup is computed, sent and thrown away — the morph engine skips the whole
- * fragment. There is exactly one `@island` directive in this file on purpose;
- * one inside the `@foreach` would share a token with every other iteration and
- * morph the wrong column. See project-guaid/spec/04-frontend.md.
+ * **The board canvas is an island.** Toggling the filter panel or the board
+ * picker skips re-rendering every card on the board, because both of those are
+ * drawn *outside* it. Anything inside it has to name the island or the new
+ * markup is computed, sent and thrown away — Livewire returns a `mode: skip`
+ * fragment for every island nobody asked for. That covers more than the cards:
+ * the list ⋯ menu, the inline "add a card" form and the inline "add a list"
+ * form are all inside the island too, which is why every one of their handlers
+ * calls `redrawCanvas()`. There is exactly one `@island` directive in this file
+ * on purpose; one inside the `@foreach` would share a token with every other
+ * iteration and morph the wrong column. See project-guaid/spec/04-frontend.md.
  *
  * **`moveCard` trusts the browser for the index and nothing else.** Sortable
  * reports where the card landed among the cards it can *see*. The server knows
@@ -74,6 +79,20 @@ class extends Component
     /** The list whose ⋯ menu is open, if any. */
     public ?int $listMenuOpen = null;
 
+    /**
+     * Which second-level panel that menu is showing, if any: `'sort'`,
+     * `'move'` or `'wip'`.
+     *
+     * A single scalar rather than three booleans, because they are three views
+     * of one menu and only one of them is ever open. Cleared by
+     * `closeOverlays()` along with the menu itself, so a menu reopened is a
+     * menu at its top level.
+     */
+    public ?string $listMenuPanel = null;
+
+    /** The WIP limit being typed, as text — '' means "no limit". */
+    public string $wipLimitInput = '';
+
     /** The list whose inline "add a card" form is open, if any. */
     public ?int $addingCardIn = null;
 
@@ -102,6 +121,9 @@ class extends Component
 
     private ?Collection $resolvedMembers = null;
 
+    /** @var list<int>|null Which of this board's lists this person has folded away. */
+    private ?array $resolvedCollapsed = null;
+
     /**
      * Operator tokens from the last compiled search that could not be
      * honoured — `has:cover`, for instance. Set every time `lists()` actually
@@ -119,6 +141,22 @@ class extends Component
     public function mount(): void
     {
         $this->activeBoard = $this->resolveBoard($this->activeBoard);
+        $this->recordView();
+    }
+
+    /**
+     * Remember that this person opened this board, for the recently-viewed list.
+     *
+     * Called from `mount()` and from `selectBoard()`, which between them cover
+     * every genuine open without writing a row on every re-render — a filter
+     * keystroke is not a visit. The guard is not decorative: `markViewedBy()`
+     * takes a non-nullable user and this component is reachable with none.
+     */
+    private function recordView(): void
+    {
+        if ($user = auth()->user()) {
+            $this->board()?->markViewedBy($user);
+        }
     }
 
     private function resolveBoard(string $slug): string
@@ -132,7 +170,10 @@ class extends Component
 
     private function allBoards(): Collection
     {
-        return $this->resolvedBoards ??= Board::query()->active()->orderBy('position')->orderBy('name')->get();
+        // `starredFirstFor()` applies the position and name ordering itself, so
+        // this is the old order with starred boards pinned above it — and
+        // exactly the old order for a request with no user.
+        return $this->resolvedBoards ??= Board::query()->active()->starredFirstFor(auth()->user())->get();
     }
 
     private function board(): ?Board
@@ -241,6 +282,28 @@ class extends Component
         return $this->resolvedMembers ??= User::query()->orderBy('name')->get();
     }
 
+    /**
+     * The lists this person has folded away, among the ones on screen.
+     *
+     * One query for the whole board, asked only about the lists this board
+     * actually draws — a person who has collapsed forty columns across ten
+     * boards should not pay for the other nine here.
+     *
+     * A collapsed list still loads its cards. That is deliberate: the count in
+     * the folded spine has to be right, and the alternative — a second query
+     * per folded column to count what the first query would have fetched
+     * anyway — costs more than it saves at board scale.
+     *
+     * @return list<int>
+     */
+    private function collapsedLists(): array
+    {
+        return $this->resolvedCollapsed ??= BoardListUserState::collapsedIdsFor(
+            auth()->user(),
+            $this->lists()->pluck('id')->map(fn ($id): int => (int) $id)->all(),
+        );
+    }
+
     /* Filtering ------------------------------------------------------------- */
 
     /** The search box, ignoring whitespace nobody meant to type. */
@@ -321,6 +384,8 @@ class extends Component
             ]),
             'totalCards' => $this->totalPlacementsCount(),
             'visibleCards' => $visibleCards,
+            'collapsedLists' => $this->collapsedLists(),
+            'sortOptions' => ListOperations::SORTS,
             'activeFilters' => count($this->filterLabels)
                 + count($this->filterAssignees)
                 + ($this->filterDue !== '' ? 1 : 0)
@@ -346,6 +411,8 @@ class extends Component
         $this->filterOpen = false;
         $this->boardPickerOpen = false;
         $this->listMenuOpen = null;
+        $this->listMenuPanel = null;
+        $this->wipLimitInput = '';
         $this->addingCardIn = null;
         $this->newCardTitle = '';
         $this->addingList = false;
@@ -356,6 +423,28 @@ class extends Component
     public function dismissPanels(): void
     {
         $this->closeOverlays();
+        $this->redrawCanvas();
+    }
+
+    /**
+     * Redraw the canvas island without discarding the memo of what is on it.
+     *
+     * `refreshBoard()` below is for the cases where the *cards* changed and the
+     * query has to run again. This one is for the cases where only the chrome
+     * drawn around them did — a menu opening, an inline form appearing — which
+     * is most of them.
+     *
+     * It is not optional. On any request after the first,
+     * `HandlesIslands::renderIslandDirective()` returns a `mode: skip`
+     * fragment for every island nobody named, so markup inside the island that
+     * is not explicitly re-rendered is computed by the server, discarded, and
+     * never reaches the browser. The list menu, the inline "add a card" form
+     * and the inline "add a list" form are all inside this file's one island,
+     * and all of them were silently dead before this existed.
+     */
+    private function redrawCanvas(): void
+    {
+        $this->renderIsland('board');
     }
 
     /** The active board's display name, for the heading. */
@@ -372,6 +461,7 @@ class extends Component
         $this->resolvedBoard = null;
         $this->resolvedLists = null;
         $this->resolvedLabels = null;
+        $this->resolvedCollapsed = null;
 
         // A filter set against one board's labels and people matches nothing on
         // the next one, and an empty board with no visible reason reads as a bug.
@@ -382,6 +472,7 @@ class extends Component
 
         $this->closeOverlays();
         $this->refreshBoard();
+        $this->recordView();
     }
 
     public function toggleBoardPicker(): void
@@ -396,6 +487,27 @@ class extends Component
         $opening = $this->listMenuOpen !== $listId;
         $this->closeOverlays();
         $this->listMenuOpen = $opening ? $listId : null;
+        $this->redrawCanvas();
+    }
+
+    /**
+     * Show one of the menu's second-level panels, or go back to the top level.
+     *
+     * The WIP panel arrives with the list's current limit already in the box,
+     * because the common edit is "make it 4 instead of 3", not "type it from
+     * nothing".
+     */
+    public function openListPanel(int $listId, string $panel): void
+    {
+        $this->listMenuOpen = $listId;
+        $this->listMenuPanel = $this->listMenuPanel === $panel ? null : $panel;
+
+        if ($this->listMenuPanel === 'wip') {
+            $limit = $this->listOnThisBoard($listId)?->wip_limit;
+            $this->wipLimitInput = $limit === null ? '' : (string) $limit;
+        }
+
+        $this->redrawCanvas();
     }
 
     public function toggleFilterPanel(): void
@@ -477,12 +589,14 @@ class extends Component
     {
         $this->closeOverlays();
         $this->addingCardIn = $listId;
+        $this->redrawCanvas();
     }
 
     public function cancelAddCard(): void
     {
         $this->addingCardIn = null;
         $this->newCardTitle = '';
+        $this->redrawCanvas();
     }
 
     /** Create a card at the bottom of a list. */
@@ -519,12 +633,14 @@ class extends Component
     {
         $this->closeOverlays();
         $this->addingList = true;
+        $this->redrawCanvas();
     }
 
     public function cancelAddList(): void
     {
         $this->addingList = false;
         $this->newListName = '';
+        $this->redrawCanvas();
     }
 
     /** Create a list at the end of the board. */
@@ -735,6 +851,135 @@ class extends Component
                 $list->name.' is still on the board, and the cards are in the archive.',
             );
     }
+
+    /* List operations --------------------------------------------------------- */
+
+    /**
+     * Fold a column away, or unfold it.
+     *
+     * No toast: the column visibly changes width, which is the whole feedback
+     * anybody needs, and this is the one action here somebody does repeatedly.
+     */
+    public function toggleCollapse(int $listId): void
+    {
+        $user = auth()->user();
+        $list = $this->listOnThisBoard($listId);
+
+        if ($user === null || $list === null) {
+            return;
+        }
+
+        BoardListUserState::setCollapsed(
+            $user,
+            $list->id,
+            ! in_array($list->id, $this->collapsedLists(), true),
+        );
+
+        $this->resolvedCollapsed = null;
+        $this->closeOverlays();
+        $this->refreshBoard();
+    }
+
+    /** Put a list into one of `ListOperations::SORTS`. */
+    public function sortList(int $listId, string $key): void
+    {
+        $list = $this->listOnThisBoard($listId);
+
+        if ($list === null) {
+            $this->toastError('That list is not on this board');
+
+            return;
+        }
+
+        if (! ListOperations::isSort($key)) {
+            $this->toastError('That is not a sort order', 'Pick one from the menu.');
+
+            return;
+        }
+
+        $sorted = app(ListOperations::class)->sort($list, $key);
+
+        $this->closeOverlays();
+        $this->refreshBoard();
+
+        $sorted === 0
+            ? $this->toastSuccess('Nothing to sort', $list->name.' is empty.')
+            : $this->toastSuccess(
+                $list->name.' sorted',
+                $sorted.' '.str('card')->plural($sorted).' by '.lcfirst(ListOperations::SORTS[$key]).'.',
+            );
+    }
+
+    /**
+     * Set or clear this list's WIP limit.
+     *
+     * An empty box means no limit, and zero means a limit of zero — a column
+     * nothing should enter. They are different answers and this keeps them so.
+     */
+    public function saveWipLimit(int $listId): void
+    {
+        $list = $this->listOnThisBoard($listId);
+
+        if ($list === null) {
+            $this->toastError('That list is not on this board');
+
+            return;
+        }
+
+        $raw = trim($this->wipLimitInput);
+
+        if ($raw !== '' && (! ctype_digit($raw) || (int) $raw > 999)) {
+            $this->toastError('That is not a limit', 'A whole number from 0 to 999, or leave it empty for no limit.');
+
+            return;
+        }
+
+        $list->forceFill(['wip_limit' => $raw === '' ? null : (int) $raw])->save();
+
+        $this->closeOverlays();
+        $this->refreshBoard();
+
+        $raw === ''
+            ? $this->toastSuccess('Limit removed', $list->name.' can hold as many cards as it needs to.')
+            : $this->toastSuccess('Limit set', $list->name.' warns above '.$raw.' '.str('card')->plural((int) $raw).'.');
+    }
+
+    /**
+     * Empty one list into another, and say what could not go.
+     *
+     * A card already sitting in the target — mirrored into both columns — stays
+     * where it is, because `(card_id, board_list_id)` is unique and a card
+     * cannot be in one list twice. That is reported rather than hidden.
+     */
+    public function moveAllCards(int $listId, int $targetId): void
+    {
+        $from = $this->listOnThisBoard($listId);
+        $to = $this->listOnThisBoard($targetId);
+
+        if ($from === null || $to === null) {
+            $this->toastError('That list is not on this board', 'Reload the page and try again.');
+
+            return;
+        }
+
+        $result = app(ListOperations::class)->moveAllCards($from, $to);
+
+        $this->closeOverlays();
+        $this->refreshBoard();
+
+        if ($result['moved'] === 0 && $result['skipped'] === 0) {
+            $this->toastSuccess('Nothing to move', $from->name.' was already empty.');
+
+            return;
+        }
+
+        $this->toastSuccess(
+            $result['moved'].' '.str('card')->plural($result['moved']).' moved',
+            $result['skipped'] === 0
+                ? $from->name.' is now empty, and everything is in '.$to->name.'.'
+                : $result['skipped'].' stayed put — '.($result['skipped'] === 1 ? 'it is' : 'they are').' already in '.$to->name.'.',
+        );
+    }
 };
 
 ?>
@@ -785,26 +1030,62 @@ class extends Component
 
                 <div class="kt-dropdown absolute z-20 mt-1 w-[240px] start-0 {{ $boardPickerOpen ? 'open' : '' }}">
                     <div class="p-2 flex flex-col gap-1">
+                        {{--
+                            The star is a sibling of the row, not a child of it:
+                            a button cannot nest inside a button, and the row is
+                            one. `grow min-w-0` rather than `w-full` so the name
+                            truncates instead of shoving the star out of the
+                            dropdown.
+                        --}}
                         @forelse ($boards as $b)
-                            <button wire:click="selectBoard('{{ $b->slug }}')" wire:key="pick-{{ $b->id }}"
-                                    class="kt-btn kt-btn-ghost justify-start gap-2 w-full {{ $b->slug === $activeBoard ? 'bg-accent/60' : '' }}">
-                                <span class="size-2.5 rounded-full {{ $b->dotClass() }}"></span>
-                                {{ $b->name }}
-                            </button>
+                            <div wire:key="pick-{{ $b->id }}" class="flex items-center gap-1">
+                                <button wire:click="selectBoard('{{ $b->slug }}')"
+                                        class="kt-btn kt-btn-ghost justify-start gap-2 grow min-w-0 {{ $b->slug === $activeBoard ? 'bg-accent/60' : '' }}">
+                                    <span class="size-2.5 rounded-full {{ $b->dotClass() }}"></span>
+                                    {{ $b->name }}
+                                </button>
+                                <livewire:project::board-star :board-id="$b->id" :key="'board-star-'.$b->id" />
+                            </div>
                         @empty
                             <p class="text-xs text-muted-foreground px-2 py-3 text-center">No boards yet.</p>
                         @endforelse
                     </div>
                     @if ($activeBoard !== '')
-                        <div class="border-t border-border p-2">
+                        <div class="border-t border-border p-2 flex flex-col gap-1">
                             <a href="{{ route('projects.board-settings', ['board' => $activeBoard]) }}" wire:navigate
                                class="kt-btn kt-btn-ghost justify-start gap-2 w-full">
                                 <i class="ki-filled ki-setting-2 text-sm"></i> Board settings
                             </a>
+                            {{--
+                                No `wire:navigate` on any of these three. The two
+                                exports are downloads, which a SPA navigation
+                                swallows, and the print page renders on its own
+                                bare layout that the current one must not morph
+                                into.
+                            --}}
+                            <a href="{{ route('projects.print', ['board' => $activeBoard]) }}" target="_blank" rel="noopener"
+                               class="kt-btn kt-btn-ghost justify-start gap-2 w-full">
+                                <i class="ki-filled ki-printer text-sm"></i> Print this board
+                            </a>
+                            <div class="flex items-center gap-1">
+                                <a href="{{ route('projects.export', ['board' => $activeBoard, 'format' => 'csv']) }}"
+                                   class="kt-btn kt-btn-ghost justify-start gap-2 grow min-w-0">
+                                    <i class="ki-filled ki-file-down text-sm"></i> CSV
+                                </a>
+                                <a href="{{ route('projects.export', ['board' => $activeBoard, 'format' => 'json']) }}"
+                                   class="kt-btn kt-btn-ghost justify-start gap-2 grow min-w-0">
+                                    <i class="ki-filled ki-code text-sm"></i> JSON
+                                </a>
+                            </div>
                         </div>
                     @endif
                 </div>
             </div>
+
+            @if ($activeBoardModel !== null)
+                {{-- Keyed apart from the picker's stars: the same board appears in both. --}}
+                <livewire:project::board-star :board-id="$activeBoardModel->id" :key="'board-star-header-'.$activeBoardModel->id" />
+            @endif
         </div>
 
         <div class="flex items-center gap-2">
@@ -821,6 +1102,9 @@ class extends Component
                 </a>
                 <a href="{{ route('projects.dashboard', ['board' => $activeBoard]) }}" wire:navigate class="kt-btn kt-btn-sm kt-btn-ghost gap-1.5">
                     <i class="ki-filled ki-chart-simple text-sm"></i> Dashboard
+                </a>
+                <a href="{{ route('projects.activity', ['board' => $activeBoard]) }}" wire:navigate class="kt-btn kt-btn-sm kt-btn-ghost gap-1.5">
+                    <i class="ki-filled ki-time text-sm"></i> Activity
                 </a>
             </div>
 
@@ -962,30 +1246,162 @@ class extends Component
 
         @forelse ($lists as $entry)
             @php($list = $entry['model'])
+            @php($listCount = $entry['placements']->count())
+            @php($isCollapsed = in_array((int) $list->id, $collapsedLists, true))
+
+            @if ($isCollapsed)
+                {{--
+                    A folded column. Rendered as its own branch rather than as a
+                    class on the open one, because the point of folding is that
+                    the cards are *not* in the DOM: a board with eight columns
+                    folded should cost eight buttons, not eight hidden lists.
+
+                    It carries no `.kargah-list` and no `data-list`, so Sortable
+                    never binds to it and a card cannot be dropped into
+                    somewhere with no visible place to land.
+                --}}
+                <div class="kt-card w-[48px] shrink-0 {{ $boardSurfaceClass }} self-stretch"
+                     data-list-id="{{ $list->id }}" wire:key="list-{{ $list->id }}">
+                    <button wire:click="toggleCollapse({{ $list->id }})"
+                            class="flex flex-col items-center gap-3 w-full h-full py-3 rounded-lg hover:bg-accent/40 transition-colors"
+                            title="Expand {{ $list->name }}" aria-label="Expand {{ $list->name }}">
+                        <i class="ki-filled ki-double-right text-sm {{ $boardTextTone ?? 'text-muted-foreground' }}"></i>
+                        <span class="{{ $list->wipBadgeClass($listCount) }}">{{ $listCount }}</span>
+                        {{-- Inline, not a Tailwind class: `writing-mode` has no utility in the compiled sheet. --}}
+                        <span class="text-sm font-semibold whitespace-nowrap {{ $boardTextTone ?? 'text-mono' }}"
+                              style="writing-mode: vertical-rl;">{{ $list->name }}</span>
+                    </button>
+                </div>
+            @else
             <div class="kt-card w-[290px] shrink-0 {{ $boardSurfaceClass }}" data-list-id="{{ $list->id }}" wire:key="list-{{ $list->id }}">
 
                 <div class="flex items-center justify-between px-4 py-3 rounded-t-lg {{ $list->headerColourClass() ?? '' }}">
-                    <div class="flex items-center gap-2">
-                        <h3 class="text-sm font-semibold {{ $boardTextTone ?? 'text-mono' }}">{{ $list->name }}</h3>
-                        <span class="kt-badge kt-badge-sm kt-badge-outline">{{ $entry['placements']->count() }}</span>
+                    <div class="flex items-center gap-2 min-w-0">
+                        <h3 class="text-sm font-semibold truncate {{ $boardTextTone ?? 'text-mono' }}">{{ $list->name }}</h3>
+                        {{--
+                            The count, and against what. A list with no limit
+                            shows the bare number it always did; a list with one
+                            shows `3/5` and turns amber at the limit and red
+                            past it. Nothing refuses the drop — see
+                            `BoardList::wipState()` for why.
+                        --}}
+                        <span class="{{ $list->wipBadgeClass($listCount) }} shrink-0"
+                              @if ($list->hasWipLimit()) title="{{ $listCount }} of a {{ $list->wip_limit }} card limit" @endif>
+                            {{ $listCount }}@if ($list->hasWipLimit())/{{ $list->wip_limit }}@endif
+                        </span>
                     </div>
 
-                    <div class="relative">
-                        <button wire:click="toggleListMenu({{ $list->id }})" class="kt-btn kt-btn-icon kt-btn-ghost size-7"
-                                title="List actions" aria-label="List actions">
-                            <i class="ki-filled ki-dots-horizontal text-sm"></i>
+                    <div class="flex items-center gap-0.5 shrink-0">
+                        <button wire:click="toggleCollapse({{ $list->id }})" class="kt-btn kt-btn-icon kt-btn-ghost size-7"
+                                title="Collapse {{ $list->name }}" aria-label="Collapse {{ $list->name }}">
+                            <i class="ki-filled ki-double-left text-sm"></i>
                         </button>
-                        <div class="kt-dropdown absolute z-20 end-0 mt-1 w-[210px] {{ $listMenuOpen === $list->id ? 'open' : '' }}">
-                            <div class="p-2 flex flex-col gap-1">
-                                <button wire:click="startAddCard({{ $list->id }})" class="kt-btn kt-btn-ghost justify-start gap-2 w-full">
-                                    <i class="ki-filled ki-plus text-sm"></i> Add a card
-                                </button>
-                                <button wire:click="archiveCardsInList({{ $list->id }})" class="kt-btn kt-btn-ghost justify-start gap-2 w-full">
-                                    <i class="ki-filled ki-archive text-sm"></i> Archive the cards
-                                </button>
-                                <button wire:click="archiveList({{ $list->id }})" class="kt-btn kt-btn-ghost justify-start gap-2 w-full text-destructive">
-                                    <i class="ki-filled ki-trash text-sm"></i> Archive this list
-                                </button>
+
+                        <div class="relative">
+                            <button wire:click="toggleListMenu({{ $list->id }})" class="kt-btn kt-btn-icon kt-btn-ghost size-7"
+                                    title="List actions" aria-label="List actions">
+                                <i class="ki-filled ki-dots-horizontal text-sm"></i>
+                            </button>
+                            <div class="kt-dropdown absolute z-20 end-0 mt-1 w-[250px] {{ $listMenuOpen === $list->id ? 'open' : '' }}">
+                                @if ($listMenuOpen === $list->id && $listMenuPanel === 'sort')
+                                    <div class="flex items-center gap-2 px-3 py-2 border-b border-border">
+                                        <button wire:click="openListPanel({{ $list->id }}, 'sort')" class="kt-btn kt-btn-icon kt-btn-ghost size-6"
+                                                title="Back" aria-label="Back to the list menu">
+                                            <i class="ki-filled ki-left text-xs"></i>
+                                        </button>
+                                        <span class="text-xs font-semibold text-mono">Sort the cards</span>
+                                    </div>
+                                    <div class="p-2 flex flex-col gap-1">
+                                        @foreach ($sortOptions as $sortKey => $sortLabel)
+                                            <button wire:click="sortList({{ $list->id }}, '{{ $sortKey }}')" wire:key="sort-{{ $list->id }}-{{ $sortKey }}"
+                                                    class="kt-btn kt-btn-ghost justify-start gap-2 w-full text-sm">
+                                                {{ $sortLabel }}
+                                            </button>
+                                        @endforeach
+                                    </div>
+
+                                @elseif ($listMenuOpen === $list->id && $listMenuPanel === 'move')
+                                    <div class="flex items-center gap-2 px-3 py-2 border-b border-border">
+                                        <button wire:click="openListPanel({{ $list->id }}, 'move')" class="kt-btn kt-btn-icon kt-btn-ghost size-6"
+                                                title="Back" aria-label="Back to the list menu">
+                                            <i class="ki-filled ki-left text-xs"></i>
+                                        </button>
+                                        <span class="text-xs font-semibold text-mono">Move all cards to…</span>
+                                    </div>
+                                    <div class="p-2 flex flex-col gap-1 max-h-[280px] overflow-y-auto kt-scrollable-y">
+                                        @php($somewhereToGo = false)
+                                        @foreach ($lists as $target)
+                                            @if ($target['model']->id !== $list->id)
+                                                @php($somewhereToGo = true)
+                                                <button wire:click="moveAllCards({{ $list->id }}, {{ $target['model']->id }})"
+                                                        wire:key="moveall-{{ $list->id }}-{{ $target['model']->id }}"
+                                                        class="kt-btn kt-btn-ghost justify-start gap-2 w-full text-sm">
+                                                    <i class="ki-filled ki-exit-right text-sm"></i>
+                                                    <span class="truncate">{{ $target['model']->name }}</span>
+                                                </button>
+                                            @endif
+                                        @endforeach
+                                        @unless ($somewhereToGo)
+                                            <p class="text-xs text-muted-foreground px-2 py-3 text-center">
+                                                This is the only list on the board.
+                                            </p>
+                                        @endunless
+                                    </div>
+
+                                @elseif ($listMenuOpen === $list->id && $listMenuPanel === 'wip')
+                                    <div class="flex items-center gap-2 px-3 py-2 border-b border-border">
+                                        <button wire:click="openListPanel({{ $list->id }}, 'wip')" class="kt-btn kt-btn-icon kt-btn-ghost size-6"
+                                                title="Back" aria-label="Back to the list menu">
+                                            <i class="ki-filled ki-left text-xs"></i>
+                                        </button>
+                                        <span class="text-xs font-semibold text-mono">Work-in-progress limit</span>
+                                    </div>
+                                    <div class="p-3 flex flex-col gap-2">
+                                        <input type="text" inputmode="numeric" class="kt-input" autofocus
+                                               aria-label="Card limit for {{ $list->name }}"
+                                               placeholder="No limit"
+                                               wire:model="wipLimitInput"
+                                               wire:keydown.enter.prevent="saveWipLimit({{ $list->id }})">
+                                        <p class="text-[11px] text-muted-foreground">
+                                            The header warns when the list goes over. Nothing is refused. Leave it empty for no limit.
+                                        </p>
+                                        <div class="flex items-center gap-2">
+                                            <button wire:click="saveWipLimit({{ $list->id }})" class="kt-btn kt-btn-sm kt-btn-primary">Save</button>
+                                            <button wire:click="dismissPanels" class="kt-btn kt-btn-sm kt-btn-ghost">Cancel</button>
+                                        </div>
+                                    </div>
+
+                                @else
+                                    <div class="p-2 flex flex-col gap-1">
+                                        <button wire:click="startAddCard({{ $list->id }})" class="kt-btn kt-btn-ghost justify-start gap-2 w-full">
+                                            <i class="ki-filled ki-plus text-sm"></i> Add a card
+                                        </button>
+                                        <button wire:click="openListPanel({{ $list->id }}, 'sort')" class="kt-btn kt-btn-ghost justify-between gap-2 w-full">
+                                            <span class="flex items-center gap-2"><i class="ki-filled ki-sort text-sm"></i> Sort the cards</span>
+                                            <i class="ki-filled ki-right text-xs"></i>
+                                        </button>
+                                        <button wire:click="openListPanel({{ $list->id }}, 'move')" class="kt-btn kt-btn-ghost justify-between gap-2 w-full">
+                                            <span class="flex items-center gap-2"><i class="ki-filled ki-exit-right text-sm"></i> Move all cards</span>
+                                            <i class="ki-filled ki-right text-xs"></i>
+                                        </button>
+                                        <button wire:click="openListPanel({{ $list->id }}, 'wip')" class="kt-btn kt-btn-ghost justify-between gap-2 w-full">
+                                            <span class="flex items-center gap-2"><i class="ki-filled ki-abstract-26 text-sm"></i> Set a card limit</span>
+                                            <span class="text-xs text-muted-foreground">{{ $list->hasWipLimit() ? $list->wip_limit : 'None' }}</span>
+                                        </button>
+                                        <button wire:click="toggleCollapse({{ $list->id }})" class="kt-btn kt-btn-ghost justify-start gap-2 w-full">
+                                            <i class="ki-filled ki-double-left text-sm"></i> Collapse this list
+                                        </button>
+
+                                        <div class="border-t border-border my-1"></div>
+
+                                        <button wire:click="archiveCardsInList({{ $list->id }})" class="kt-btn kt-btn-ghost justify-start gap-2 w-full">
+                                            <i class="ki-filled ki-archive text-sm"></i> Archive the cards
+                                        </button>
+                                        <button wire:click="archiveList({{ $list->id }})" class="kt-btn kt-btn-ghost justify-start gap-2 w-full text-destructive">
+                                            <i class="ki-filled ki-trash text-sm"></i> Archive this list
+                                        </button>
+                                    </div>
+                                @endif
                             </div>
                         </div>
                     </div>
@@ -1128,6 +1544,7 @@ class extends Component
                     </button>
                 @endif
             </div>
+            @endif
         @empty
             @if ($boards->isEmpty())
                 <div class="w-full rounded-lg border border-dashed border-border px-6 py-14 text-center">

@@ -17,14 +17,16 @@ namespace Modules\Social\Support;
  *
  * `ingests` says whether the network's API lets Kargah read notifications back.
  * Mastodon and Bluesky publish a notifications endpoint that needs no special
- * partnership. LinkedIn's requires partner access nobody self-serving has, and
- * Telegram's `getUpdates` consumes the update queue the bot itself needs, so
- * both are marked false and `social:sync-notifications` skips them rather than
- * pretending there is nothing to show.
+ * partnership. LinkedIn's requires partner access nobody self-serving has,
+ * Telegram's `getUpdates` consumes the update queue the bot itself needs, and a
+ * Discord incoming webhook has no read side at all, so those three are marked
+ * false and `social:sync-notifications` skips them rather than pretending there
+ * is nothing to show.
  *
  * `token_lifetime_days` is null for every credential that does not expire on
- * its own — Mastodon, Bluesky and Telegram all issue a scoped, revocable
- * token from the network's own settings screen with no clock attached; the
+ * its own — Mastodon, Bluesky, Telegram and Discord all issue a scoped,
+ * revocable token from the network's own settings screen with no clock
+ * attached; the
  * person revokes it, Kargah does not out-wait it. LinkedIn's member token is
  * the one exception Kargah has today, and the pasted-token model means there
  * is no OAuth response to read a real expiry off — the credential arrives
@@ -46,6 +48,8 @@ final class Networks
     public const LINKEDIN = 'linkedin';
 
     public const TELEGRAM = 'telegram';
+
+    public const DISCORD = 'discord';
 
     /**
      * @return array<string, array{
@@ -198,6 +202,40 @@ final class Networks
                     ['allowed' => true, 'text' => 'Send messages to the chat you name above'],
                     ['allowed' => false, 'text' => 'Read your personal Telegram account or its chats'],
                     ['allowed' => false, 'text' => 'Read notifications — a bot reading updates would consume the queue it needs'],
+                ],
+            ],
+            self::DISCORD => [
+                'label' => 'Discord',
+                'icon' => 'ki-message-programming',
+                'tone' => 'text-primary',
+                'dot' => 'bg-primary',
+                'colour' => '#5865f2',
+                // A normal message, without Nitro. Discord counts characters,
+                // not bytes, so this is the same number for any language.
+                'limit' => 2000,
+                'method' => 'token',
+                'summary' => 'Post into one channel of a server through a webhook.',
+                'requirement' => 'Open the channel in Discord, then Edit Channel → Integrations → Webhooks → New Webhook, and copy its URL. No bot and no server invite is needed; one webhook posts to one channel.',
+                'ingests' => false,
+                'token_lifetime_days' => null,
+                'credentials' => [
+                    // One field, because the URL already carries both halves of
+                    // the credential — the webhook id and its token. Marked
+                    // secret for the same reason: anyone holding this URL can
+                    // post to that channel, so it is not an address, it is the
+                    // password. See DiscordPublisher for why a webhook was
+                    // chosen over a bot token and a channel id.
+                    'webhook_url' => [
+                        'label' => 'Webhook URL',
+                        'secret' => true,
+                        'placeholder' => 'https://discord.com/api/webhooks/1145…/AbC…',
+                        'hint' => 'Stored encrypted. Deleting the webhook in Discord cuts Kargah off on its own.',
+                    ],
+                ],
+                'permissions' => [
+                    ['allowed' => true, 'text' => 'Post messages into the one channel that webhook belongs to'],
+                    ['allowed' => false, 'text' => 'Read any message, channel or member of your server'],
+                    ['allowed' => false, 'text' => 'Read notifications — a webhook can only write, and has no read side at all'],
                 ],
             ],
         ];

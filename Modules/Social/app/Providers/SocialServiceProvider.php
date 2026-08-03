@@ -12,6 +12,7 @@ use Modules\Social\Models\PostTarget;
 use Modules\Social\Models\SocialAccount;
 use Modules\Social\Models\SocialNotification;
 use Modules\Social\Services\Publishers\BlueskyPublisher;
+use Modules\Social\Services\Publishers\DiscordPublisher;
 use Modules\Social\Services\Publishers\LinkedInPublisher;
 use Modules\Social\Services\Publishers\MastodonPublisher;
 use Modules\Social\Services\Publishers\TelegramPublisher;
@@ -60,6 +61,7 @@ class SocialServiceProvider extends ModuleServiceProvider
             $publishing->extend(Networks::BLUESKY, fn () => new BlueskyPublisher);
             $publishing->extend(Networks::LINKEDIN, fn () => new LinkedInPublisher);
             $publishing->extend(Networks::TELEGRAM, fn () => new TelegramPublisher);
+            $publishing->extend(Networks::DISCORD, fn () => new DiscordPublisher);
 
             return $publishing;
         });

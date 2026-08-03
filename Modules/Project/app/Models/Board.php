@@ -2,13 +2,16 @@
 
 namespace Modules\Project\Models;
 
+use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Facades\DB;
 use Modules\Core\Concerns\Linkable;
 use Modules\Core\Models\Company;
 use Modules\Data\Contracts\AttachmentService;
@@ -121,6 +124,168 @@ class Board extends Model
     public function isArchived(): bool
     {
         return $this->archived_at !== null;
+    }
+
+    /* Starring, and what you looked at last -----------------------------------
+     *
+     * Both live on `board_user_states`, one row per (person, board) — see that
+     * migration for why they share a table. Everything below writes through an
+     * upsert against its unique index rather than reading first: a star is
+     * clicked from a list of boards and a view is recorded on every page load,
+     * so both have to cost one statement whether the row exists or not.
+     *
+     * Nothing here is visible to anyone else. A star is not a flag on the
+     * board; it is a fact about the person looking at it.
+     */
+
+    public function userStates(): HasMany
+    {
+        return $this->hasMany(BoardUserState::class);
+    }
+
+    /**
+     * A guest has starred nothing, which is why the argument is nullable —
+     * `auth()->user()` can be null on a shared or feed-token view, and that
+     * reads as "not starred" rather than as an error.
+     */
+    public function isStarredBy(?User $user): bool
+    {
+        if ($user === null) {
+            return false;
+        }
+
+        return BoardUserState::query()
+            ->where('user_id', $user->id)
+            ->where('board_id', $this->id)
+            ->whereNotNull('starred_at')
+            ->exists();
+    }
+
+    public function starFor(User $user): void
+    {
+        $this->writeUserState($user, ['starred_at' => now()]);
+    }
+
+    /**
+     * Unstarring nulls the column; it does not delete the row. The row also
+     * holds when this person last opened the board, and that is not the star's
+     * to discard.
+     */
+    public function unstarFor(User $user): void
+    {
+        $this->writeUserState($user, ['starred_at' => null]);
+    }
+
+    /** Returns the state the board is now in, so a caller can render without asking again. */
+    public function toggleStarFor(User $user): bool
+    {
+        $starred = ! $this->isStarredBy($user);
+
+        $starred ? $this->starFor($user) : $this->unstarFor($user);
+
+        return $starred;
+    }
+
+    /**
+     * Record that this person has just looked at this board.
+     *
+     * One statement, always. This runs on every board render, so a
+     * read-then-write would double the cost of opening a board to find out
+     * something the write was going to overwrite anyway.
+     */
+    public function markViewedBy(User $user): void
+    {
+        $this->writeUserState($user, ['last_viewed_at' => now()]);
+    }
+
+    /**
+     * The one write behind all four methods above.
+     *
+     * The inserted row carries **every** column, nulls included, while the
+     * update list carries only the ones the caller named — which is what keeps
+     * `starFor()` from wiping a view time and `markViewedBy()` from wiping a
+     * star. `DB::table()` rather than the model, matching
+     * `BoardListUserState::setCollapsed()`: an upsert wants plain columns, and
+     * routing it through Eloquent only invites the timestamp machinery to add
+     * an `updated_at` this table does not have.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function writeUserState(User $user, array $values): void
+    {
+        DB::table('board_user_states')->upsert(
+            [array_merge([
+                'user_id' => $user->id,
+                'board_id' => $this->id,
+                'starred_at' => null,
+                'last_viewed_at' => null,
+                'created_at' => now(),
+            ], $values)],
+            ['user_id', 'board_id'],
+            array_keys($values),
+        );
+    }
+
+    /**
+     * Boards in the order this person should see them: starred first, then the
+     * order everything else already uses.
+     *
+     * The starred test is a **correlated subquery in the order-by**, not a
+     * join. A `leftJoin` would work and would be no slower, but it drags the
+     * other table's columns into a `select *` — where `board_user_states.id`
+     * arrives after `boards.id` and Eloquent hydrates the later one, so every
+     * board silently comes back wearing a state row's primary key. Avoiding
+     * that needs a `select('boards.*')` that then quietly overwrites whatever
+     * the caller had already selected. A subquery in the order-by touches
+     * neither the select list nor the row count, so this scope composes onto
+     * any query without the caller having to know it was applied.
+     *
+     * `coalesce(..., 0)` is load-bearing: a board this person has no row for
+     * at all yields NULL, and an unstarred board with a row yields 0. Without
+     * the coalesce those two sort into different groups and the position order
+     * below them breaks in half.
+     *
+     * A null user gets the plain order — nothing is starred for nobody.
+     */
+    public function scopeStarredFirstFor(Builder $query, ?User $user): Builder
+    {
+        if ($user !== null) {
+            $query->orderByRaw(
+                'coalesce((select case when s.starred_at is null then 0 else 1 end'
+                .' from board_user_states as s'
+                .' where s.board_id = boards.id and s.user_id = ?), 0) desc',
+                [$user->id],
+            );
+        }
+
+        return $query->orderBy('position')->orderBy('name');
+    }
+
+    /**
+     * The boards this person opened most recently, newest first.
+     *
+     * A plain inner join, because a board with no view time is not a candidate
+     * — and `select('boards.*')` because of exactly the column collision the
+     * scope above avoids by not joining at all. Archived boards are excluded:
+     * "jump back to what you were doing" should not offer somewhere you closed.
+     *
+     * @return Collection<int, Board>
+     */
+    public static function recentlyViewedBy(?User $user, int $limit = 5): Collection
+    {
+        if ($user === null) {
+            return new Collection;
+        }
+
+        return static::query()
+            ->active()
+            ->join('board_user_states as s', 's.board_id', '=', 'boards.id')
+            ->where('s.user_id', $user->id)
+            ->whereNotNull('s.last_viewed_at')
+            ->select('boards.*')
+            ->orderByDesc('s.last_viewed_at')
+            ->limit($limit)
+            ->get();
     }
 
     public function dotClass(): string
