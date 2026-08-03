@@ -33,4 +33,21 @@ interface EmailReader
 
     /** How many messages a customer has sent, past the limit above. */
     public function countForCustomer(int $customerId): int;
+
+    /**
+     * How many messages across the whole mailbox are unread.
+     *
+     * Not scoped to a customer, unlike everything else on this contract —
+     * mail from an unknown sender is still unread mail, and summing
+     * `countForCustomer()` over every known customer would both miss that
+     * mail and cost one query per customer for a number that would still be
+     * wrong.
+     *
+     * "Unread" matches `⚡inbox.blade.php`'s own `unreadTotal()` exactly:
+     * every folder counts — Inbox, Archive, Sent, Drafts, Junk, Trash — with
+     * no exception, because that is the method whose definition this exists
+     * not to contradict. `Email::scopeUnread()` is the same `is_read =
+     * false` test either page runs.
+     */
+    public function unreadCount(): int;
 }

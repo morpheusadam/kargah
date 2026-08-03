@@ -308,6 +308,10 @@ class extends Component
         $visibleCards = $lists->sum(fn (BoardList $list): int => $this->visiblePlacements($list)->count());
 
         return [
+            // Exposed so the canvas can read the background, the list-surface
+            // colour and the text tone straight off the model rather than this
+            // component re-deriving them.
+            'activeBoardModel' => $this->board(),
             'boards' => $this->allBoards(),
             'labels' => $this->labels(),
             'members' => $this->members(),
@@ -735,7 +739,18 @@ class extends Component
 
 ?>
 
-<div class="flex flex-col gap-5 h-full">
+@php
+    // Only the root element's own class and inline style are computed out
+    // here. Everything the canvas itself needs is recomputed just inside the
+    // island below — an island compiles to its own included view, evaluated
+    // with the component's data but not with a plain local variable declared
+    // in the surrounding template, so a value assigned only here would read
+    // as undefined the moment the island renders on its own.
+    $boardBackgroundClass = $activeBoardModel?->backgroundClass() ?? '';
+    $boardBackgroundStyle = $activeBoardModel?->backgroundStyle();
+@endphp
+<div class="flex flex-col gap-5 h-full {{ $boardBackgroundClass }}"
+     @if ($boardBackgroundStyle) style="{{ $boardBackgroundStyle }}" @endif>
 
     {{--
         Click-away for whichever panel is open. Driven from component state
@@ -793,6 +808,22 @@ class extends Component
         </div>
 
         <div class="flex items-center gap-2">
+            {{-- Views. Table, Calendar and Dashboard already carry the matching switcher back to Board. --}}
+            <div class="flex items-center gap-1">
+                <span class="kt-btn kt-btn-sm kt-btn-primary gap-1.5">
+                    <i class="ki-filled ki-row-horizontal text-sm"></i> Board
+                </span>
+                <a href="{{ route('projects.table', ['board' => $activeBoard]) }}" wire:navigate class="kt-btn kt-btn-sm kt-btn-ghost gap-1.5">
+                    <i class="ki-filled ki-row-vertical text-sm"></i> Table
+                </a>
+                <a href="{{ route('projects.calendar', ['board' => $activeBoard]) }}" wire:navigate class="kt-btn kt-btn-sm kt-btn-ghost gap-1.5">
+                    <i class="ki-filled ki-calendar text-sm"></i> Calendar
+                </a>
+                <a href="{{ route('projects.dashboard', ['board' => $activeBoard]) }}" wire:navigate class="kt-btn kt-btn-sm kt-btn-ghost gap-1.5">
+                    <i class="ki-filled ki-chart-simple text-sm"></i> Dashboard
+                </a>
+            </div>
+
             <div class="kt-input max-w-[220px]">
                 <i class="ki-filled ki-magnifier text-muted-foreground"></i>
                 <input type="text" placeholder="Search cards…" aria-label="Search cards"
@@ -912,15 +943,30 @@ class extends Component
         changes a card calls refreshBoard().
     --}}
     @island(name: 'board')
+    @php
+        // An island compiles to its own included view file, evaluated with
+        // only the component's own data — a local `@php` variable declared in
+        // the surrounding template (as `$boardSurfaceClass` briefly was,
+        // above the root element) does not cross that boundary and reads as
+        // undefined the moment this fragment is rendered on its own, which a
+        // fresh `/projects` load never exercises but a later `refreshBoard()`
+        // does. `$activeBoardModel` itself is `with()` data, so it *is*
+        // available here; everything derived from it is recomputed inside
+        // the island instead, once per render rather than once per list.
+        $boardSurfaceClass = $activeBoardModel?->canvasSurfaceClass() ?? 'bg-muted/40';
+        $boardHasBackground = $activeBoardModel !== null
+            && ($activeBoardModel->backgroundClass() !== '' || $activeBoardModel->backgroundStyle() !== null);
+        $boardTextTone = $boardHasBackground ? $activeBoardModel->textToneClass() : null;
+    @endphp
     <div class="flex gap-4 overflow-x-auto pb-4 kt-scrollable-x items-start" id="kargah-board">
 
         @forelse ($lists as $entry)
             @php($list = $entry['model'])
-            <div class="kt-card w-[290px] shrink-0 bg-muted/40" data-list-id="{{ $list->id }}" wire:key="list-{{ $list->id }}">
+            <div class="kt-card w-[290px] shrink-0 {{ $boardSurfaceClass }}" data-list-id="{{ $list->id }}" wire:key="list-{{ $list->id }}">
 
-                <div class="flex items-center justify-between px-4 py-3">
+                <div class="flex items-center justify-between px-4 py-3 rounded-t-lg {{ $list->headerColourClass() ?? '' }}">
                     <div class="flex items-center gap-2">
-                        <h3 class="text-sm font-semibold text-mono">{{ $list->name }}</h3>
+                        <h3 class="text-sm font-semibold {{ $boardTextTone ?? 'text-mono' }}">{{ $list->name }}</h3>
                         <span class="kt-badge kt-badge-sm kt-badge-outline">{{ $entry['placements']->count() }}</span>
                     </div>
 
@@ -951,6 +997,19 @@ class extends Component
                         @php($isMirror = $placement->isMirror())
                         @php($isArchived = $card->isArchived())
                         @php($livesIn = $isMirror ? $card->originPlacement?->list : null)
+                        @php($cardCover = $card->coverPresentation())
+                        {{--
+                            Equivalent to `$card->coverHidesBadges()`, not a
+                            re-derivation from the raw `cover_size` column: it
+                            reads the very `$cardCover` this render already
+                            resolved, which is what folds in "the image cover
+                            still resolves" for a deleted attachment. Calling
+                            `coverHidesBadges()` here too would run
+                            `coverPresentation()` a second time per card —
+                            doubling the attachment lookups this file is
+                            already flagged for.
+                        --}}
+                        @php($hideCardBadges = $cardCover !== null && $cardCover['size'] === 'full')
 
                         {{--
                             Keyed by placement, not by card: two placements of
@@ -968,6 +1027,15 @@ class extends Component
                              data-card-id="{{ $card->id }}"
                              data-placement-id="{{ $placement->id }}"
                              @if ($isArchived) data-archived="1" @endif>
+
+                            @if ($cardCover)
+                                @if ($cardCover['type'] === 'colour')
+                                    <div class="-mx-3 -mt-3 mb-2 rounded-t-lg {{ \Modules\Project\Support\Palette::tone($cardCover['colour']) }} {{ $cardCover['size'] === 'full' ? 'h-20' : 'h-8' }}"></div>
+                                @else
+                                    <img src="{{ $cardCover['url'] }}" alt=""
+                                         class="-mx-3 -mt-3 mb-2 rounded-t-lg w-[calc(100%+1.5rem)] object-cover {{ $cardCover['size'] === 'full' ? 'h-32' : 'h-16' }}">
+                                @endif
+                            @endif
 
                             @if ($isMirror || $isArchived)
                                 <div class="flex items-center gap-2 mb-2 text-[10px] text-muted-foreground">
@@ -989,7 +1057,7 @@ class extends Component
                             @if ($card->labels->isNotEmpty())
                                 <div class="flex flex-wrap gap-1 mb-2">
                                     @foreach ($card->labels as $label)
-                                        <span class="text-[10px] font-medium px-1.5 py-0.5 rounded {{ $label->chipClass() }}">
+                                        <span class="text-[10px] font-medium px-1.5 py-0.5 rounded {{ $label->chipClass() }} {{ auth()->user()?->colour_blind_mode ? $label->patternClass() : '' }}">
                                             {{ $label->name }}
                                         </span>
                                     @endforeach
@@ -998,21 +1066,21 @@ class extends Component
 
                             <p class="text-sm text-mono leading-snug">{{ $card->title }}</p>
 
-                            @if ($card->checklist_total > 0 || $card->due_on || $card->comments_count > 0 || $card->members->isNotEmpty())
+                            @if ((! $hideCardBadges && ($card->checklist_total > 0 || $card->due_on || $card->comments_count > 0)) || $card->members->isNotEmpty())
                                 <div class="flex items-center gap-3 mt-2.5 text-xs text-muted-foreground">
-                                    @if ($card->checklist_total > 0)
+                                    @if (! $hideCardBadges && $card->checklist_total > 0)
                                         <span class="inline-flex items-center gap-1 {{ $card->checklist_done === $card->checklist_total ? 'text-success' : '' }}">
                                             <i class="ki-filled ki-check-squared text-sm"></i>
                                             {{ $card->checklist_done }}/{{ $card->checklist_total }}
                                         </span>
                                     @endif
-                                    @if ($card->due_on)
+                                    @if (! $hideCardBadges && $card->due_on)
                                         {{-- Five states, one badge: Card::dueBadgeColour() is the single mapping to a Palette key, so this and the card drawer read the same colour for the same date. --}}
                                         <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded {{ \Modules\Project\Support\Palette::tone($card->dueBadgeColour()) }}">
                                             <i class="ki-filled ki-calendar text-sm"></i>{{ $card->due_on->format('M d') }}
                                         </span>
                                     @endif
-                                    @if ($card->comments_count > 0)
+                                    @if (! $hideCardBadges && $card->comments_count > 0)
                                         <span class="inline-flex items-center gap-1">
                                             <i class="ki-filled ki-message-text-2 text-sm"></i>{{ $card->comments_count }}
                                         </span>
@@ -1094,7 +1162,7 @@ class extends Component
             @else
                 <button wire:click="startAddList"
                         class="kt-card w-[290px] shrink-0 bg-muted/20 border border-dashed border-border hover:border-primary/50 transition-colors">
-                    <span class="flex items-center gap-2 px-4 py-4 text-sm text-secondary-foreground">
+                    <span class="flex items-center gap-2 px-4 py-4 text-sm {{ $boardTextTone ?? 'text-secondary-foreground' }}">
                         <i class="ki-filled ki-plus"></i> Add another list
                     </span>
                 </button>

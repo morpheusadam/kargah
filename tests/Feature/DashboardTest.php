@@ -6,9 +6,12 @@ use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Livewire\Livewire;
+use Modules\Accounting\Contracts\InvoiceReader as InvoiceReaderContract;
 use Modules\Accounting\Models\Invoice;
+use Modules\Accounting\Models\Payment;
 use Modules\Accounting\Support\Money;
 use Modules\Core\Contracts\Notifier;
+use Modules\Mailbox\Models\Email;
 use Modules\Project\Models\Board;
 use Modules\Project\Models\BoardList;
 use Modules\Project\Services\CardService;
@@ -76,17 +79,20 @@ class DashboardTest extends TestCase
         $this->assertSame('0', $stats[0]['value']); // unpaid invoices
         $this->assertSame('Nothing outstanding', $stats[0]['sub']);
         $this->assertSame('0', $stats[1]['value']); // cards due
-        $this->assertSame('—', $stats[2]['value']); // mail — no source, never a fabricated zero
+        $this->assertSame('0', $stats[2]['value']); // mail — a real zero now: EmailReader::unreadCount() has a source
+        $this->assertSame('Inbox zero', $stats[2]['sub']);
         $this->assertSame('0', $stats[3]['value']); // notifications
     }
 
     /**
-     * The one figure this task exists to stop lying about. `outstanding.
-     * formatted` on the stat tile must be the exact string Accounting itself
-     * produces — never a sum of two invoices computed on this side of the
-     * module boundary.
+     * This is the figure the earlier gap made impossible: the tile now shows
+     * `InvoiceReader::totals()`'s own real sum, formatted by `brick/money`
+     * inside Accounting — never two formatted strings concatenated on this
+     * side of the module boundary. Asserted against the contract's own
+     * output rather than a hand-computed string, so the test would fail if
+     * the dashboard ever went back to reformatting a number itself.
      */
-    public function test_unpaid_invoice_money_is_accountings_own_formatted_string_and_is_never_summed(): void
+    public function test_unpaid_invoice_money_is_the_books_real_total_from_invoice_reader(): void
     {
         Invoice::factory()->sent()->create([
             'number' => 'INV-9001', 'currency' => 'USD',
@@ -99,16 +105,15 @@ class DashboardTest extends TestCase
             'due_on' => now()->addDays(20)->toDateString(),
         ]);
 
-        $nearest = Money::format('450.000000', 'USD');
-        $farther = Money::format('125.000000', 'USD');
-        $wouldBeSum = Money::format('575.000000', 'USD');
+        $totals = app(InvoiceReaderContract::class)->totals();
+        $outstanding = collect($totals['outstanding'])->firstWhere('currency', 'USD');
 
         $stats = Livewire::test('pages::dashboard')->viewData('stats');
 
         $this->assertSame('2', $stats[0]['value']);
-        $this->assertStringContainsString($nearest, $stats[0]['sub']);
-        $this->assertStringNotContainsString($farther, $stats[0]['sub']);
-        $this->assertStringNotContainsString($wouldBeSum, $stats[0]['sub']);
+        $this->assertSame('575.000000', $outstanding['amount']);
+        $this->assertStringContainsString($outstanding['formatted'], $stats[0]['sub']);
+        $this->assertStringContainsString('You are owed', $stats[0]['sub']);
     }
 
     public function test_an_overdue_invoice_is_flagged_and_still_carries_its_own_real_amount(): void
@@ -126,6 +131,54 @@ class DashboardTest extends TestCase
         $this->assertStringContainsString('1 overdue', $stats[0]['sub']);
         $this->assertStringContainsString($expected, $stats[0]['sub']);
         $this->assertSame('text-destructive', $stats[0]['tone']);
+    }
+
+    /**
+     * A part-paid invoice contributes what remains, not its face value — the
+     * same rule `PaymentRecorder::outstanding()` applies to one invoice,
+     * carried through `InvoiceReader::totals()` for the whole book.
+     */
+    public function test_a_part_paid_invoice_contributes_its_remaining_balance_to_the_total(): void
+    {
+        $invoice = Invoice::factory()->sent()->create([
+            'number' => 'INV-9004', 'currency' => 'USD',
+            'subtotal' => '1000.000000', 'total' => '1000.000000',
+            'due_on' => now()->addDays(10)->toDateString(),
+        ]);
+        Payment::factory()->create([
+            'invoice_id' => $invoice->id,
+            'currency' => 'USD',
+            'amount' => '400.000000',
+            'applied_amount' => '400.000000',
+        ]);
+
+        $totals = app(InvoiceReaderContract::class)->totals();
+        $outstanding = collect($totals['outstanding'])->firstWhere('currency', 'USD');
+
+        $this->assertSame('600.000000', $outstanding['amount']);
+
+        $stats = Livewire::test('pages::dashboard')->viewData('stats');
+        $this->assertStringContainsString($outstanding['formatted'], $stats[0]['sub']);
+    }
+
+    /**
+     * The unread tile now matches the inbox page's own `unreadTotal()` for
+     * the same fixture — the same query, the same definition, not a second
+     * one invented for the dashboard.
+     */
+    public function test_unread_mail_matches_the_inboxs_own_count(): void
+    {
+        Email::factory()->unread()->count(3)->create();
+        Email::factory()->read()->count(2)->create();
+        Email::factory()->unread()->inFolder('Archive')->create();
+
+        $inboxUnreadTotal = Livewire::test('mailbox::inbox')->viewData('unreadTotal');
+
+        $stats = Livewire::test('pages::dashboard')->viewData('stats');
+
+        $this->assertSame(4, $inboxUnreadTotal);
+        $this->assertSame((string) $inboxUnreadTotal, $stats[2]['value']);
+        $this->assertSame('4', $stats[2]['value']);
     }
 
     /**

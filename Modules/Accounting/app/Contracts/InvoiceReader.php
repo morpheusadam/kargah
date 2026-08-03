@@ -60,4 +60,47 @@ interface InvoiceReader
      * Returns null when the invoice does not exist.
      */
     public function issue(int $id, string $reportingCurrency = 'USD'): ?array;
+
+    /**
+     * The whole book's outstanding money — **per currency, never added
+     * across currencies.**
+     *
+     * Kargah invoices in USD, TRY and USDT, and "total outstanding" spanning
+     * three currencies is not one number. Two ways to make it one were
+     * considered and rejected:
+     *
+     * - Summing raw amounts across currencies is simply wrong — it is the
+     *   same category of mistake as `SUM(amount)` in SQL, just committed one
+     *   layer up.
+     * - Converting every invoice into the owner's reporting currency at its
+     *   own frozen `reporting_rate` looked attractive, because that rate
+     *   never moves — an issued invoice never changes its numbers. But
+     *   `reporting_amount` is frozen to the invoice's *face* total at issue,
+     *   not to whatever remains after partial payments, and `reporting_rate`
+     *   is null whenever the rate fetch failed at issue time (`InvoiceIssuer`
+     *   must never block on a missing rate). Multiplying today's *dynamic*
+     *   outstanding balance by an issue-time rate to manufacture a single
+     *   reporting-currency figure is a conversion nobody asked this contract
+     *   to perform, on a rate that is not guaranteed to exist for every row —
+     *   exactly the kind of number 03-accounting.md says nobody could defend
+     *   to an accountant.
+     *
+     * So the answer is exact rather than singular: one figure per currency
+     * that actually has an outstanding invoice, in the invoice's own
+     * currency, computed the same way `PaymentRecorder::outstanding()`
+     * computes it for one invoice — total minus applied payments, never
+     * negative — just summed across the book instead of read off one row.
+     *
+     * Every one of `Currencies::supported()` — USD, TRY, USDT — is always
+     * present, even at zero, so an empty book is a real `{amount:
+     * '0.000000', ...}` per currency rather than a missing key or an empty
+     * list a caller has to special-case.
+     *
+     * `overdue` is the same shape, restricted to the invoices already
+     * outstanding whose due date has passed — the same date test
+     * `Invoice::isOverdue()` uses, not a second definition of overdue.
+     *
+     * @return array{outstanding: list<MoneyArray>, overdue: list<MoneyArray>}
+     */
+    public function totals(): array;
 }

@@ -8,6 +8,7 @@ use Livewire\Attributes\Url;
 use Livewire\Component;
 use Modules\Accounting\Contracts\InvoiceReader as InvoiceReaderContract;
 use Modules\Core\Contracts\Notifier as NotifierContract;
+use Modules\Mailbox\Contracts\EmailReader as EmailReaderContract;
 use Modules\Project\Contracts\BoardReader as BoardReaderContract;
 use Spatie\Activitylog\Models\Activity;
 
@@ -19,26 +20,22 @@ use Spatie\Activitylog\Models\Activity;
  * every module and must never import a module's `Models` namespace. See
  * `Modules\Data\Contracts\AttachmentService`'s docblock for why.
  *
- * **Money is never summed here.** Every figure that touches currency —
- * "unpaid invoices", "overdue" — is one invoice's own already-formatted
- * `outstanding.formatted` string from `InvoiceReader`, verbatim. There is no
- * `InvoiceReader::totals()`, so a portfolio-wide total cannot be built without
- * either summing amounts outside `brick/money` (which is exactly the
- * SQL-arithmetic mistake the project's money rule forbids, just moved into
- * PHP) or reformatting a sum with a currency symbol table this module does
- * not have — `Modules\Accounting\Support\Currencies` defines USDT itself,
- * which `brick/money`'s own ISO registry has never heard of, so even the
- * general-purpose library cannot format it correctly from outside Accounting.
- * Counts are real and bounded; the one money figure shown per stat is the
- * single nearest invoice's own string. See this task's report for the
- * `InvoiceReader::totals()` gap.
+ * **Money is never summed here — it is summed inside Accounting and read
+ * back already summed.** `InvoiceReader::totals()` does the arithmetic
+ * through `brick/money`, one figure per currency, because Kargah invoices in
+ * USD, TRY and USDT and a single cross-currency total is not a number
+ * anyone could defend to an accountant — see the contract's own docblock for
+ * why per-currency was chosen over converting through a frozen rate. This
+ * page only ever receives the finished `{amount, currency, formatted}`
+ * arrays and joins their `formatted` strings for display; it still never
+ * touches a raw amount or a currency symbol table, which is what keeps this
+ * file outside Accounting's `Support` namespace exactly as before.
  *
- * **"Unread mail" has no source.** `Modules\Mailbox\Contracts\EmailReader`
- * only answers "a customer's messages" — there is no inbox-wide count. Rather
- * than approximate it by summing `countForCustomer()` over every customer
- * (an unbounded, N-query proxy for a number that would still be wrong, since
- * mail from an unknown sender is not a customer's mail at all), the tile says
- * so and links to the inbox itself.
+ * **"Unread mail" now has a source.** `Modules\Mailbox\Contracts\EmailReader
+ * ::unreadCount()` is inbox-wide — every folder, matching
+ * `⚡inbox.blade.php`'s own `unreadTotal()` exactly — rather than a proxy
+ * built by summing `countForCustomer()` over every customer, which would
+ * both miss mail from an unknown sender and cost one query per customer.
  *
  * **`Spatie\Activitylog\Models\Activity` is read directly, not through a
  * contract.** It is shared package infrastructure — the same table every
@@ -64,9 +61,13 @@ class extends Component
      */
     public const CACHE_INVOICE_STATS = 'dashboard.invoices.v1';
 
+    public const CACHE_INVOICE_TOTALS = 'dashboard.invoice-totals.v1';
+
     public const CACHE_CARD_STATS = 'dashboard.cards.v1';
 
     public const CACHE_DUE_CARDS = 'dashboard.due-cards.v1';
+
+    public const CACHE_MAIL_STATS = 'dashboard.mail.v1';
 
     public const CACHE_NOTIFICATIONS = 'dashboard.notifications.v1';
 
@@ -142,6 +143,21 @@ class extends Component
         });
     }
 
+    /**
+     * The book's real money, per currency — see `InvoiceReader::totals()`'s
+     * docblock for why this is never one cross-currency number. Every entry
+     * is a plain `{amount, currency, formatted}` array of strings, so this
+     * is safe inside `Cache::flexible()` on the `database` store: nothing
+     * here is an object that could come back `__PHP_Incomplete_Class` on the
+     * stale-serve path.
+     *
+     * @return array{outstanding: list<array{amount: string, currency: string, formatted: string}>, overdue: list<array{amount: string, currency: string, formatted: string}>}
+     */
+    private function invoiceTotals(): array
+    {
+        return Cache::flexible(self::CACHE_INVOICE_TOTALS, [15, 180], fn (): array => app(InvoiceReaderContract::class)->totals());
+    }
+
     /** @return array{due_soon_count: int, overdue_count: int} */
     private function cardStats(): array
     {
@@ -170,6 +186,14 @@ class extends Component
 
             return array_slice(array_merge($reader->cardsOverdue(5), $reader->cardsDueSoon($days, 5)), 0, 8);
         });
+    }
+
+    /** @return array{unread_count: int} */
+    private function mailStats(): array
+    {
+        return Cache::flexible(self::CACHE_MAIL_STATS, [15, 180], fn (): array => [
+            'unread_count' => app(EmailReaderContract::class)->unreadCount(),
+        ]);
     }
 
     /** @return array{unread_count: int, latest_title: ?string} */
@@ -257,6 +281,21 @@ class extends Component
         return array_slice($items, 0, 6);
     }
 
+    /**
+     * The non-zero currencies in a `totals()` list, joined for one line of
+     * text — `"$575.00"`, or `"$575.00 · ₺12,000.00"` for a book genuinely
+     * open in two currencies at once. Never combines them into one number;
+     * see `InvoiceReader::totals()`'s docblock for why.
+     *
+     * @param  list<array{amount: string, currency: string, formatted: string}>  $entries
+     */
+    private function moneyLine(array $entries): string
+    {
+        $nonZero = array_values(array_filter($entries, fn (array $money): bool => $money['amount'] !== '0.000000'));
+
+        return implode(' · ', array_map(fn (array $money): string => $money['formatted'], $nonZero));
+    }
+
     /** "Overdue by 2 days" / "Due today" / "Due tomorrow" / "Due in 5 days" — never a clock time no `due_on` column carries. */
     private function dueLabel(?string $dueOn): string
     {
@@ -277,7 +316,9 @@ class extends Component
     public function with(): array
     {
         $invoices = $this->invoiceStats();
+        $invoiceTotals = $this->invoiceTotals();
         $cards = $this->cardStats();
+        $mail = $this->mailStats();
         $notifications = $this->notificationStats();
 
         return [
@@ -290,8 +331,8 @@ class extends Component
                     'sub' => $invoices['open_count'] === 0
                         ? 'Nothing outstanding'
                         : ($invoices['overdue_count'] > 0
-                            ? $invoices['overdue_count'].' overdue · nearest '.$invoices['most_overdue']['outstanding']['formatted']
-                            : 'Nearest '.$invoices['nearest_open']['outstanding']['formatted'].' — '.strtolower($this->dueLabel($invoices['nearest_open']['due_on']))),
+                            ? $invoices['overdue_count'].' overdue — '.$this->moneyLine($invoiceTotals['overdue']).' past due'
+                            : 'You are owed '.$this->moneyLine($invoiceTotals['outstanding'])),
                     'icon' => 'ki-dollar',
                     'tone' => $invoices['overdue_count'] > 0 ? 'text-destructive' : 'text-warning',
                     'bg' => $invoices['overdue_count'] > 0 ? 'bg-destructive/10' : 'bg-warning/10',
@@ -310,11 +351,13 @@ class extends Component
                 ],
                 [
                     'label' => 'Unread mail',
-                    'value' => '—',
-                    'sub' => 'The inbox has no whole-mailbox count yet',
+                    'value' => (string) $mail['unread_count'],
+                    'sub' => $mail['unread_count'] === 0
+                        ? 'Inbox zero'
+                        : $mail['unread_count'].' '.Str::plural('message', $mail['unread_count']).' waiting',
                     'icon' => 'ki-sms',
-                    'tone' => 'text-muted-foreground',
-                    'bg' => 'bg-muted',
+                    'tone' => $mail['unread_count'] > 0 ? 'text-info' : 'text-muted-foreground',
+                    'bg' => $mail['unread_count'] > 0 ? 'bg-info/10' : 'bg-muted',
                     'route' => 'mail.inbox',
                 ],
                 [

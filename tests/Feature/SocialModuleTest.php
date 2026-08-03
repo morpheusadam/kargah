@@ -937,6 +937,46 @@ class SocialModuleTest extends TestCase
         );
     }
 
+    /**
+     * `social:check-token-expiry` has nothing to read unless something writes
+     * `token_expires_at` when a credential is pasted — see
+     * `tests/Feature/SocialTokenExpiryTest.php` for the command itself.
+     * LinkedIn is the one network whose token has a known, finite lifetime
+     * with no OAuth response Kargah ever sees, so `⚡account-connect`'s
+     * `save()` infers it from `Networks::tokenLifetimeDays()`. Every other
+     * built network's credential does not expire on its own, and the column
+     * must stay null for those or the command would invent a deadline nobody
+     * set.
+     */
+    public function test_saving_a_linkedin_credential_sets_a_sixty_day_expiry_and_telegram_does_not(): void
+    {
+        $this->actingAs(User::factory()->create());
+
+        Livewire::test('social::account-connect')
+            ->call('choose', Networks::LINKEDIN)
+            ->set('handle', 'in/morpheusadam-expiry-test')
+            ->set('fields.member_urn', 'urn:li:person:AbCdEfGh')
+            ->set('fields.access_token', 'a-fresh-linkedin-token')
+            ->call('save');
+
+        $linkedin = SocialAccount::query()->onNetwork(Networks::LINKEDIN)->sole();
+
+        $this->assertNotNull($linkedin->token_expires_at);
+        $this->assertTrue($linkedin->token_expires_at->isSameDay(now()->addDays(60)));
+
+        Livewire::test('social::account-connect')
+            ->call('choose', Networks::TELEGRAM)
+            ->set('handle', '@kargah_buildlog_expiry_test')
+            ->set('fields.bot_token', 'a-fresh-bot-token')
+            ->set('fields.chat_id', '@kargah_buildlog_expiry_test')
+            ->call('save');
+
+        $telegram = SocialAccount::query()->onNetwork(Networks::TELEGRAM)
+            ->where('handle', '@kargah_buildlog_expiry_test')->sole();
+
+        $this->assertNull($telegram->token_expires_at);
+    }
+
     public function test_disconnecting_an_account_clears_the_credential(): void
     {
         $account = $this->account(Networks::MASTODON);

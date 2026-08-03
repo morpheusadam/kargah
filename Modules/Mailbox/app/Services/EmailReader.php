@@ -38,4 +38,9 @@ class EmailReader implements EmailReaderContract
     {
         return Email::query()->forCustomer($customerId)->count();
     }
+
+    public function unreadCount(): int
+    {
+        return Email::query()->unread()->count();
+    }
 }
