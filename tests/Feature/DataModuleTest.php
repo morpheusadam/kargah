@@ -84,6 +84,46 @@ class DataModuleTest extends TestCase
         $this->assertSame(3, Attachment::query()->count());
     }
 
+    /**
+     * The bulk count, which exists so a page showing a paperclip on fifty cards
+     * does not issue fifty queries.
+     *
+     * Project's board search shipped `has:attachments` stubbed out precisely
+     * because the contract could only answer one target at a time and issuing a
+     * query per card would have broken the bounded-query property the rest of
+     * that design protects. So the query count is the assertion that matters
+     * here, not the numbers.
+     */
+    public function test_the_bulk_count_answers_for_many_targets_in_one_query(): void
+    {
+        $service = app(AttachmentService::class);
+
+        $cards = Card::factory()->count(3)->create();
+        $invoice = Invoice::factory()->create();
+
+        $service->attachContents($cards[0], 'a', 'one.md', 'text/markdown');
+        $service->attachContents($cards[0], 'b', 'two.md', 'text/markdown');
+        $service->attachContents($cards[2], 'c', 'three.md', 'text/markdown');
+        $service->attachContents($invoice, 'd', 'four.pdf', 'application/pdf');
+
+        DB::enableQueryLog();
+        $counts = $service->countForTargets([...$cards, $invoice]);
+        $queries = DB::getQueryLog();
+        DB::disableQueryLog();
+
+        $this->assertCount(1, $queries, 'The bulk count issued more than one query.');
+
+        // Keyed by the morph alias, never the class name.
+        $this->assertSame(2, $counts['card:'.$cards[0]->id]);
+        $this->assertSame(1, $counts['card:'.$cards[2]->id]);
+        $this->assertSame(1, $counts['invoice:'.$invoice->id]);
+
+        // A target with no files is absent rather than zero — callers use ?? 0.
+        $this->assertArrayNotHasKey('card:'.$cards[1]->id, $counts);
+
+        $this->assertSame([], $service->countForTargets([]));
+    }
+
     public function test_the_service_returns_plain_arrays_and_never_an_eloquent_model(): void
     {
         $service = app(AttachmentService::class);

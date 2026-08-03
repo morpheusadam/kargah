@@ -68,6 +68,25 @@ interface AttachmentService
     /** How many files a target carries, without loading any of them. */
     public function countForTarget(Model $target): int;
 
+    /**
+     * The same count for many targets, in **one** query.
+     *
+     * Exists because `countForTarget()` in a loop is how a page that shows a
+     * paperclip on fifty cards issues fifty queries. Project's board search
+     * needs to answer "which of these cards have a file" while staying inside a
+     * bounded query count, and could not, so `has:attachments` shipped stubbed
+     * out until this existed.
+     *
+     * Keyed `"{morph alias}:{id}"` — the morph alias, never the class name, so
+     * a rename inside another module cannot silently produce keys that match
+     * nothing. A target with no files is **absent from the array** rather than
+     * present with a zero; callers should use `?? 0`.
+     *
+     * @param  iterable<Model>  $targets
+     * @return array<string, int>
+     */
+    public function countForTargets(iterable $targets): array;
+
     /** One attachment, or null when it does not exist or has been deleted. */
     public function find(int $attachmentId): ?array;
 

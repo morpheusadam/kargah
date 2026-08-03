@@ -72,6 +72,39 @@ class AttachmentService implements AttachmentServiceContract
             ->count();
     }
 
+    public function countForTargets(iterable $targets): array
+    {
+        $keysByType = [];
+
+        foreach ($targets as $target) {
+            $keysByType[$target->getMorphClass()][] = (int) $target->getKey();
+        }
+
+        if ($keysByType === []) {
+            return [];
+        }
+
+        $rows = Attachment::query()
+            ->where(function ($query) use ($keysByType): void {
+                foreach ($keysByType as $type => $ids) {
+                    $query->orWhere(fn ($q) => $q
+                        ->where('attachable_type', $type)
+                        ->whereIn('attachable_id', array_unique($ids)));
+                }
+            })
+            ->selectRaw('attachable_type, attachable_id, COUNT(*) as total')
+            ->groupBy('attachable_type', 'attachable_id')
+            ->get();
+
+        $counts = [];
+
+        foreach ($rows as $row) {
+            $counts[$row->attachable_type.':'.$row->attachable_id] = (int) $row->total;
+        }
+
+        return $counts;
+    }
+
     public function find(int $attachmentId): ?array
     {
         $attachment = Attachment::query()->find($attachmentId);
