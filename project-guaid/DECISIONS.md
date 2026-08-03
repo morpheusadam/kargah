@@ -529,6 +529,53 @@ one and it was left for a human.
 
 ---
 
+## Closing the dashboard's two contract gaps
+
+**`InvoiceReader::totals()` is per currency, never one cross-currency figure.**
+Two designs were on the table: sum every invoice's own frozen `reporting_amount` into one
+reporting-currency total, or report one figure per currency. The reporting-amount route was
+rejected on inspection — `reporting_amount` is frozen to the invoice's *face* total at issue, not
+to what remains after partial payments, and `reporting_rate` is null on any invoice whose rate
+fetch failed at issue time (`InvoiceIssuer` must never block on a missing rate, so this is not an
+edge case, it is a documented possibility on every row). Multiplying a dynamic, ever-changing
+outstanding balance by a frozen issue-time rate to synthesise a single number is a conversion this
+contract was never asked to perform, on a rate that is not guaranteed to exist. The chosen shape —
+one `{amount, currency, formatted}` per one of `Currencies::supported()`, always all three, real
+zeros when the book is empty — needs no rate, no conversion, and no invention: every figure is
+exactly what is written on the invoices that produced it. The dashboard's tile joins the non-zero
+`formatted` strings with `·` rather than adding them.
+
+**"Outstanding" is `Invoice::query()->issued()->whereNotIn('status', ['paid', 'void'])`, and this
+is provably the same set the dashboard's own merged `paginate('sent') + paginate('overdue')`
+already computed by hand.** `issued()` excludes drafts by requiring `sent_at`; excluding `paid` and
+`void` leaves exactly `sent`, `part_paid` and `overdue` — the only three values left once the
+migration's own comment enumerates all six. The `overdue` bucket is filtered further, by the same
+due-date test `Invoice::isOverdue()` uses, not by the stored `status` string — a `part_paid`
+invoice already past its due date is overdue in the same sense a `status = 'overdue'` row is, and
+the aggregate would otherwise miss it.
+
+**The book is read in two queries regardless of size — the invoices, and their payments in one
+bulk eager load — because `PaymentRecorder::outstanding()` cannot be called per invoice here.**
+It is off-limits to edit and its own per-invoice `outstanding()` call issues a fresh query through
+`$invoice->payments()->pluck(...)` even when the relation was already eager-loaded, since
+`payments()` builds a new relation query rather than reading the loaded collection. Calling it once
+per invoice would make `totals()` an N+1 that scales with the book. `InvoiceReader::totals()`
+instead reproduces the same formula — total minus applied payments, never negative — reading the
+already-eager-loaded `$invoice->payments` collection in PHP. At a few hundred invoices this is
+comfortably fast; at ten thousand outstanding invoices it is still two queries but ten thousand
+`brick/money` operations run in PHP on every uncached call, and the fix at that scale is a
+materialised running balance written by `PaymentRecorder`, not a recomputation here — no such row
+exists yet, because no book is anywhere near that size today.
+
+**`Modules\Mailbox\Contracts\EmailReader::unreadCount()` matches `⚡inbox.blade.php`'s own
+`unreadTotal()` exactly: every folder counts, with no exception.** The inbox page already defines
+"unread" as `is_read = false` summed across Inbox, Archive, Sent, Drafts, Junk and Trash — nothing
+in that method excludes a folder — so the new contract method runs the identical `Email::query()->
+unread()->count()` rather than deciding a second, narrower definition (say, Inbox-only) that would
+disagree with the page a click from the same tile lands on.
+
+---
+
 ## Testing — measuring performance inside a test suite
 
 **A wall-clock budget asserted in the suite measures the machine, not the page.**
