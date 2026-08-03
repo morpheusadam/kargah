@@ -449,13 +449,17 @@ class CampaignSendingTest extends TestCase
         $this->assertSame(3, $campaign->recipients()->where('status', CampaignRecipient::PENDING)->count());
         $this->assertSame(Campaign::SENDING, $campaign->refresh()->status);
 
-        // Tomorrow the window rolls and the rest go out — with nothing sent twice.
-        Carbon::setTestNow(now()->addDay());
+        // Each following day the window rolls and two more go out. Nothing is
+        // lost and nothing is sent twice while the campaign waits.
+        foreach ([4, 5, 5] as $expected) {
+            Carbon::setTestNow(now()->addDay());
 
-        $this->chunk($campaign);
+            $this->chunk($campaign);
 
-        $this->assertSame(5, $this->brevo->sendCount());
-        $this->assertSame(0, $this->duplicateSends());
+            $this->assertSame($expected, $this->brevo->sendCount());
+            $this->assertSame(0, $this->duplicateSends());
+        }
+
         $this->assertSame(Campaign::SENT, $campaign->refresh()->status);
     }
 

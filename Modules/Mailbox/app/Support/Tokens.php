@@ -110,7 +110,11 @@ final class Tokens
     {
         [$local] = self::split($address);
 
-        $plus = strpos($local, '+');
+        // The *last* plus, not the first. A from-address may already carry a
+        // sub-address of its own — `nima+news@example.com` is a perfectly
+        // ordinary thing to send from — and reading the first one would hand
+        // the verifier everything after it, signature and all.
+        $plus = strrpos($local, '+');
 
         if ($plus === false) {
             return null;

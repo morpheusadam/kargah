@@ -276,10 +276,17 @@ class CampaignSender
      * be a message that already went out, and only somebody who has read the
      * error can tell the difference. The tokens are kept, so a re-queued
      * recipient receives the same unsubscribe link it would have had.
+     *
+     * A campaign that had already finished is reopened, which is the one place
+     * in this module where a status moves backwards. It has to: `sent` is where
+     * a campaign lands as soon as nothing is outstanding, so without this the
+     * re-queued rows would sit `pending` forever behind a campaign no tick will
+     * ever look at again. It is safe because it is a person's decision, exactly
+     * as pausing is.
      */
     public function requeueFailed(Campaign $campaign): int
     {
-        return $campaign->recipients()
+        $requeued = $campaign->recipients()
             ->where('status', CampaignRecipient::FAILED)
             ->update([
                 'status' => CampaignRecipient::PENDING,
@@ -288,6 +295,12 @@ class CampaignSender
                 'failed_at' => null,
                 'updated_at' => now(),
             ]);
+
+        if ($requeued > 0 && in_array($campaign->status, [Campaign::SENT, Campaign::FAILED], true)) {
+            $campaign->forceFill(['status' => Campaign::SENDING, 'finished_at' => null])->save();
+        }
+
+        return $requeued;
     }
 
     /**

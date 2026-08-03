@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Facades\Crypt;
 use Modules\Mailbox\Database\Factories\DeliveryProviderFactory;
 use Modules\Mailbox\Support\Senders;
 
@@ -114,13 +115,27 @@ class DeliveryProvider extends Model
     /**
      * The credential bag as everything else spells it.
      *
+     * Reading gives the decoded array because the `encrypted:array` cast
+     * decrypts on the way out. Writing encrypts *here* rather than leaving it
+     * to the same cast, and that asymmetry is deliberate: an attribute mutator
+     * that returns `['credentials_encrypted' => $value]` merges straight into
+     * the model's raw attributes and never reaches `setAttribute`, so the cast
+     * has no chance to run. Left to the cast, the plaintext would go to disk —
+     * and on an array it would not even do that, it would fail at the bind with
+     * 'array to string conversion'. `json_encode` first, because that is
+     * exactly what the read side undoes.
+     *
      * @return Attribute<array<string, string>, array<string, string>|null>
      */
     protected function credentials(): Attribute
     {
         return Attribute::make(
             get: fn (): array => is_array($this->credentials_encrypted) ? $this->credentials_encrypted : [],
-            set: fn (?array $value): array => ['credentials_encrypted' => $value === [] ? null : $value],
+            set: fn (?array $value): array => [
+                'credentials_encrypted' => $value === null || $value === []
+                    ? null
+                    : Crypt::encryptString((string) json_encode($value)),
+            ],
         );
     }
 

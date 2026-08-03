@@ -33,7 +33,7 @@ class DeliveryProviderFactory extends Factory
             'name' => Senders::label($driver),
             'driver' => $driver,
             'sending_domain' => 'news.kargah.dev',
-            'from_email' => 'nima+'.$n.'@news.kargah.dev',
+            'from_email' => 'nima'.$n.'@news.kargah.dev',
             'from_name' => 'Nima Fazlipour',
             'credentials' => null,
             // Zero means unmetered rather than blocked, so the default provider
