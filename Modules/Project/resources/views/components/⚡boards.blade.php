@@ -10,13 +10,21 @@ use Modules\Core\Concerns\InteractsWithToasts;
 use Modules\Project\Models\Board;
 use Modules\Project\Models\BoardList;
 use Modules\Project\Models\Card;
+use Modules\Project\Models\CardPlacement;
 use Modules\Project\Services\CardService;
+use Modules\Project\Services\PlacementConflict;
 use Modules\Project\Support\Position;
 
 /**
  * Trello-style board, reading from the database.
  *
- * Two things here are worth knowing before changing anything.
+ * Three things here are worth knowing before changing anything.
+ *
+ * **The canvas draws placements, not cards.** A card may be placed in several
+ * lists — the same work shown on the two boards it belongs to — so what a
+ * column holds is a row of `card_placements`, each with its own order. The card
+ * id no longer identifies what was dragged, which is why every card element
+ * carries `data-placement-id` as well and `moveCard()` takes a placement.
  *
  * **The board canvas is an island.** Toggling the filter panel, the board
  * picker or a list menu skips re-rendering every card on the board. Anything
@@ -29,7 +37,8 @@ use Modules\Project\Support\Position;
  * **`moveCard` trusts the browser for the index and nothing else.** Sortable
  * reports where the card landed among the cards it can *see*. The server knows
  * the filter, so it works out which cards those were itself rather than taking
- * a list of ids from the client.
+ * a list of ids from the client. It still takes three arguments; what changed
+ * is that the first one names a placement.
  */
 new
 #[Title('Boards — Kargah')]
@@ -120,10 +129,18 @@ class extends Component
     }
 
     /**
-     * Every list on the board with its cards, before filtering.
+     * Every list on the board with its placements, before filtering.
      *
      * One query per relation rather than one per card: the checklist chip is
      * two `withCount` subqueries, not a load of every item on the board.
+     *
+     * `onCanvas()` is what implements the archived-mirror rule: an archived card
+     * leaves the list it lives in, and stays on the lists it was mirrored onto,
+     * where it is drawn with an archived marker and cannot be dragged.
+     *
+     * The origin placement is loaded with each card so a mirror can say where
+     * the card actually lives. Three queries for the whole board, not one per
+     * mirror.
      */
     private function lists(): Collection
     {
@@ -141,14 +158,16 @@ class extends Component
             ->where('board_id', $board->id)
             ->active()
             ->orderBy('position')
-            ->with(['cards' => fn ($query) => $query
-                ->active()
+            ->with(['placements' => fn ($query) => $query
+                ->onCanvas()
                 ->orderBy('position')
-                ->with(['labels', 'members'])
-                ->withCount([
-                    'comments',
-                    'checklistItems as checklist_total',
-                    'checklistItems as checklist_done' => fn ($q) => $q->where('is_done', true),
+                ->with(['card' => fn ($card) => $card
+                    ->with(['labels', 'members', 'originPlacement.list.board'])
+                    ->withCount([
+                        'comments',
+                        'checklistItems as checklist_total',
+                        'checklistItems as checklist_done' => fn ($q) => $q->where('is_done', true),
+                    ]),
                 ]),
             ])
             ->get();
@@ -219,14 +238,16 @@ class extends Component
         };
     }
 
-    /** The cards of one list that survive the current filter, in order. */
-    private function visibleCards(BoardList $list): Collection
+    /** The placements of one list that survive the current filter, in order. */
+    private function visiblePlacements(BoardList $list): Collection
     {
-        return $list->cards->filter(fn (Card $card): bool => $this->matches($card))->values();
+        return $list->placements
+            ->filter(fn (CardPlacement $placement): bool => $placement->card !== null && $this->matches($placement->card))
+            ->values();
     }
 
     /**
-     * The ids the browser had on screen for a list.
+     * The *placement* ids the browser had on screen for a list.
      *
      * Derived from the same filter that rendered the page rather than sent up
      * with the drop: the server already knows, and a client-supplied ordering
@@ -234,22 +255,18 @@ class extends Component
      *
      * @return list<int>
      */
-    private function visibleCardIds(BoardList $list): array
+    private function visiblePlacementIds(BoardList $list): array
     {
-        return $this->visibleCards($list)->pluck('id')->map(fn ($id): int => (int) $id)->all();
+        return $this->visiblePlacements($list)->pluck('id')->map(fn ($id): int => (int) $id)->all();
     }
 
     private function countCards(bool $filtered): int
     {
         return $this->lists()->sum(
-            fn (BoardList $list): int => $filtered ? $this->visibleCards($list)->count() : $list->cards->count(),
+            fn (BoardList $list): int => $filtered
+                ? $this->visiblePlacements($list)->count()
+                : $list->placements->count(),
         );
-    }
-
-    /** How the board reads once the current filter is applied. Used in filter toasts. */
-    private function filterSummary(): string
-    {
-        return 'Showing '.$this->countCards(true).' of '.$this->countCards(false).' cards.';
     }
 
     public function with(): array
@@ -262,7 +279,7 @@ class extends Component
             'members' => $this->members(),
             'lists' => $lists->map(fn (BoardList $list): array => [
                 'model' => $list,
-                'cards' => $this->visibleCards($list),
+                'placements' => $this->visiblePlacements($list),
             ]),
             'totalCards' => $this->countCards(false),
             'visibleCards' => $this->countCards(true),
@@ -326,8 +343,6 @@ class extends Component
 
         $this->closeOverlays();
         $this->refreshBoard();
-
-        $this->toastSuccess('Board switched', 'You are looking at '.$this->boardName().'.');
     }
 
     public function toggleBoardPicker(): void
@@ -335,10 +350,6 @@ class extends Component
         $opening = ! $this->boardPickerOpen;
         $this->closeOverlays();
         $this->boardPickerOpen = $opening;
-
-        $opening
-            ? $this->toastSuccess('Board picker open', 'Pick the board you want to work on.')
-            : $this->toastSuccess('Board picker closed');
     }
 
     public function toggleListMenu(int $listId): void
@@ -346,10 +357,6 @@ class extends Component
         $opening = $this->listMenuOpen !== $listId;
         $this->closeOverlays();
         $this->listMenuOpen = $opening ? $listId : null;
-
-        $opening
-            ? $this->toastSuccess('List menu open', 'Add a card, or archive what the list holds.')
-            : $this->toastSuccess('List menu closed');
     }
 
     public function toggleFilterPanel(): void
@@ -357,21 +364,11 @@ class extends Component
         $opening = ! $this->filterOpen;
         $this->closeOverlays();
         $this->filterOpen = $opening;
-
-        $opening
-            ? $this->toastSuccess('Filter panel open', 'Narrow the board by label, member or due date.')
-            : $this->toastSuccess('Filter panel closed', 'Whatever you set is still applied.');
     }
 
     public function closeFilterPanel(): void
     {
-        $wasOpen = $this->filterOpen;
-
         $this->filterOpen = false;
-
-        if ($wasOpen) {
-            $this->toastSuccess('Filter panel closed', 'Whatever you set is still applied.');
-        }
     }
 
     /**
@@ -398,16 +395,7 @@ class extends Component
             ? array_values(array_diff($current, [$labelId]))
             : [...$current, $labelId];
 
-        $name = $this->labels()->firstWhere('id', $labelId)?->name ?? 'Label';
-
         $this->refreshBoard();
-
-        $this->toastSuccess(
-            in_array($labelId, $this->labelFilterIds(), true)
-                ? $name.' added to the filter'
-                : $name.' dropped from the filter',
-            $this->filterSummary(),
-        );
     }
 
     public function toggleAssigneeFilter(int $userId): void
@@ -418,16 +406,7 @@ class extends Component
             ? array_values(array_diff($current, [$userId]))
             : [...$current, $userId];
 
-        $name = $this->members()->firstWhere('id', $userId)?->name ?? 'Member';
-
         $this->refreshBoard();
-
-        $this->toastSuccess(
-            in_array($userId, $this->assigneeFilterIds(), true)
-                ? $name.' added to the filter'
-                : $name.' dropped from the filter',
-            $this->filterSummary(),
-        );
     }
 
     public function setDueFilter(string $state): void
@@ -435,11 +414,6 @@ class extends Component
         $this->filterDue = $this->filterDue === $state ? '' : $state;
 
         $this->refreshBoard();
-
-        $this->toastSuccess(
-            $this->filterDue === '' ? 'Due date filter cleared' : 'Due date filter set',
-            $this->filterSummary(),
-        );
     }
 
     /** Typing in either search box changes what the canvas shows. */
@@ -456,8 +430,6 @@ class extends Component
         $this->filterDue = '';
 
         $this->refreshBoard();
-
-        $this->toastSuccess('Filters cleared', $this->filterSummary());
     }
 
     /* Inline creation -------------------------------------------------------- */
@@ -466,20 +438,12 @@ class extends Component
     {
         $this->closeOverlays();
         $this->addingCardIn = $listId;
-
-        $this->toastSuccess('Card form open', 'It sits at the bottom of the list.');
     }
 
     public function cancelAddCard(): void
     {
-        $wasOpen = $this->addingCardIn !== null;
-
         $this->addingCardIn = null;
         $this->newCardTitle = '';
-
-        if ($wasOpen) {
-            $this->toastSuccess('Card form closed', 'Nothing was added.');
-        }
     }
 
     /** Create a card at the bottom of a list. */
@@ -516,20 +480,12 @@ class extends Component
     {
         $this->closeOverlays();
         $this->addingList = true;
-
-        $this->toastSuccess('List form open', 'It sits at the end of the board.');
     }
 
     public function cancelAddList(): void
     {
-        $wasOpen = $this->addingList;
-
         $this->addingList = false;
         $this->newListName = '';
-
-        if ($wasOpen) {
-            $this->toastSuccess('List form closed', 'Nothing was added.');
-        }
     }
 
     /** Create a list at the end of the board. */
@@ -570,6 +526,24 @@ class extends Component
 
     /* Card and list actions --------------------------------------------------- */
 
+    /**
+     * Archive the cards that *live* in a list, and say how many.
+     *
+     * The cards whose origin placement is here — those are the ones this list
+     * is responsible for. A card mirrored in from another board keeps living
+     * where it lives; archiving somebody else's list is not a thing that should
+     * take a card off its own board.
+     */
+    private function archiveCardsLivingIn(BoardList $list): int
+    {
+        $cardIds = CardPlacement::query()
+            ->where('board_list_id', $list->id)
+            ->origin()
+            ->pluck('card_id');
+
+        return Card::query()->whereIn('id', $cardIds)->active()->update(['archived_at' => now()]);
+    }
+
     private function listOnThisBoard(int $listId): ?BoardList
     {
         $board = $this->board();
@@ -587,11 +561,16 @@ class extends Component
     /**
      * Called by Sortable when a card is dropped.
      *
+     * The first argument names a **placement**, not a card: once a card can sit
+     * in two lists, a card id no longer says which of them was dragged. The
+     * signature is still three arguments and the server still derives the
+     * visible ordering itself, which is the part that mattered.
+     *
      * `$position` is the index the card landed on among the cards the browser
      * could see, which is not an offset into the list when a filter is hiding
      * rows between them.
      */
-    public function moveCard(int $cardId, string $toList, int $position): void
+    public function moveCard(int $placementId, string $toList, int $position): void
     {
         $list = $this->listOnThisBoard((int) $toList);
 
@@ -601,18 +580,41 @@ class extends Component
             return;
         }
 
-        $card = Card::query()->active()->find($cardId);
+        $placement = CardPlacement::query()->with(['card', 'list'])->find($placementId);
 
-        if ($card === null) {
-            $this->toastError('That card is gone', 'It was archived or deleted while the page was open.');
+        if ($placement === null || $placement->card === null) {
+            $this->toastError('That card is gone', 'It was deleted while the page was open.');
             $this->refreshBoard();
 
             return;
         }
 
-        $from = $card->list;
+        $card = $placement->card;
 
-        app(CardService::class)->move($card, $list, $position, $this->visibleCardIds($list));
+        if ($placement->isOrigin() && $card->isArchived()) {
+            $this->toastError('That card is archived', 'Restore it from the archive before moving it.');
+            $this->refreshBoard();
+
+            return;
+        }
+
+        $from = $placement->list;
+
+        try {
+            app(CardService::class)->move($placement, $list, $position, $this->visiblePlacementIds($list));
+        } catch (PlacementConflict) {
+            // The card is already in the target list, on another placement. The
+            // unique index would refuse this too; refusing it by name is what
+            // lets the board say something a person can act on.
+            $this->refreshBoard();
+
+            $this->toastError(
+                'That card is already in '.$list->name,
+                'A card can only sit in a list once. Remove the mirror there first.',
+            );
+
+            return;
+        }
 
         $this->refreshBoard();
 
@@ -657,7 +659,7 @@ class extends Component
             return;
         }
 
-        $cards = Card::query()->where('board_list_id', $list->id)->active()->update(['archived_at' => now()]);
+        $cards = $this->archiveCardsLivingIn($list);
 
         $list->forceFill(['archived_at' => now()])->save();
 
@@ -682,7 +684,7 @@ class extends Component
             return;
         }
 
-        $cards = Card::query()->where('board_list_id', $list->id)->active()->update(['archived_at' => now()]);
+        $cards = $this->archiveCardsLivingIn($list);
 
         $this->closeOverlays();
         $this->refreshBoard();
@@ -881,7 +883,7 @@ class extends Component
                 <div class="flex items-center justify-between px-4 py-3">
                     <div class="flex items-center gap-2">
                         <h3 class="text-sm font-semibold text-mono">{{ $list->name }}</h3>
-                        <span class="kt-badge kt-badge-sm kt-badge-outline">{{ $entry['cards']->count() }}</span>
+                        <span class="kt-badge kt-badge-sm kt-badge-outline">{{ $entry['placements']->count() }}</span>
                     </div>
 
                     <div class="relative">
@@ -906,13 +908,45 @@ class extends Component
                 </div>
 
                 <div class="kargah-list flex flex-col gap-2 px-3 pb-3 min-h-[60px]" data-list="{{ $list->id }}">
-                    @forelse ($entry['cards'] as $card)
+                    @forelse ($entry['placements'] as $placement)
+                        @php($card = $placement->card)
+                        @php($isMirror = $placement->isMirror())
+                        @php($isArchived = $card->isArchived())
+                        @php($livesIn = $isMirror ? $card->originPlacement?->list : null)
+
+                        {{--
+                            Keyed by placement, not by card: two placements of
+                            one card on the same board would otherwise collide
+                            in the morph and only one of them would ever update.
+                        --}}
                         <div wire:click="openCard({{ $card->id }})"
-                             wire:key="card-{{ $card->id }}"
+                             wire:key="placement-{{ $placement->id }}"
                              role="button" tabindex="0"
                              aria-label="Open card {{ $card->title }}"
-                             class="kt-card bg-background border border-border rounded-lg p-3 cursor-grab hover:border-primary/40 transition-colors active:cursor-grabbing"
-                             data-card-id="{{ $card->id }}">
+                             class="kt-card bg-background border rounded-lg p-3 transition-colors
+                                    {{ $isArchived
+                                        ? 'border-dashed border-border opacity-70 cursor-pointer'
+                                        : 'border-border cursor-grab hover:border-primary/40 active:cursor-grabbing' }}"
+                             data-card-id="{{ $card->id }}"
+                             data-placement-id="{{ $placement->id }}"
+                             @if ($isArchived) data-archived="1" @endif>
+
+                            @if ($isMirror || $isArchived)
+                                <div class="flex items-center gap-2 mb-2 text-[10px] text-muted-foreground">
+                                    @if ($isMirror)
+                                        <span class="inline-flex items-center gap-1"
+                                              title="Mirrored from {{ $livesIn?->name ?? 'another list' }} on {{ $livesIn?->board?->name ?? 'another board' }}">
+                                            <i class="ki-filled ki-devices-2 text-xs"></i>
+                                            Mirror of {{ $livesIn?->name ?? 'another list' }}
+                                        </span>
+                                    @endif
+                                    @if ($isArchived)
+                                        <span class="kt-badge kt-badge-sm kt-badge-outline gap-1">
+                                            <i class="ki-filled ki-archive text-[10px]"></i> Archived
+                                        </span>
+                                    @endif
+                                </div>
+                            @endif
 
                             @if ($card->labels->isNotEmpty())
                                 <div class="flex flex-wrap gap-1 mb-2">
@@ -1083,7 +1117,10 @@ class extends Component
                     dragClass: 'rotate-2',
                     // Without this the "Nothing in this list yet" paragraph is
                     // itself draggable, and lands in another list as a ghost.
-                    draggable: '[data-card-id]',
+                    // An archived card left on a mirror is shown but not
+                    // dragged: it is not on the board any more, it is a note
+                    // saying where it was.
+                    draggable: '[data-placement-id]:not([data-archived])',
                     onStart: function () {
                         guard.until = Infinity;
                     },
@@ -1092,8 +1129,10 @@ class extends Component
 
                         if (evt.to === evt.from && evt.oldIndex === evt.newIndex) return;
 
+                        // The placement, not the card: the same card may be on
+                        // two lists of this board and only one of them moved.
                         $wire.moveCard(
-                            parseInt(evt.item.dataset.cardId, 10),
+                            parseInt(evt.item.dataset.placementId, 10),
                             evt.to.dataset.list,
                             evt.newIndex,
                         );

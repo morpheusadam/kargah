@@ -10,6 +10,7 @@ use Modules\Project\Models\Board;
 use Modules\Project\Models\BoardList;
 use Modules\Project\Models\Card;
 use Modules\Project\Models\CardComment;
+use Modules\Project\Models\CardPlacement;
 use Modules\Project\Models\Checklist;
 use Modules\Project\Models\ChecklistItem;
 use Modules\Project\Models\Label;
@@ -149,19 +150,32 @@ class ProjectDatabaseSeeder extends Seeder
      */
     private function seedCard(BoardList $list, array $data, string $position, Collection $labels, User $user): void
     {
-        $card = Card::query()->updateOrCreate(
-            ['board_list_id' => $list->id, 'title' => $data['title']],
-            [
-                'description' => $data['description'],
-                'position' => $position,
-                'customer_id' => null,
-                'company_id' => null,
-                // An integer offset in days, so the board always holds a card
-                // that is genuinely late and one that is genuinely close.
-                'due_on' => isset($data['due']) ? now()->startOfDay()->addDays($data['due'])->toDateString() : null,
-                'completed_at' => null,
-                'created_by' => $user->id,
-            ],
+        // The natural key is still "this title, in this list" — it is just that
+        // the list is now on the placement rather than on the card, so the
+        // lookup goes through it. Everything else is `updateOrCreate` as
+        // before, and a second run writes the same values.
+        $card = Card::query()
+            ->where('title', $data['title'])
+            ->whereHas('placements', fn ($query) => $query
+                ->where('board_list_id', $list->id)
+                ->where('is_origin', true))
+            ->first()
+            ?? Card::query()->create(['title' => $data['title']]);
+
+        $card->update([
+            'description' => $data['description'],
+            'customer_id' => null,
+            'company_id' => null,
+            // An integer offset in days, so the board always holds a card
+            // that is genuinely late and one that is genuinely close.
+            'due_on' => isset($data['due']) ? now()->startOfDay()->addDays($data['due'])->toDateString() : null,
+            'completed_at' => null,
+            'created_by' => $user->id,
+        ]);
+
+        CardPlacement::query()->updateOrCreate(
+            ['card_id' => $card->id, 'board_list_id' => $list->id],
+            ['position' => $position, 'is_origin' => true, 'created_by' => $user->id],
         );
 
         $card->labels()->sync(

@@ -233,7 +233,7 @@ class InboxPageTest extends TestCase
         $this->assertSame($customer->id, $card->customer_id);
 
         // And it is on the board, at the bottom of the list that was picked.
-        $this->assertSame($list->id, $card->board_list_id);
+        $this->assertSame($list->id, $card->originPlacement->board_list_id);
         $this->get('/projects?board=client-work')
             ->assertOk()
             ->assertSee('Scope change for the landing page');

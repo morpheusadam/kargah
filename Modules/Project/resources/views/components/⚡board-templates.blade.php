@@ -9,6 +9,7 @@ use Modules\Core\Concerns\InteractsWithToasts;
 use Modules\Project\Models\Board;
 use Modules\Project\Models\BoardList;
 use Modules\Project\Models\Card;
+use Modules\Project\Models\CardPlacement;
 use Modules\Project\Models\Label;
 use Modules\Project\Support\Palette;
 use Modules\Project\Support\Position;
@@ -119,32 +120,16 @@ class extends Component
     {
         $this->open = true;
         $this->resetValidation();
-
-        $this->toastSuccess('Template picker open', 'Name the board, then pick what it starts with.');
     }
 
     public function close(): void
     {
-        $wasOpen = $this->open;
-
         $this->open = false;
-
-        if ($wasOpen) {
-            $this->toastSuccess('Template picker closed', 'No board was created.');
-        }
     }
 
     public function selectTemplate(string $key): void
     {
         $this->template = $key;
-
-        $template = $this->templates()[$key] ?? null;
-        $lists = count($template['lists'] ?? []);
-
-        $this->toastSuccess(
-            ($template['name'] ?? $key).' selected',
-            $lists === 1 ? 'The preview shows its 1 list.' : 'The preview shows its '.$lists.' lists.',
-        );
     }
 
     /**
@@ -224,10 +209,18 @@ class extends Component
                 $cardPositions = Position::spread(count($list['cards']));
 
                 foreach ($list['cards'] as $i => $title) {
-                    Card::query()->create([
-                        'board_list_id' => $row->id,
+                    $card = Card::query()->create([
                         'title' => $title,
+                        'created_by' => auth()->id(),
+                    ]);
+
+                    // Where the card sits is a row of its own now, and every
+                    // card has exactly one that says where it lives.
+                    CardPlacement::query()->create([
+                        'card_id' => $card->id,
+                        'board_list_id' => $row->id,
                         'position' => $cardPositions[$i],
+                        'is_origin' => true,
                         'created_by' => auth()->id(),
                     ]);
                 }

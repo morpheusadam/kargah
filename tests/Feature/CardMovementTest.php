@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\DB;
 use Modules\Project\Models\Board;
 use Modules\Project\Models\BoardList;
 use Modules\Project\Models\Card;
+use Modules\Project\Models\CardPlacement;
 use Modules\Project\Services\CardService;
 use Modules\Project\Support\Position;
 use Tests\TestCase;
@@ -18,6 +19,10 @@ use Tests\TestCase;
  * The acceptance criterion for this phase is arithmetic, not appearance:
  * reordering a list of 500 must write one row. Everything else here exists to
  * stop that guarantee being quietly traded away later.
+ *
+ * The row being written is a `card_placements` row now rather than a `cards`
+ * one — a card may sit in several lists and each placement has its own order —
+ * so the write counting below counts placements. The guarantee is the same one.
  */
 class CardMovementTest extends TestCase
 {
@@ -59,11 +64,30 @@ class CardMovementTest extends TestCase
 
     private function titlesIn(BoardList $list): array
     {
-        return Card::query()
+        return CardPlacement::query()
             ->where('board_list_id', $list->id)
-            ->active()
+            ->onCanvas()
             ->orderBy('position')
-            ->pluck('title')
+            ->with('card')
+            ->get()
+            ->map(fn (CardPlacement $placement): string => $placement->card->title)
+            ->all();
+    }
+
+    /** The one placement a freshly appended card has. */
+    private function placementOf(Card $card): CardPlacement
+    {
+        return $card->originPlacement()->firstOrFail();
+    }
+
+    /** Every placement position in a list, in order, as strings. */
+    private function positionsIn(BoardList $list): array
+    {
+        return CardPlacement::query()
+            ->where('board_list_id', $list->id)
+            ->orderBy('position')
+            ->pluck('position')
+            ->map(fn ($p): string => (string) $p)
             ->all();
     }
 
@@ -75,17 +99,17 @@ class CardMovementTest extends TestCase
 
         $last = end($cards);
 
-        // Count writes to `cards` only. The activity trail is an append of its
-        // own and is meant to be there.
+        // Count writes to `card_placements` only. The activity trail is an
+        // append of its own and is meant to be there.
         $writes = 0;
         DB::listen(function ($query) use (&$writes) {
-            if (preg_match('/^update\s+"?cards"?/i', trim($query->sql))) {
+            if (preg_match('/^update\s+"?card_placements"?/i', trim($query->sql))) {
                 $writes++;
             }
         });
 
         // Drop the last card between the second and the third.
-        $this->service()->move($last, $this->todo, 2);
+        $this->service()->move($this->placementOf($last), $this->todo, 2);
 
         $this->assertSame(1, $writes, 'Reordering wrote '.$writes.' card rows; the whole point of a fractional position is that it writes one.');
 
@@ -101,12 +125,13 @@ class CardMovementTest extends TestCase
         [$first] = $this->seedCards($this->todo, 3, 'Backlog');
         $this->seedCards($this->doing, 2, 'Doing');
 
-        $this->service()->move($first, $this->doing, 1);
+        $this->service()->move($this->placementOf($first), $this->doing, 1);
 
         // Read it back from the database, not from the object we just wrote.
         $reloaded = Card::query()->find($first->id);
 
-        $this->assertSame($this->doing->id, $reloaded->board_list_id);
+        $this->assertSame($this->doing->id, $reloaded->originPlacement->board_list_id);
+        $this->assertSame($this->doing->id, $reloaded->list->id, 'The card must still know which list it lives in.');
         $this->assertSame(['Doing 1', 'Backlog 1', 'Doing 2'], $this->titlesIn($this->doing));
         $this->assertSame(['Backlog 2', 'Backlog 3'], $this->titlesIn($this->todo));
     }
@@ -117,7 +142,7 @@ class CardMovementTest extends TestCase
     {
         $cards = $this->seedCards($this->todo, 4);
 
-        $this->service()->move($cards[3], $this->todo, 0);
+        $this->service()->move($this->placementOf($cards[3]), $this->todo, 0);
 
         $this->assertSame(['Card 4', 'Card 1', 'Card 2', 'Card 3'], $this->titlesIn($this->todo));
     }
@@ -126,7 +151,7 @@ class CardMovementTest extends TestCase
     {
         $cards = $this->seedCards($this->todo, 4);
 
-        $this->service()->move($cards[0], $this->todo, 3);
+        $this->service()->move($this->placementOf($cards[0]), $this->todo, 3);
 
         $this->assertSame(['Card 2', 'Card 3', 'Card 4', 'Card 1'], $this->titlesIn($this->todo));
     }
@@ -135,7 +160,7 @@ class CardMovementTest extends TestCase
     {
         [$card] = $this->seedCards($this->todo, 1);
 
-        $this->service()->move($card, $this->doing, 0);
+        $this->service()->move($this->placementOf($card), $this->doing, 0);
 
         $this->assertSame(['Card 1'], $this->titlesIn($this->doing));
         $this->assertSame([], $this->titlesIn($this->todo));
@@ -154,10 +179,15 @@ class CardMovementTest extends TestCase
         $cards = $this->seedCards($this->todo, 5);
 
         // The board is showing cards 1, 3 and 5. The user drags card 5 and
-        // drops it between the two it can see: index 1.
-        $visible = [$cards[0]->id, $cards[2]->id, $cards[4]->id];
+        // drops it between the two it can see: index 1. The ids are placement
+        // ids, because that is what the browser now reports.
+        $visible = [
+            $this->placementOf($cards[0])->id,
+            $this->placementOf($cards[2])->id,
+            $this->placementOf($cards[4])->id,
+        ];
 
-        $this->service()->move($cards[4], $this->todo, 1, $visible);
+        $this->service()->move($this->placementOf($cards[4]), $this->todo, 1, $visible);
 
         $order = $this->titlesIn($this->todo);
 
@@ -176,22 +206,17 @@ class CardMovementTest extends TestCase
         $cards = $this->seedCards($this->todo, 3);
 
         // Squeeze two neighbours together until nothing fits between them.
-        $cards[0]->forceFill(['position' => Position::format('1000')])->save();
-        $cards[1]->forceFill(['position' => Position::format('1000.00001')])->save();
+        $this->placementOf($cards[0])->forceFill(['position' => Position::format('1000')])->save();
+        $this->placementOf($cards[1])->forceFill(['position' => Position::format('1000.00001')])->save();
 
-        $this->service()->move($cards[2], $this->todo, 1);
+        $this->service()->move($this->placementOf($cards[2]), $this->todo, 1);
 
-        $positions = Card::query()
-            ->where('board_list_id', $this->todo->id)
-            ->orderBy('position')
-            ->pluck('position')
-            ->map(fn ($p): string => (string) $p)
-            ->all();
+        $positions = $this->positionsIn($this->todo);
 
         $this->assertSame(
             count($positions),
             count(array_unique($positions)),
-            'Two cards ended up on the same position, so their order is now whatever the database feels like.',
+            'Two placements ended up on the same position, so their order is now whatever the database feels like.',
         );
 
         $this->assertSame(['Card 1', 'Card 3', 'Card 2'], $this->titlesIn($this->todo));
@@ -202,10 +227,10 @@ class CardMovementTest extends TestCase
         $this->seedCards($this->todo, 10);
 
         $this->service()->rebalance($this->todo);
-        $first = Card::query()->where('board_list_id', $this->todo->id)->orderBy('id')->pluck('position', 'id')->map(fn ($p) => (string) $p)->all();
+        $first = CardPlacement::query()->where('board_list_id', $this->todo->id)->orderBy('id')->pluck('position', 'id')->map(fn ($p) => (string) $p)->all();
 
         $this->service()->rebalance($this->todo);
-        $second = Card::query()->where('board_list_id', $this->todo->id)->orderBy('id')->pluck('position', 'id')->map(fn ($p) => (string) $p)->all();
+        $second = CardPlacement::query()->where('board_list_id', $this->todo->id)->orderBy('id')->pluck('position', 'id')->map(fn ($p) => (string) $p)->all();
 
         $this->assertSame($first, $second);
     }
@@ -216,10 +241,10 @@ class CardMovementTest extends TestCase
         $this->seedCards($this->doing, 4);
 
         $this->artisan('project:rebalance')->assertSuccessful();
-        $before = Card::query()->orderBy('id')->pluck('position', 'id')->map(fn ($p) => (string) $p)->all();
+        $before = CardPlacement::query()->orderBy('id')->pluck('position', 'id')->map(fn ($p) => (string) $p)->all();
 
         $this->artisan('project:rebalance')->assertSuccessful();
-        $after = Card::query()->orderBy('id')->pluck('position', 'id')->map(fn ($p) => (string) $p)->all();
+        $after = CardPlacement::query()->orderBy('id')->pluck('position', 'id')->map(fn ($p) => (string) $p)->all();
 
         $this->assertSame($before, $after, 'The rebalance command is not idempotent.');
     }
@@ -230,7 +255,7 @@ class CardMovementTest extends TestCase
     {
         [$card] = $this->seedCards($this->todo, 1);
 
-        $this->service()->move($card, $this->doing, 0);
+        $this->service()->move($this->placementOf($card), $this->doing, 0);
 
         $entry = DB::table('activity_log')->where('event', 'card.moved')->latest('id')->first();
 
@@ -260,7 +285,7 @@ class CardMovementTest extends TestCase
         $service = $this->service();
 
         $card = $service->append($this->todo, 'Rewrite portfolio landing copy');
-        $service->move($card, $this->doing, 0);
+        $service->move($this->placementOf($card), $this->doing, 0);
         $card->forceFill(['title' => 'Rewrite the landing copy'])->save();
         $card->forceFill(['due_on' => now()->addWeek()->toDateString()])->save();
         $service->archive($card);
@@ -293,7 +318,7 @@ class CardMovementTest extends TestCase
 
         DB::table('activity_log')->delete();
 
-        $this->service()->move($card, $this->doing, 0);
+        $this->service()->move($this->placementOf($card), $this->doing, 0);
 
         $entries = DB::table('activity_log')->get();
 

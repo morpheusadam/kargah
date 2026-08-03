@@ -8,6 +8,7 @@ use Livewire\Livewire;
 use Modules\Project\Models\Board;
 use Modules\Project\Models\BoardList;
 use Modules\Project\Models\Card;
+use Modules\Project\Models\CardPlacement;
 use Modules\Project\Models\Label;
 use Modules\Project\Services\CardService;
 use Modules\Project\Support\Position;
@@ -81,7 +82,20 @@ class BoardsTest extends TestCase
 
     private function titlesIn(BoardList $list): array
     {
-        return Card::query()->where('board_list_id', $list->id)->active()->orderBy('position')->pluck('title')->all();
+        return CardPlacement::query()
+            ->where('board_list_id', $list->id)
+            ->onCanvas()
+            ->orderBy('position')
+            ->with('card')
+            ->get()
+            ->map(fn (CardPlacement $placement): string => $placement->card->title)
+            ->all();
+    }
+
+    /** The placement a card lives on. */
+    private function placementOf(Card $card): CardPlacement
+    {
+        return $card->originPlacement()->firstOrFail();
     }
 
     /* Drag and drop ------------------------------------------------------- */
@@ -101,14 +115,16 @@ class BoardsTest extends TestCase
     {
         $card = Card::query()->where('title', 'Rewrite portfolio landing copy')->firstOrFail();
 
+        // The browser reports the placement it dragged, not the card: one card
+        // may be on two lists and only one of them moved.
         Livewire::test('project::boards')
-            ->call('moveCard', $card->id, (string) $this->todo->id, 0)
+            ->call('moveCard', $this->placementOf($card)->id, (string) $this->todo->id, 0)
             ->assertDispatched('toast');
 
         // Not the object we just wrote — a fresh page load.
         $this->get('/projects')->assertOk()->assertSee('Rewrite portfolio landing copy');
 
-        $this->assertSame($this->todo->id, Card::query()->find($card->id)->board_list_id);
+        $this->assertSame($this->todo->id, Card::query()->find($card->id)->originPlacement->board_list_id);
         $this->assertSame('Rewrite portfolio landing copy', $this->titlesIn($this->todo)[0]);
     }
 
@@ -118,9 +134,9 @@ class BoardsTest extends TestCase
         $foreign = BoardList::query()->where('board_id', $this->other->id)->firstOrFail();
 
         Livewire::test('project::boards')
-            ->call('moveCard', $card->id, (string) $foreign->id, 0);
+            ->call('moveCard', $this->placementOf($card)->id, (string) $foreign->id, 0);
 
-        $this->assertSame($this->todo->id, Card::query()->find($card->id)->board_list_id);
+        $this->assertSame($this->todo->id, Card::query()->find($card->id)->originPlacement->board_list_id);
     }
 
     public function test_a_drop_that_changes_nothing_is_not_sent_to_the_server(): void
@@ -131,8 +147,13 @@ class BoardsTest extends TestCase
     public function test_only_cards_are_draggable(): void
     {
         // Without an explicit `draggable`, the "Nothing in this list yet"
-        // paragraph is picked up by Sortable and dropped into another list.
-        $this->assertStringContainsString("draggable: '[data-card-id]'", $this->boardHtml());
+        // paragraph is picked up by Sortable and dropped into another list. An
+        // archived card left on a mirror is shown but not dragged either — it
+        // is a note about where the card was, not a card on the board.
+        $this->assertStringContainsString(
+            "draggable: '[data-placement-id]:not([data-archived])'",
+            $this->boardHtml(),
+        );
     }
 
     public function test_the_board_page_ships_the_drag_and_drop_script(): void
@@ -263,17 +284,18 @@ class BoardsTest extends TestCase
 
     /* Switching board ------------------------------------------------------ */
 
-    public function test_switching_board_reports_once(): void
+    public function test_switching_board_is_silent_and_shuts_what_was_open(): void
     {
-        // Closing the card form and the list form on the way out must not each
-        // announce itself: one action, one toast.
-        $component = Livewire::test('project::boards')
+        // The heading changes to the new board and the canvas redraws, so the
+        // switch is its own notification. Nor may the card form announce itself
+        // on the way out.
+        Livewire::test('project::boards')
             ->call('startAddCard', $this->backlog->id)
-            ->call('selectBoard', 'outreach');
-
-        $toasts = collect($component->effects['dispatches'] ?? [])->where('name', 'toast');
-
-        $this->assertCount(1, $toasts, 'Switching board fired more than one toast.');
+            ->assertSet('addingCardIn', $this->backlog->id)
+            ->call('selectBoard', 'outreach')
+            ->assertSet('activeBoard', 'outreach')
+            ->assertSet('addingCardIn', null)
+            ->assertNotDispatched('toast');
     }
 
     public function test_switching_board_drops_filters_that_cannot_apply(): void
@@ -349,7 +371,7 @@ class BoardsTest extends TestCase
             ->call('toggleLabelFilter', $this->bug->id)
             ->assertViewHas('visibleCards', 1)
             ->assertViewHas('lists', function ($lists): bool {
-                return $lists->flatMap(fn (array $entry) => $entry['cards']->pluck('title'))->all()
+                return $lists->flatMap(fn (array $entry) => $entry['placements']->pluck('card.title'))->all()
                     === ['Fix invoice PDF margins'];
             });
     }
@@ -360,7 +382,7 @@ class BoardsTest extends TestCase
             ->call('setDueFilter', 'overdue')
             ->assertViewHas('visibleCards', 1)
             ->assertViewHas('lists', function ($lists): bool {
-                return $lists->flatMap(fn (array $entry) => $entry['cards']->pluck('title'))->all()
+                return $lists->flatMap(fn (array $entry) => $entry['placements']->pluck('card.title'))->all()
                     === ['Q3 expense reconciliation'];
             });
     }
@@ -451,9 +473,12 @@ class BoardsTest extends TestCase
             ->assertDispatched('toast');
 
         $this->assertNotNull(BoardList::query()->find($this->todo->id)->archived_at);
-        $this->assertSame(2, Card::query()->where('board_list_id', $this->todo->id)->archived()->count());
-        // Nothing is deleted.
-        $this->assertDatabaseHas('cards', ['board_list_id' => $this->todo->id]);
+        $this->assertSame(2, Card::query()
+            ->whereIn('id', CardPlacement::query()->origin()->where('board_list_id', $this->todo->id)->select('card_id'))
+            ->archived()
+            ->count());
+        // Nothing is deleted: the cards are still there, still placed here.
+        $this->assertDatabaseHas('card_placements', ['board_list_id' => $this->todo->id, 'is_origin' => true]);
     }
 
     public function test_archiving_the_cards_leaves_the_list_on_the_board(): void

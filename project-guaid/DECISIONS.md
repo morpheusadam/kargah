@@ -398,6 +398,69 @@ Its first four tabs are application routes and always exist; the fifth belongs t
 
 ---
 
+## Card placements — the mirror-cards migration
+
+**On SQLite, dropping a foreign-keyed column inside a transaction silently deletes every row that
+cascades to the table. This cost a debugging cycle and it is the nastiest thing found in the whole
+build so far.**
+
+SQLite cannot drop a column in place, so Laravel rebuilds the table: create a new one, copy, drop
+the old, rename. **Dropping the old table fires every `ON DELETE CASCADE` pointing at it.** Laravel
+knows this and turns foreign keys off around the rebuild — which is enough from the command line.
+
+It is not enough from a test. `PRAGMA foreign_keys` is a documented **no-op inside an open
+transaction**, and `RefreshDatabase` wraps every test in one. So the pragma appeared to work,
+returned no error, and the cascade fired anyway: the migration deleted the `card_placements` rows
+it had just backfilled, and would have taken `checklists`, `card_comments`, `card_label` and
+`card_members` with it.
+
+The migration now copies through a staging table carrying no foreign keys, in both directions, so
+there is nothing for a cascade to travel along. Anything that drops a column with dependents on
+SQLite needs the same treatment, and needs testing *inside a transaction* — the command line will
+not reproduce it.
+
+**`down()` restores `board_list_id` as nullable.**
+A NOT NULL column cannot be added to a populated table without a default, and a default here would
+be a foreign key pointing at whichever list happened to be first. Every row is backfilled
+immediately after, so the nullability is a step in the migration rather than a property of the
+restored schema.
+
+**`moveCard` still takes three arguments, but the first is a placement id.**
+The earlier entry recording that the signature was frozen by the front end predates mirror cards.
+Once a card can sit in two lists, a card id no longer identifies what was dragged. The part that
+actually mattered is intact: the server still derives the visible ordering itself from the same
+filter that rendered the page, rather than trusting a client-supplied offset.
+
+**`Board::cards()` is a query builder, not a relation, and says so loudly.**
+Board to card is three hops — board → list → placement → card — which `hasManyThrough` cannot span.
+More importantly a card mirrored onto two lists of one board must count **once**, and no relation
+type deduplicates. The card ids come from a subquery, which is what makes it distinct. The
+consolation prize is that `$board->cards` as a *property* now throws Eloquent's `LogicException`
+instead of quietly returning something wrong.
+
+**A card whose only placement's list is deleted is soft-deleted with the list.**
+Leaving it alive would put it on no board and outside the archive, which reads a card through the
+list it lives in — invisible *and* unreachable, which is worse than either alone. A card merely
+*mirrored* into a deleted list loses only the mirror.
+
+**Archiving a list archives the cards whose origin is in it; mirrors in it just stop being drawn.**
+Archiving your own list must not take somebody else's card off their board.
+
+**An archived mirror renders but is not draggable.**
+`Sortable`'s selector is `'[data-placement-id]:not([data-archived])'`. It is a note about where the
+card went, not a card on the board. This is the visible half of 06's rule that archiving the source
+does not archive the mirrors.
+
+**`CardPlacement::scopeOnCanvas()` is the single definition of "what a board draws".**
+Used by the canvas *and* by `CardService`'s neighbour arithmetic, so what is rendered and what a
+drop is measured against cannot drift apart.
+
+**The mirror icon is `ki-devices-2`, not `ki-copy`.**
+`ki-copy` exists in the bundle and is already the Copy action. A copy is a new card and a mirror is
+the same card; blurring those two in the UI is the one thing this feature must not do.
+
+---
+
 ## The toast layer
 
 **"Only report what the user cannot already see" is the whole rule, and it decided fifty call

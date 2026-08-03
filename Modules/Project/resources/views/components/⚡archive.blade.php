@@ -8,6 +8,7 @@ use Modules\Core\Concerns\InteractsWithToasts;
 use Modules\Project\Models\Board;
 use Modules\Project\Models\BoardList;
 use Modules\Project\Models\Card;
+use Modules\Project\Models\CardPlacement;
 use Modules\Project\Services\CardService;
 use Modules\Project\Support\Palette;
 
@@ -163,12 +164,6 @@ class extends Component
         return $this->rows()->filter(fn (array $row): bool => $this->matches($row))->values();
     }
 
-    /** How the archive reads once the current filter is applied. */
-    private function filterSummary(): string
-    {
-        return 'Showing '.$this->visibleRows()->count().' of '.$this->rows()->count().' archived items.';
-    }
-
     public function with(): array
     {
         $rows = $this->rows();
@@ -210,8 +205,6 @@ class extends Component
     public function setKind(string $kind): void
     {
         $this->kind = in_array($kind, ['all', 'boards', 'lists', 'cards'], true) ? $kind : 'all';
-
-        $this->toastSuccess('Archive filtered', $this->filterSummary());
     }
 
     public function updatedSearch(): void
@@ -219,9 +212,14 @@ class extends Component
         $this->refreshArchive();
     }
 
+    /**
+     * The board select narrows `visibleRows()`, which reads the same memo the
+     * page was drawn from — there is nothing to invalidate and nothing to say
+     * that the table does not already show.
+     */
     public function updatedBoardFilter(): void
     {
-        $this->toastSuccess('Archive filtered', $this->filterSummary());
+        //
     }
 
     public function clearFilters(): void
@@ -231,8 +229,6 @@ class extends Component
         $this->boardFilter = '';
 
         $this->refreshArchive();
-
-        $this->toastSuccess('Filters cleared', $this->filterSummary());
     }
 
     /* Restoring -------------------------------------------------------------- */
@@ -296,7 +292,7 @@ class extends Component
 
         $this->restoreListRecord($list);
 
-        $cards = Card::query()->where('board_list_id', $list->id)->archived()->count();
+        $cards = Card::query()->whereIn('id', $this->cardsLivingIn($list->id))->archived()->count();
 
         $this->refreshArchive();
 
@@ -377,6 +373,23 @@ class extends Component
         );
     }
 
+    /**
+     * The ids of the cards that *live* in a list.
+     *
+     * A card mirrored into a list from another board is shown there but does
+     * not belong to it, and nothing this page does to a list may follow a
+     * mirror back to somebody else's card.
+     *
+     * @param  int|list<int>  $listIds
+     */
+    private function cardsLivingIn(int|array $listIds): \Illuminate\Database\Eloquent\Builder
+    {
+        return CardPlacement::query()
+            ->origin()
+            ->whereIn('board_list_id', is_array($listIds) ? $listIds : [$listIds])
+            ->select('card_id');
+    }
+
     private function restoreBoardRecord(Board $board): void
     {
         $board->forceFill(['archived_at' => null])->save();
@@ -420,9 +433,14 @@ class extends Component
         }
 
         $listIds = BoardList::query()->where('board_id', $board->id)->pluck('id');
-        $cards = Card::query()->whereIn('board_list_id', $listIds)->count();
 
-        Card::query()->whereIn('board_list_id', $listIds)->delete();
+        $cardIds = CardPlacement::query()->whereIn('board_list_id', $listIds)->origin()->pluck('card_id');
+        $cards = $cardIds->count();
+
+        // Cards that live here go with the board. Cards merely mirrored onto it
+        // lose the mirror and keep living where they live.
+        Card::query()->whereIn('id', $cardIds)->delete();
+        CardPlacement::query()->whereIn('board_list_id', $listIds)->delete();
         BoardList::query()->whereIn('id', $listIds)->delete();
         $board->delete();
 
@@ -452,9 +470,13 @@ class extends Component
             return;
         }
 
-        $cards = Card::query()->where('board_list_id', $list->id)->count();
+        $cardIds = CardPlacement::query()->where('board_list_id', $list->id)->origin()->pluck('card_id');
+        $cards = $cardIds->count();
 
-        Card::query()->where('board_list_id', $list->id)->delete();
+        // The cards that live here go with the list. `BoardList::deleting`
+        // clears the placements and catches anything this missed, so no card
+        // can be left placed nowhere and therefore visible nowhere.
+        Card::query()->whereIn('id', $cardIds)->delete();
         $list->delete();
 
         activity('list')

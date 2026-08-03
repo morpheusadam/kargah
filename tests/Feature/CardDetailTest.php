@@ -442,7 +442,7 @@ class CardDetailTest extends TestCase
             ->assertSet('movePopoverOpen', false)
             ->assertDispatched('card-changed');
 
-        $this->assertSame($this->todo->id, Card::query()->find($this->card->id)->board_list_id);
+        $this->assertSame($this->todo->id, Card::query()->find($this->card->id)->originPlacement->board_list_id);
         $this->get('/projects')->assertOk()->assertSee('Rewrite portfolio landing copy');
     }
 
@@ -467,7 +467,7 @@ class CardDetailTest extends TestCase
             ->call('moveCard')
             ->assertDispatched('toast', fn (string $event, array $params): bool => $params[0]['type'] === 'error');
 
-        $this->assertSame($this->backlog->id, Card::query()->find($this->card->id)->board_list_id);
+        $this->assertSame($this->backlog->id, Card::query()->find($this->card->id)->originPlacement->board_list_id);
     }
 
     public function test_copying_a_card_duplicates_its_labels_and_its_checklist(): void
@@ -476,7 +476,8 @@ class CardDetailTest extends TestCase
 
         $copy = Card::query()->where('title', 'Rewrite portfolio landing copy (copy)')->firstOrFail();
 
-        $this->assertSame($this->backlog->id, $copy->board_list_id);
+        $this->assertSame($this->backlog->id, $copy->originPlacement->board_list_id);
+        $this->assertTrue($copy->originPlacement->isOrigin(), 'A copy is a new card and lives where it was made.');
         $this->assertSame('The current page reads like a CV.', $copy->description);
         $this->assertSame(['Bug'], $copy->labels->pluck('name')->all());
         $this->assertSame(

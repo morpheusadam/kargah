@@ -10,6 +10,7 @@ use Modules\Project\Database\Seeders\ProjectDatabaseSeeder;
 use Modules\Project\Models\Board;
 use Modules\Project\Models\BoardList;
 use Modules\Project\Models\Card;
+use Modules\Project\Models\CardPlacement;
 use Modules\Project\Models\Label;
 use Modules\Project\Services\CardService;
 use Modules\Project\Support\Position;
@@ -260,8 +261,11 @@ class BoardAdminTest extends TestCase
         // Nothing under it was touched.
         $this->assertSame(2, BoardList::query()->where('board_id', $board->id)->count());
         $this->assertSame(2, Card::query()->whereIn(
-            'board_list_id',
-            BoardList::query()->where('board_id', $board->id)->select('id'),
+            'id',
+            CardPlacement::query()->origin()->whereIn(
+                'board_list_id',
+                BoardList::query()->where('board_id', $board->id)->select('id'),
+            )->select('card_id'),
         )->count());
 
         // And the board picker on the boards page no longer offers it.
@@ -297,7 +301,7 @@ class BoardAdminTest extends TestCase
         $restored = Card::query()->findOrFail($card->id);
 
         $this->assertNull($restored->archived_at);
-        $this->assertSame($this->todo->id, $restored->board_list_id);
+        $this->assertSame($this->todo->id, $restored->originPlacement->board_list_id);
 
         // Back on the board, and gone from the archive.
         $this->get('/projects')->assertOk()->assertSee('Fix invoice PDF margins');
@@ -315,7 +319,7 @@ class BoardAdminTest extends TestCase
             ->assertDispatched('toast');
 
         $this->assertNull(Card::query()->findOrFail($card->id)->archived_at);
-        $this->assertSame($this->todo->id, Card::query()->findOrFail($card->id)->board_list_id);
+        $this->assertSame($this->todo->id, Card::query()->findOrFail($card->id)->originPlacement->board_list_id);
     }
 
     /**

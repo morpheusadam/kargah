@@ -162,18 +162,25 @@ business, detailed in its build phase.
 ### Project
 
 ```
-boards        id, name, colour, company_id? -> companies.id, archived_at
-board_lists   id, board_id, name, position
-cards         id, board_list_id, title, description, position,
-              customer_id? -> customers.id,
-              due_at, completed_at, archived_at
-card_labels   card_id, label_id
+boards           id, name, colour, company_id? -> companies.id, archived_at
+board_lists      id, board_id, name, position
+cards            id, title, description,
+                 customer_id? -> customers.id,
+                 due_at, completed_at, archived_at
+card_placements  id, card_id, board_list_id, position, is_origin, created_by
+card_labels      card_id, label_id
 checklists / checklist_items / card_comments / card_members
 ```
 
-`cards.position` is a `decimal(20,10)`, not an integer. Reordering by rewriting every row's integer
-position is O(n) writes per drag; picking a value midway between neighbours is one write. Rebalance
-only when the gap gets too small to halve.
+**A card does not hold a list, and it does not hold a position.** Both live on `card_placements`,
+which is what lets one card appear on two boards — see the mirror-cards decision at the top of
+[06-trello-parity.md](06-trello-parity.md). `unique (card_id, board_list_id)` means a card sits in
+a list once or not at all, and exactly one placement per card carries `is_origin`.
+
+`card_placements.position` is a `decimal(20,10)`, not an integer. Reordering by rewriting every
+row's integer position is O(n) writes per drag; picking a value midway between neighbours is one
+write. Rebalance only when the gap gets too small to halve. Position belongs to the placement
+rather than the card precisely because a mirror has its own place in its own list.
 
 ### Accounting
 

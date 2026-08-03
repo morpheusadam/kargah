@@ -8,6 +8,7 @@ use Modules\Core\Concerns\InteractsWithToasts;
 use Modules\Project\Models\Board;
 use Modules\Project\Models\BoardList;
 use Modules\Project\Models\Card;
+use Modules\Project\Models\CardPlacement;
 use Modules\Project\Models\Label;
 use Modules\Project\Support\Palette;
 use Modules\Project\Support\Position;
@@ -273,20 +274,12 @@ class extends Component
         $this->editingLabel = $label->id;
         $this->labelDraft = $label->name;
         $this->labelColourDraft = Palette::has($label->colour) ? $label->colour : 'neutral';
-
-        $this->toastSuccess('Editing '.$label->name, 'Esc closes the editor without changing anything.');
     }
 
     public function cancelEditLabel(): void
     {
-        $wasEditing = $this->editingLabel !== null;
-
         $this->editingLabel = null;
         $this->labelDraft = '';
-
-        if ($wasEditing) {
-            $this->toastSuccess('Label editor closed', 'The label was left as it was.');
-        }
     }
 
     /** Rename a label and change its colour. */
@@ -461,20 +454,12 @@ class extends Component
 
         $this->editingList = $list->id;
         $this->listDraft = $list->name;
-
-        $this->toastSuccess('Renaming '.$list->name, 'Esc closes the editor without changing anything.');
     }
 
     public function cancelEditList(): void
     {
-        $wasEditing = $this->editingList !== null;
-
         $this->editingList = null;
         $this->listDraft = '';
-
-        if ($wasEditing) {
-            $this->toastSuccess('List editor closed', 'The list was left as it was.');
-        }
     }
 
     public function saveList(int $listId): void
@@ -637,7 +622,13 @@ class extends Component
             return;
         }
 
-        $cards = Card::query()->where('board_list_id', $list->id)->active()->update(['archived_at' => now()]);
+        // The cards that *live* in the list, not everything shown in it: a card
+        // mirrored in from another board keeps living where it lives, and only
+        // stops being drawn here because the list itself has gone.
+        $cards = Card::query()
+            ->whereIn('id', CardPlacement::query()->where('board_list_id', $list->id)->origin()->select('card_id'))
+            ->active()
+            ->update(['archived_at' => now()]);
 
         $list->forceFill(['archived_at' => now()])->save();
 
@@ -680,7 +671,10 @@ class extends Component
 
         $lists = BoardList::query()->where('board_id', $board->id)->active()->count();
         $cards = Card::query()
-            ->whereIn('board_list_id', BoardList::query()->where('board_id', $board->id)->select('id'))
+            ->whereIn('id', CardPlacement::query()
+                ->origin()
+                ->whereIn('board_list_id', BoardList::query()->where('board_id', $board->id)->select('id'))
+                ->select('card_id'))
             ->active()
             ->count();
 
@@ -720,14 +714,8 @@ class extends Component
 
     public function cancelDelete(): void
     {
-        $wasConfirming = $this->confirmingDelete;
-
         $this->confirmingDelete = false;
         $this->deleteConfirmation = '';
-
-        if ($wasConfirming) {
-            $this->toastSuccess('Deletion cancelled', 'The board is untouched.');
-        }
     }
 
     /**
@@ -755,9 +743,15 @@ class extends Component
 
         $name = $board->name;
         $listIds = BoardList::query()->where('board_id', $board->id)->pluck('id');
-        $cards = Card::query()->whereIn('board_list_id', $listIds)->count();
 
-        Card::query()->whereIn('board_list_id', $listIds)->delete();
+        // The cards that live on this board go with it. A card mirrored onto it
+        // from somewhere else loses the mirror and nothing more — it still
+        // lives on its own board, and deleting this one must not take it.
+        $cardIds = CardPlacement::query()->whereIn('board_list_id', $listIds)->origin()->pluck('card_id');
+        $cards = $cardIds->count();
+
+        Card::query()->whereIn('id', $cardIds)->delete();
+        CardPlacement::query()->whereIn('board_list_id', $listIds)->delete();
         BoardList::query()->whereIn('id', $listIds)->delete();
         $board->delete();
 

@@ -7,9 +7,11 @@ use Livewire\Attributes\On;
 use Livewire\Attributes\Validate;
 use Livewire\Component;
 use Modules\Core\Concerns\InteractsWithToasts;
+use Modules\Project\Models\Board;
 use Modules\Project\Models\BoardList;
 use Modules\Project\Models\Card;
 use Modules\Project\Models\CardComment;
+use Modules\Project\Models\CardPlacement;
 use Modules\Project\Models\Checklist;
 use Modules\Project\Models\ChecklistItem;
 use Modules\Project\Services\CardService;
@@ -38,6 +40,13 @@ use Modules\Project\Support\Position;
  * **Labels come from the card's own board.** A label belongs to one board, so
  * the picker is `$card->list->board->labels` and never a global list — putting
  * another board's label on a card would attach a row the board can never show.
+ *
+ * **A copy and a mirror are different things, and the rail says so.** A copy is
+ * a new card that stops resembling this one the moment either is edited. A
+ * mirror is *this* card, shown in another list; editing it anywhere edits it
+ * everywhere. The card lives in exactly one of the lists it appears in — its
+ * origin — and every action that changes where it lives goes through that
+ * placement, never through a mirror.
  */
 new
 class extends Component
@@ -75,6 +84,14 @@ class extends Component
 
     public bool $movePopoverOpen = false;
 
+    public bool $mirrorPopoverOpen = false;
+
+    /** The board the mirror picker is showing lists from, as a string id. */
+    public string $mirrorBoard = '';
+
+    /** The list the mirror will be added to, as a string id. */
+    public string $mirrorList = '';
+
     /** Per-request memo. Private, so Livewire neither ships nor rehydrates it. */
     private ?Card $resolvedCard = null;
 
@@ -93,6 +110,7 @@ class extends Component
         return $this->resolvedCard ??= Card::query()
             ->with([
                 'list.board.labels',
+                'placements.list.board',
                 'labels',
                 'members',
                 'checklists.items',
@@ -159,6 +177,45 @@ class extends Component
             ->get();
     }
 
+    /**
+     * Every list this card appears in, origin first.
+     *
+     * @return Collection<int, CardPlacement>
+     */
+    private function placements(): Collection
+    {
+        $card = $this->card();
+
+        return $card === null
+            ? collect()
+            : $card->placements->sortByDesc('is_origin')->values();
+    }
+
+    /**
+     * The lists a mirror could be added to.
+     *
+     * Everything on the chosen board that is still on it, less the lists this
+     * card is already in — a card sits in a list once or not at all, and
+     * offering an option that can only fail is not a picker.
+     *
+     * @return Collection<int, BoardList>
+     */
+    private function mirrorTargets(): Collection
+    {
+        if ($this->mirrorBoard === '') {
+            return collect();
+        }
+
+        $taken = $this->placements()->pluck('board_list_id')->all();
+
+        return BoardList::query()
+            ->where('board_id', (int) $this->mirrorBoard)
+            ->active()
+            ->whereNotIn('id', $taken)
+            ->orderBy('position')
+            ->get();
+    }
+
     public function with(): array
     {
         $card = $this->card();
@@ -172,6 +229,9 @@ class extends Component
             'cardLabelIds' => $card?->labels->pluck('id')->all() ?? [],
             'members' => User::query()->orderBy('name')->get(),
             'lists' => $this->listsOnThisBoard(),
+            'placements' => $this->placements(),
+            'mirrorBoards' => Board::query()->active()->orderBy('name')->get(),
+            'mirrorLists' => $this->mirrorTargets(),
             'checklist' => $items,
             'comments' => $card?->comments ?? collect(),
             'checklistDone' => $done,
@@ -199,13 +259,19 @@ class extends Component
         $this->description = (string) $card->description;
         $this->dueDate = $card->due_on?->toDateString() ?? '';
         $this->assignee = (string) ($card->members->first()?->id ?? '');
-        $this->moveToList = (string) $card->board_list_id;
+
+        // Where the card *lives*, not wherever it happens to be shown. Moving
+        // it moves the origin; a mirror is moved from the board it sits on.
+        $this->moveToList = (string) ($card->originPlacement?->board_list_id ?? '');
 
         $this->editingTitle = false;
         $this->editingDescription = false;
         $this->labelPopoverOpen = false;
         $this->duePopoverOpen = false;
         $this->movePopoverOpen = false;
+        $this->mirrorPopoverOpen = false;
+        $this->mirrorBoard = (string) ($card->list?->board_id ?? '');
+        $this->mirrorList = '';
         $this->newComment = '';
         $this->newChecklistItem = '';
 
@@ -229,22 +295,15 @@ class extends Component
         $this->hydrateFrom($card);
 
         $this->open = true;
-
-        $this->toastSuccess('Card open', $card->title.' is in the drawer on the right.');
     }
 
     public function close(): void
     {
-        $wasOpen = $this->open;
-
         $this->open = false;
         $this->labelPopoverOpen = false;
         $this->duePopoverOpen = false;
         $this->movePopoverOpen = false;
-
-        if ($wasOpen) {
-            $this->toastSuccess('Card closed', 'Anything still open in an editor was not saved.');
-        }
+        $this->mirrorPopoverOpen = false;
     }
 
     /* Title and description ---------------------------------------------- */
@@ -252,21 +311,13 @@ class extends Component
     public function editTitle(): void
     {
         $this->editingTitle = true;
-
-        $this->toastSuccess('Title editor open', 'Esc puts the old title back.');
     }
 
     public function cancelTitle(): void
     {
-        $wasEditing = $this->editingTitle;
-
         $this->editingTitle = false;
         $this->title = $this->card()?->title ?? '';
         $this->resetValidation('title');
-
-        if ($wasEditing) {
-            $this->toastSuccess('Rename abandoned', 'The card kept its old title.');
-        }
     }
 
     /** Rename the card. */
@@ -295,20 +346,12 @@ class extends Component
     public function editDescription(): void
     {
         $this->editingDescription = true;
-
-        $this->toastSuccess('Description editor open', 'Markdown is kept as you write it.');
     }
 
     public function cancelDescription(): void
     {
-        $wasEditing = $this->editingDescription;
-
         $this->editingDescription = false;
         $this->description = (string) ($this->card()?->description ?? '');
-
-        if ($wasEditing) {
-            $this->toastSuccess('Edit abandoned', 'The card kept its old description.');
-        }
     }
 
     /**
@@ -347,10 +390,7 @@ class extends Component
         $this->labelPopoverOpen = ! $this->labelPopoverOpen;
         $this->duePopoverOpen = false;
         $this->movePopoverOpen = false;
-
-        $this->labelPopoverOpen
-            ? $this->toastSuccess('Label picker open', 'Tick the labels this card should carry.')
-            : $this->toastSuccess('Label picker closed');
+        $this->mirrorPopoverOpen = false;
     }
 
     /** Add or remove one of the board's labels on this card. */
@@ -403,10 +443,7 @@ class extends Component
         $this->duePopoverOpen = ! $this->duePopoverOpen;
         $this->labelPopoverOpen = false;
         $this->movePopoverOpen = false;
-
-        $this->duePopoverOpen
-            ? $this->toastSuccess('Due date picker open', 'Pick a date, or remove the one already set.')
-            : $this->toastSuccess('Due date picker closed');
+        $this->mirrorPopoverOpen = false;
     }
 
     /**
@@ -676,19 +713,14 @@ class extends Component
         $this->movePopoverOpen = ! $this->movePopoverOpen;
         $this->labelPopoverOpen = false;
         $this->duePopoverOpen = false;
+        $this->mirrorPopoverOpen = false;
 
         if ($this->movePopoverOpen) {
-            $this->moveToList = (string) ($this->card()?->board_list_id ?? '');
-
-            $this->toastSuccess('Move picker open', 'Pick the list this card belongs in.');
-
-            return;
+            $this->moveToList = (string) ($this->card()?->originPlacement?->board_list_id ?? '');
         }
-
-        $this->toastSuccess('Move picker closed');
     }
 
-    /** Move the card to another list on the same board. */
+    /** Move the card — where it lives, not where it is mirrored — to another list. */
     public function moveCard(): void
     {
         $card = $this->card();
@@ -707,7 +739,15 @@ class extends Component
             return;
         }
 
-        if ($target->id === $card->board_list_id) {
+        $placement = $card->originPlacement;
+
+        if ($placement === null) {
+            $this->toastError('That card is not on a board', 'Its list was deleted, so there is nowhere to move it from.');
+
+            return;
+        }
+
+        if ($target->id === $placement->board_list_id) {
             $this->movePopoverOpen = false;
 
             $this->toastSuccess('Nothing to move', $card->title.' is already in '.$target->name.'.');
@@ -715,21 +755,147 @@ class extends Component
             return;
         }
 
+        $service = app(CardService::class);
+
+        // A card sits in a list once or not at all. Moving it into a list it is
+        // already mirrored onto is refused rather than merged — two placements
+        // of one card in one column is not a thing the board can draw.
+        if ($service->placementIn($card->id, $target) !== null) {
+            $this->toastError(
+                $card->title.' is already in '.$target->name,
+                'It is mirrored there. Remove that mirror first, or move it somewhere else.',
+            );
+
+            return;
+        }
+
         // The bottom of the target list, counted rather than guessed: the
         // service brackets the index by real positions on either side.
-        $below = Card::query()
-            ->where('board_list_id', $target->id)
-            ->where('id', '!=', $card->id)
-            ->active()
-            ->count();
+        $below = CardPlacement::query()->where('board_list_id', $target->id)->count();
 
-        app(CardService::class)->move($card, $target, $below);
+        $service->move($placement, $target, $below);
 
         $this->movePopoverOpen = false;
 
         $this->cardChanged();
 
         $this->toastSuccess('Card moved', $card->title.' is at the bottom of '.$target->name.'.');
+    }
+
+    /* Mirrors ---------------------------------------------------------------- */
+
+    /** Opening a picker is not worth announcing. */
+    public function toggleMirrorPopover(): void
+    {
+        $this->mirrorPopoverOpen = ! $this->mirrorPopoverOpen;
+        $this->labelPopoverOpen = false;
+        $this->duePopoverOpen = false;
+        $this->movePopoverOpen = false;
+
+        if ($this->mirrorPopoverOpen) {
+            $this->mirrorBoard = (string) ($this->card()?->list?->board_id ?? '');
+            $this->mirrorList = '';
+        }
+    }
+
+    /** A different board means a different set of lists. */
+    public function updatedMirrorBoard(): void
+    {
+        $this->mirrorList = '';
+    }
+
+    /**
+     * Show this card in another list as well.
+     *
+     * Not a copy: it is the same card, and editing it from either place edits
+     * the one row. Mirroring into a list it is already in writes nothing and
+     * says so rather than claiming a success it did not have.
+     */
+    public function mirrorCard(): void
+    {
+        $card = $this->card();
+
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        if (trim($this->mirrorList) === '') {
+            $this->toastError('No list picked', 'Choose the list the card should also appear in.');
+
+            return;
+        }
+
+        $target = BoardList::query()->active()->find((int) $this->mirrorList);
+
+        if ($target === null) {
+            $this->toastError('That list is gone', 'It was archived or deleted while the drawer was open.');
+
+            return;
+        }
+
+        $service = app(CardService::class);
+
+        if ($service->placementIn($card->id, $target) !== null) {
+            $this->mirrorPopoverOpen = false;
+
+            $this->toastInfo('Already there', $card->title.' is already in '.$target->name.'.');
+
+            return;
+        }
+
+        $service->mirror($card, $target, auth()->id());
+
+        $this->mirrorPopoverOpen = false;
+        $this->mirrorList = '';
+
+        $this->cardChanged();
+
+        $this->toastSuccess(
+            'Mirrored onto '.$target->name,
+            'It is the same card in both places — editing it anywhere edits it everywhere.',
+        );
+    }
+
+    /** Stop showing the card in one of the lists it was mirrored onto. */
+    public function removeMirror(int $placementId): void
+    {
+        $card = $this->card();
+
+        if ($card === null) {
+            $this->reportMissingCard();
+
+            return;
+        }
+
+        $placement = $card->placements->firstWhere('id', $placementId);
+
+        if ($placement === null) {
+            $this->toastError('That mirror is gone', 'It was removed while the drawer was open.');
+            $this->forgetCard();
+
+            return;
+        }
+
+        if (! app(CardService::class)->unmirror($placement)) {
+            // The origin is where the card lives. Taking it away would leave the
+            // card on no board at all, which is what archiving and deleting are
+            // for — both of which say what they are doing.
+            $this->toastError(
+                'That is where the card lives',
+                'Archive or delete the card instead of removing it from its own list.',
+            );
+
+            return;
+        }
+
+        $this->cardChanged();
+
+        $this->toastSuccess(
+            'Mirror removed',
+            $card->title.' no longer appears in '.($placement->list?->name ?? 'that list').'.',
+        );
     }
 
     /** Duplicate the card, its labels and its checklist into the same list. */
@@ -1005,6 +1171,44 @@ class extends Component
                             </div>
                         </div>
 
+                        {{--
+                            Where this card appears. One of these is where it
+                            lives; the rest are mirrors of it, and only those
+                            can be removed from here. Removing a mirror is a
+                            display change — the card itself is untouched.
+                        --}}
+                        @if ($placements->isNotEmpty())
+                            <div class="flex flex-col gap-2">
+                                <div class="flex items-center gap-2">
+                                    <i class="ki-filled ki-devices-2 text-sm text-muted-foreground"></i>
+                                    <h3 class="text-sm font-semibold text-mono">Appears in</h3>
+                                </div>
+
+                                <div class="flex flex-wrap items-center gap-2">
+                                    @foreach ($placements as $placement)
+                                        <span class="inline-flex items-center gap-2 rounded-md border border-border bg-muted/30 ps-2.5 pe-1 py-1"
+                                              wire:key="placement-{{ $placement->id }}">
+                                            <span class="text-xs text-secondary-foreground">
+                                                {{ $placement->list?->name ?? 'A deleted list' }}
+                                                <span class="text-muted-foreground">· {{ $placement->list?->board?->name ?? '—' }}</span>
+                                            </span>
+
+                                            @if ($placement->isOrigin())
+                                                <span class="kt-badge kt-badge-sm kt-badge-outline">Lives here</span>
+                                            @else
+                                                <button wire:click="removeMirror({{ $placement->id }})"
+                                                        wire:loading.attr="disabled" wire:target="removeMirror"
+                                                        class="kt-btn kt-btn-icon kt-btn-ghost size-6"
+                                                        title="Remove this mirror" aria-label="Remove the mirror in {{ $placement->list?->name ?? 'that list' }}">
+                                                    <i class="ki-filled ki-cross text-xs"></i>
+                                                </button>
+                                            @endif
+                                        </span>
+                                    @endforeach
+                                </div>
+                            </div>
+                        @endif
+
                         {{-- Description --}}
                         <div class="flex flex-col gap-2">
                             <div class="flex items-center gap-2">
@@ -1176,6 +1380,63 @@ class extends Component
                                         <span wire:loading wire:target="moveCard"><i class="ki-filled ki-loading animate-spin"></i> Moving…</span>
                                     </button>
                                     <button wire:click="toggleMovePopover" class="kt-btn kt-btn-sm kt-btn-ghost">Cancel</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        {{--
+                            Mirroring, which is not copying. A copy is a new
+                            card that stops resembling this one the moment
+                            either is edited; a mirror is this card, shown
+                            somewhere else. The two sit next to each other, so
+                            the wording has to do the work of telling them
+                            apart.
+                        --}}
+                        <div class="relative">
+                            <button wire:click="toggleMirrorPopover" class="kt-btn kt-btn-outline justify-start gap-2 w-full"
+                                    aria-expanded="{{ $mirrorPopoverOpen ? 'true' : 'false' }}">
+                                <i class="ki-filled ki-devices-2 text-sm"></i> Mirror
+                            </button>
+
+                            <div class="kt-dropdown absolute z-20 mt-1 end-0 w-[280px] p-4 flex flex-col gap-3 {{ $mirrorPopoverOpen ? 'open' : '' }}">
+                                <div>
+                                    <h4 class="text-sm font-semibold text-mono">Mirror to…</h4>
+                                    <p class="text-[11px] text-muted-foreground mt-1">
+                                        The same card, shown in another list. Editing it anywhere edits it everywhere.
+                                    </p>
+                                </div>
+
+                                <div class="flex flex-col gap-1.5">
+                                    <label class="kt-form-label text-xs" for="card-mirror-board">Board</label>
+                                    <select id="card-mirror-board" class="kt-select" wire:model.live="mirrorBoard">
+                                        @foreach ($mirrorBoards as $option)
+                                            <option value="{{ $option->id }}">{{ $option->name }}</option>
+                                        @endforeach
+                                    </select>
+                                </div>
+
+                                <div class="flex flex-col gap-1.5">
+                                    <label class="kt-form-label text-xs" for="card-mirror-list">List</label>
+                                    <select id="card-mirror-list" class="kt-select" wire:model="mirrorList">
+                                        <option value="">Pick a list</option>
+                                        @foreach ($mirrorLists as $option)
+                                            <option value="{{ $option->id }}">{{ $option->name }}</option>
+                                        @endforeach
+                                    </select>
+                                    @if ($mirrorLists->isEmpty())
+                                        <span class="text-[11px] text-muted-foreground">
+                                            This card is already in every list on that board.
+                                        </span>
+                                    @endif
+                                </div>
+
+                                <div class="flex items-center gap-2">
+                                    <button wire:click="mirrorCard" wire:loading.attr="disabled" wire:target="mirrorCard"
+                                            class="kt-btn kt-btn-sm kt-btn-primary">
+                                        <span wire:loading.remove wire:target="mirrorCard">Mirror</span>
+                                        <span wire:loading wire:target="mirrorCard"><i class="ki-filled ki-loading animate-spin"></i> Mirroring…</span>
+                                    </button>
+                                    <button wire:click="toggleMirrorPopover" class="kt-btn kt-btn-sm kt-btn-ghost">Cancel</button>
                                 </div>
                             </div>
                         </div>

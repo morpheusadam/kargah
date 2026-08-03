@@ -10,6 +10,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasManyThrough;
+use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Database\Eloquent\Relations\HasOneThrough;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Modules\Core\Concerns\Linkable;
 use Modules\Core\Models\Company;
@@ -26,10 +28,8 @@ class Card extends Model
     use SoftDeletes;
 
     protected $fillable = [
-        'board_list_id',
         'title',
         'description',
-        'position',
         'customer_id',
         'company_id',
         'due_on',
@@ -41,16 +41,55 @@ class Card extends Model
     protected function casts(): array
     {
         return [
-            'position' => 'decimal:10',
             'due_on' => 'date',
             'completed_at' => 'datetime',
             'archived_at' => 'datetime',
         ];
     }
 
-    public function list(): BelongsTo
+    /**
+     * Every list this card is placed in, origin first by its own order.
+     *
+     * `position` lives here rather than on the card: a mirror has its own place
+     * in its own list, so there is no single number that could sit on the card.
+     */
+    public function placements(): HasMany
     {
-        return $this->belongsTo(BoardList::class, 'board_list_id');
+        return $this->hasMany(CardPlacement::class)->orderBy('position');
+    }
+
+    /** The one placement that says where the card actually lives. */
+    public function originPlacement(): HasOne
+    {
+        return $this->hasOne(CardPlacement::class)->where('is_origin', true);
+    }
+
+    /** The card shown somewhere other than where it lives. */
+    public function mirrorPlacements(): HasMany
+    {
+        return $this->hasMany(CardPlacement::class)->where('is_origin', false)->orderBy('position');
+    }
+
+    /**
+     * The list the card lives in — its origin placement's list.
+     *
+     * Kept as a relation, and kept eager-loadable, because `CardReader` reads
+     * `with('list.board')` and other modules consume the arrays it returns. A
+     * `hasOneThrough` constrained on the through table is the honest shape of
+     * "one hop through the join to the list that owns the card"; the where
+     * clause is qualified because the query joins two tables and `is_origin`
+     * would otherwise be whichever the database guessed.
+     */
+    public function list(): HasOneThrough
+    {
+        return $this->hasOneThrough(
+            BoardList::class,
+            CardPlacement::class,
+            'card_id',
+            'id',
+            'id',
+            'board_list_id',
+        )->where('card_placements.is_origin', true);
     }
 
     public function customer(): BelongsTo
@@ -150,8 +189,10 @@ class Card extends Model
      * changing value, and that is what this covers: renaming a card, setting a
      * due date, attaching it to a customer, archiving it.
      *
-     * `position` is deliberately absent. It changes on every drag and its
-     * before/after would bury the feed in decimals nobody reads.
+     * `position` is deliberately absent, and now lives on `CardPlacement`
+     * rather than here. It changes on every drag and its before/after would
+     * bury the feed in decimals nobody reads — which is also why the placement
+     * model carries no activity log of its own.
      */
     public function getActivitylogOptions(): LogOptions
     {
