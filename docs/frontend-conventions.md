@@ -192,10 +192,10 @@ Every list or collection view must handle all three:
 
 Only when Blade and Livewire genuinely cannot do it (drag and drop, charts, editors).
 
-**`@push('scripts')` does not work inside a Livewire component.** Livewire carries neither a
-pushed stack nor `@assets` through to the layout, and discards both silently — no error, no
-warning, no script. The board's drag and drop was dead for days because of exactly this. Use
-`@script … @endscript`, inside the single root element:
+**`@push('scripts')` does not work inside a Livewire component.** Livewire does not carry a
+pushed stack through to the layout and discards it silently — no error, no warning, no script.
+The board's drag and drop was dead for days because of exactly this. Use `@script … @endscript`,
+inside the single root element:
 
 ```blade
 @script
@@ -232,8 +232,39 @@ Globals the layout loads on **every** page: `Sortable`, `KTMenu`, `KTDrawer`, `K
 `KTModal`, jQuery. That is the whole list, and it should stay short — the layout is the one file
 whose weight every page pays for.
 
-Anything heavy and single-purpose is loaded by the page that needs it, from `@push('scripts')`,
-with the init guarded:
+🔴 **A `<script src="…">` written inside `@script … @endscript` is never fetched.** `@script`
+carries *inline* JavaScript to Livewire's runtime, which evaluates the code; a tag whose whole
+job is an external `src` has no code to evaluate, so it is dropped — no tag in the DOM, no
+network request, no error. Measured in a real browser on 4 August 2026: every chart on
+`/dashboard` and `/projects/dashboard` and the calendars on `/projects/calendar` and
+`/social/calendar` had **never rendered once**, because neither bundle was ever loaded. The
+server-rendered fallbacks underneath each of them are the only reason nobody noticed.
+
+**Use `@assets … @endassets` for the bundle and `@script` for the code that uses it.** `@assets`
+does reach the layout — the sentence above used to claim it did not, and that claim was wrong and
+is what kept the bug alive. Livewire injects the contents once per page, before `@script` runs,
+and does not re-inject on a `wire:navigate` revisit:
+
+```blade
+@assets
+<script src="/assets/vendors/apexcharts/apexcharts.min.js"></script>
+@endassets
+@script
+<script>
+(function () {
+    if (typeof ApexCharts === 'undefined') return;   // keep the guard anyway
+    /* … */
+})();
+</script>
+@endscript
+```
+
+Verified by loading each page in Chrome and asking the document: the bundle is fetched (200), the
+global is defined, the chart canvases carry an `<svg>`, and `/accounting/invoices` and
+`/mail/inbox` still request neither bundle — so the 854 KB rule below is intact.
+
+Anything heavy and single-purpose is loaded by the page that needs it, never by the layout, with
+the init guarded:
 
 | Library | Size | Path |
 | --- | --- | --- |
@@ -257,8 +288,10 @@ Two caveats that have already cost time:
   This line used to say "Both are loaded by `layouts/app.blade.php`". **Only `Sortable` is.** The
   layout loads `core.bundle.js`, KTUI, `Sortable` and `demo1.js`, and nothing else — which is
   correct, and is what the paragraph above about 854 KB insists on. FullCalendar is loaded by the
-  page that needs it, from `@script`, with the init guarded. `Modules/Social`'s calendar has done
-  it that way from the start and is the pattern to copy.
+  page that needs it, from `@assets`, with the init guarded in `@script`. ⚠️ This line used to
+  name `@script` and `Modules/Social`'s calendar as "the pattern to copy" — that pattern put the
+  `src` tag inside `@script`, where it was silently dropped, so **that calendar had never rendered
+  in a browser**. Both calendars were moved to `@assets` on 4 August 2026 and confirmed drawing.
 
 TinyMCE, Dropzone and DataTables ship in the theme's `vendors/` directory but are **not** loaded
 by the layout. Add the tag yourself from `@push('scripts')` and guard the init.

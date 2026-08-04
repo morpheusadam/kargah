@@ -53,7 +53,15 @@ use Spatie\Activitylog\Models\Activity;
  * bundle is 563 KB, and having it and FullCalendar in the layout once added
  * 854 KB to every page and made the single-threaded dev server queue requests
  * until they timed out. It stays out of the layout; this page pulls it from
- * inside `@script`, exactly as `Modules\Social`'s calendar pulls FullCalendar.
+ * `@assets`.
+ *
+ * 🔴 **It used to be pulled from inside `@script`, and that never worked.**
+ * `@script` hands Livewire *inline* JavaScript to evaluate, so a tag whose only
+ * content is an external `src` is dropped — no tag in the DOM, no request, no
+ * error. Both charts below had therefore never rendered once; what every reader
+ * had ever seen was the fallback table, which is the only reason this was not
+ * obvious. Found by loading the page in Chrome on 4 August 2026 and asking the
+ * document whether `window.ApexCharts` existed. See docs/frontend-conventions.md.
  *
  * `⚡client-show.blade.php` chose twelve plain divs over this same library and
  * that decision was right and stands. The difference is not taste, it is what
@@ -629,8 +637,14 @@ class extends Component
 
     {{-- Headline numbers. Lazy so a slow query never blocks first paint. --}}
     @island(name: 'stats', lazy: true)
+    {{--
+        A whole grid, first child of the island — the same shape the other three
+        use, and for the same reason. This one happened to survive the malformed
+        boundary and the other three did not, which is the worst way for a bug
+        to present: identical markup, three failures and one pass.
+    --}}
+    @placeholder
     <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5">
-        @placeholder
         @for ($i = 0; $i < 4; $i++)
             <div class="kt-card">
                 <div class="kt-card-content flex items-start gap-4 p-5">
@@ -642,7 +656,9 @@ class extends Component
                 </div>
             </div>
         @endfor
-        @endplaceholder
+    </div>
+    @endplaceholder
+    <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5">
         @foreach ($stats as $stat)
             <a href="{{ route($stat['route']) }}" wire:navigate wire:key="stat-{{ $stat['label'] }}"
                class="kt-card hover:border-primary/40 transition-colors">
@@ -789,6 +805,32 @@ class extends Component
             </div>
 
             @island(name: 'due-cards', lazy: true)
+            {{--
+                🔴 The placeholder is a whole card, and it is the island's first
+                child rather than a fragment buried inside the real card's
+                markup. Livewire stops emitting the island body at
+                `@endplaceholder`, so a placeholder nested inside the body's own
+                elements leaves their closing tags unwritten: the parser then
+                puts `[if ENDFRAGMENT]` *inside* those elements instead of
+                beside `[if FRAGMENT]`, and the two markers `morphBetween()`
+                uses as its boundary are no longer siblings. The block scan then
+                never reaches its end marker, `new Block(start, null)` is built,
+                and `Block.appendChild()` throws on `null.before` — taking the
+                rest of the page's DOM with it. Read verbatim off the served
+                HTML, not assumed.
+            --}}
+            @placeholder
+            <div class="kt-card">
+                <div class="kt-card-header">
+                    <h3 class="kt-card-title">Cards that need attention</h3>
+                </div>
+                <div class="kt-card-content p-5 flex flex-col gap-3">
+                    @for ($i = 0; $i < 3; $i++)
+                        <span class="block h-4 w-full rounded bg-muted animate-pulse"></span>
+                    @endfor
+                </div>
+            </div>
+            @endplaceholder
             <div class="kt-card">
                 <div class="kt-card-header">
                     <h3 class="kt-card-title">Cards that need attention</h3>
@@ -797,13 +839,6 @@ class extends Component
                     </a>
                 </div>
                 <div class="kt-card-content p-0 divide-y divide-border">
-                    @placeholder
-                    <div class="p-5 flex flex-col gap-3">
-                        @for ($i = 0; $i < 3; $i++)
-                            <span class="block h-4 w-full rounded bg-muted animate-pulse"></span>
-                        @endfor
-                    </div>
-                    @endplaceholder
                     @forelse ($dueCards as $card)
                         <a href="{{ $card['url'] }}" wire:navigate wire:key="due-card-{{ $loop->index }}"
                            class="flex items-center gap-3 px-5 py-3.5 hover:bg-accent/30 transition-colors">
@@ -832,16 +867,20 @@ class extends Component
         <div class="col-span-12 xl:col-span-4 flex flex-col gap-5">
 
             @island(name: 'agenda', lazy: true)
+            {{-- A whole card, first child of the island. See 'due-cards' for why. --}}
+            @placeholder
+            <div class="kt-card">
+                <div class="kt-card-header"><h3 class="kt-card-title">Coming up</h3></div>
+                <div class="kt-card-content p-5 flex flex-col gap-3">
+                    @for ($i = 0; $i < 3; $i++)
+                        <span class="block h-4 w-full rounded bg-muted animate-pulse"></span>
+                    @endfor
+                </div>
+            </div>
+            @endplaceholder
             <div class="kt-card">
                 <div class="kt-card-header"><h3 class="kt-card-title">Coming up</h3></div>
                 <div class="kt-card-content p-5">
-                    @placeholder
-                    <div class="flex flex-col gap-3">
-                        @for ($i = 0; $i < 3; $i++)
-                            <span class="block h-4 w-full rounded bg-muted animate-pulse"></span>
-                        @endfor
-                    </div>
-                    @endplaceholder
                     @forelse ($agenda as $item)
                         <div class="flex gap-3 pb-4 last:pb-0 relative" wire:key="agenda-{{ $loop->index }}">
                             <div class="flex flex-col items-center shrink-0">
@@ -865,16 +904,20 @@ class extends Component
             @endisland
 
             @island(name: 'activity', lazy: true)
+            {{-- A whole card, first child of the island. See 'due-cards' for why. --}}
+            @placeholder
+            <div class="kt-card">
+                <div class="kt-card-header"><h3 class="kt-card-title">Recent activity</h3></div>
+                <div class="kt-card-content p-5 flex flex-col gap-3">
+                    @for ($i = 0; $i < 4; $i++)
+                        <span class="block h-4 w-full rounded bg-muted animate-pulse"></span>
+                    @endfor
+                </div>
+            </div>
+            @endplaceholder
             <div class="kt-card">
                 <div class="kt-card-header"><h3 class="kt-card-title">Recent activity</h3></div>
                 <div class="kt-card-content p-5">
-                    @placeholder
-                    <div class="flex flex-col gap-3">
-                        @for ($i = 0; $i < 4; $i++)
-                            <span class="block h-4 w-full rounded bg-muted animate-pulse"></span>
-                        @endfor
-                    </div>
-                    @endplaceholder
                     @forelse ($recentActivity as $entry)
                         <div class="flex gap-3 pb-3.5 last:pb-0" wire:key="activity-{{ $loop->index }}">
                             <span class="size-1.5 rounded-full bg-muted-foreground mt-2 shrink-0"></span>
@@ -917,11 +960,15 @@ class extends Component
     stack nor @assets through to the layout — a @push('scripts') here would be
     dropped silently, with no error and no script.
 
-    ApexCharts is fetched here rather than from the layout because it is 563 KB
-    and only two pages will ever want it. See the class docblock.
+    ApexCharts is fetched from `@assets` above rather than from the layout
+    because it is 563 KB and only two pages will ever want it — and from
+    `@assets` rather than from here because a `<script src>` inside `@script` is
+    silently dropped. See the class docblock.
 --}}
-@script
+@assets
 <script src="/assets/vendors/apexcharts/apexcharts.min.js"></script>
+@endassets
+@script
 <script>
 (function () {
     // 🔴 Series colours are hex literals rather than the theme's own CSS

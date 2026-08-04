@@ -21,9 +21,16 @@ use Modules\Social\Support\Networks;
  * the network's own.
  *
  * FullCalendar is 277 KB and the layout does not load it. It is pulled in from
- * `@script` on this page alone, and there is a plain list underneath that is
+ * `@assets` on this page alone, and there is a plain list underneath that is
  * hidden only once the bundle has actually rendered — so a page served without
  * it still shows what is scheduled instead of an empty box.
+ *
+ * 🔴 The `src` tag used to sit inside `@script`, and Livewire drops such a tag
+ * silently — it evaluates inline code, and a tag whose whole content is an
+ * external `src` has none. **This calendar had therefore never rendered once**;
+ * the plain list underneath is the only reason the page looked fine. Corrected
+ * 4 August 2026 after loading it in a real browser. See
+ * docs/frontend-conventions.md, which named this file as the pattern to copy.
  */
 new
 #[Title('Calendar — Kargah')]
@@ -311,8 +318,10 @@ class extends Component
     root node and discards everything after it, so a @push below the closing tag
     never reaches the page.
 --}}
-@script
+@assets
 <script src="/assets/vendors/fullcalendar/index.global.min.js"></script>
+@endassets
+@script
 <script>
 (function () {
     function mount() {

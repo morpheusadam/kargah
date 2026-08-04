@@ -563,8 +563,10 @@ class extends Component
     root node and discards everything after it, so a @push below the closing
     tag never reaches the page.
 --}}
-@script
+@assets
 <script src="/assets/vendors/fullcalendar/index.global.min.js"></script>
+@endassets
+@script
 <script>
 (function () {
     if (! window.kargahCopy) {

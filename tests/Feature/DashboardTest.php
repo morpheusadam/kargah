@@ -292,19 +292,80 @@ class DashboardTest extends TestCase
         $this->assertStringContainsString('12000.000000', $html);
         $this->assertStringContainsString('data-trend-chart', $html);
 
-        // And the bundle tag actually reached the response. `@push('scripts')`
-        // inside a Livewire component is discarded silently — no error, no
-        // warning, no script — so "the chart never appears" would otherwise
-        // look exactly like a passing test. Matched without its directory
-        // because Livewire ships an `@script` block inside `wire:effects` as
-        // JSON, where every slash in the path is escaped to `\/`.
-        $this->assertStringContainsString('apexcharts.min.js', $html);
+        // And the bundle tag actually reached the response **as a tag a browser
+        // will fetch**.
+        //
+        // 🔴 This assertion used to read `assertStringContainsString(
+        // 'apexcharts.min.js', $html)`, matched without its directory on the
+        // stated grounds that Livewire ships an `@script` block inside
+        // `wire:effects` as JSON with every slash escaped to `\/`. That is true,
+        // and it is precisely why the assertion was worth nothing: the escaped
+        // JSON *is* what it was matching, and Livewire never turns that payload
+        // back into a `<script src>` — it evaluates inline code, and a tag whose
+        // whole content is an external `src` has none. The bundle was never
+        // fetched and both charts had never rendered, with this test green
+        // throughout. Confirmed in Chrome on 4 August 2026: no request, no tag,
+        // `window.ApexCharts` undefined.
+        //
+        // The unescaped path is the difference between `@assets`, which reaches
+        // the layout, and `@script`, which does not.
+        $this->assertStringContainsString(
+            '<script src="/assets/vendors/apexcharts/apexcharts.min.js"></script>',
+            $html,
+            'ApexCharts must be loaded from @assets. Inside @script the src tag is dropped silently and no chart ever renders.',
+        );
 
         $rows = collect(Livewire::test('pages::dashboard')->viewData('trend')['rows']);
         $month = $rows->firstWhere('label', now()->format('M Y'));
 
         $this->assertSame('12000.000000', $month['revenue']);
         $this->assertSame(Money::format('12000.000000', 'TRY'), $month['revenue_formatted']);
+    }
+
+    /**
+     * 🔴 Every lazy island's placeholder must be a complete, balanced subtree.
+     *
+     * Livewire stops emitting the island body at `@endplaceholder`, so a
+     * placeholder written *inside* the body's own elements leaves their closing
+     * tags unwritten. The parser then puts `[if ENDFRAGMENT]` inside those
+     * elements instead of beside `[if FRAGMENT]`, and the two comments
+     * `morphBetween()` uses as its boundary are no longer siblings: the block
+     * scan never reaches its end marker, `new Block(start, null)` is built, and
+     * `Block.appendChild()` throws on `null.before`.
+     *
+     * That is not a cosmetic failure. It aborts the morph part-way, so the
+     * browser is left with **the DOM Livewire had already torn down** — on 4
+     * August 2026 the dashboard lost its receivables card, both charts, both
+     * fallback tables, the agenda, the activity feed and the quick actions, and
+     * the readable text on the page fell from 2,429 characters to 370. Three of
+     * the four islands were malformed and one was not, so the page half-worked,
+     * which is the worst way for this to present.
+     *
+     * Counting div tags between the two markers is a proxy for "is this a whole
+     * subtree", and it is the proxy that can be checked without a browser. It
+     * fails on the exact markup that shipped.
+     */
+    public function test_every_lazy_island_placeholder_is_a_balanced_subtree(): void
+    {
+        $html = $this->get('/dashboard')->assertOk()->getContent();
+
+        preg_match_all('/\[if FRAGMENT:type=island\|name=([a-z-]+)\|/', $html, $names);
+
+        $this->assertNotEmpty($names[1], 'No island markers found — this test would pass vacuously.');
+
+        foreach (array_unique($names[1]) as $name) {
+            $pattern = '/\[if FRAGMENT:type=island\|name='.preg_quote($name, '/').'\|.*?\[if ENDFRAGMENT:type=island\|name='.preg_quote($name, '/').'\|/s';
+
+            $this->assertSame(1, preg_match($pattern, $html, $between), "Island '{$name}' has no matching end marker.");
+
+            $this->assertSame(
+                substr_count($between[0], '<div'),
+                substr_count($between[0], '</div>'),
+                "Island '{$name}' renders unbalanced markup between its own markers, so its end marker is nested "
+                ."inside its own body. Livewire's morph will throw on null.before and take the rest of the page's DOM with it. "
+                .'Move the whole element inside @placeholder instead of wrapping @placeholder in it.',
+            );
+        }
     }
 
     /**

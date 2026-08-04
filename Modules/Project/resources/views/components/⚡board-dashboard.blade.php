@@ -25,10 +25,15 @@ use Modules\Project\Support\Palette;
  * "cards in this list" already means on the board canvas, so the per-list
  * bar uses it rather than reinventing the archived-mirror rule.
  *
- * **ApexCharts is loaded from `@script` on this page alone**, guarded with
+ * **ApexCharts is loaded from `@assets` on this page alone**, guarded with
  * `chart.destroy()` — never a `data-*` flag, which the morph clears on every
  * render. Loading it from the layout added 563 KB to every page in this
  * project; see docs/frontend-conventions.md.
+ *
+ * 🔴 The `src` tag used to sit inside `@script`, where Livewire drops it: it
+ * evaluates inline code and a tag with nothing but an external `src` has none.
+ * Neither chart on this page had ever rendered. Corrected 4 August 2026 after
+ * loading the page in a real browser.
  */
 new
 #[Title('Dashboard — Kargah')]
@@ -424,8 +429,10 @@ class extends Component
     Kept inside the component's root element on purpose — see the note on
     every other page in this module for why.
 --}}
-@script
+@assets
 <script src="/assets/vendors/apexcharts/apexcharts.min.js"></script>
+@endassets
+@script
 <script>
 (function () {
     function readJson(el, key, fallback) {
