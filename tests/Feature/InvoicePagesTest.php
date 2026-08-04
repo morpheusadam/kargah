@@ -952,7 +952,10 @@ class InvoicePagesTest extends TestCase
         $document = app(InvoiceDocument::class);
 
         $invoice->forceFill(['starts_on' => '2026-08-10', 'ends_on' => '2026-09-30'])->save();
-        $this->assertSame('10 August 2026 – 30 September 2026', $document->data($invoice->fresh())['period']);
+        // "to", not an en dash: the separator was changed on 4 August 2026 so
+        // the range reads as words at the size it prints, matching the two
+        // half-open arms below.
+        $this->assertSame('10 August 2026 to 30 September 2026', $document->data($invoice->fresh())['period']);
 
         $invoice->forceFill(['starts_on' => '2026-08-10', 'ends_on' => null])->save();
         $this->assertSame('From 10 August 2026', $document->data($invoice->fresh())['period']);

@@ -107,8 +107,13 @@ class InvoiceDocument
         $starts = $invoice->starts_on?->format('j F Y');
         $ends = $invoice->ends_on?->format('j F Y');
 
+        // "to" rather than an en dash. The dash is correct typography for a
+        // range and reads fine on screen, but this line is printed at 10pt
+        // beside a date that already contains spaces, and at that size a reader
+        // scanning the block sees two dates and a mark. The word cannot be
+        // misread, and it matches the other two arms, which are words already.
         return match (true) {
-            $starts !== null && $ends !== null => $starts.' – '.$ends,
+            $starts !== null && $ends !== null => $starts.' to '.$ends,
             $starts !== null => 'From '.$starts,
             $ends !== null => 'Until '.$ends,
             default => null,
