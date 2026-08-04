@@ -106,7 +106,7 @@ Not defects, but judgement calls the owner should make:
 - `php artisan migrate --force`. **NEVER `migrate:fresh`** — the dev database holds the owner's real
   data. Never bare `php artisan module:migrate`; it is interactive and aborts.
 - Tests run against `:memory:`, so the dev database is safe from `RefreshDatabase`.
-- Dev login `admin@kargah.local` / `kargah1234`. Two-factor is not enabled on it.
+- Dev login `admin@admin.com` / `admin`. Two-factor is not enabled on it.
 - **Start the dev server detached or it dies with the session:**
   `Start-Process -FilePath "C:\Users\morph\PHP\8.3\php.exe" -ArgumentList 'artisan','serve','--host=127.0.0.1','--port=8123' -WorkingDirectory "C:\Users\morph\Projects\kargah" -WindowStyle Hidden`
 - **`php artisan serve` is single-threaded** and `PHP_CLI_SERVER_WORKERS` does not work on Windows.

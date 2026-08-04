@@ -77,7 +77,7 @@ Fix what you find, then build phase 2 on it.
 | Shell | PowerShell 7 on Windows. Not bash — `head`, `wc`, `[ -f x ]` are parse errors |
 | GitHub token | field **New** in `C:\Users\morph\Projects\Data\Drain4Brighton\git.txt`. The one in `Data\Visa\github.txt` is revoked |
 | Repo | https://github.com/morpheusadam/kargah — push to `main` |
-| Dev login | `admin@kargah.local` / `kargah1234` |
+| Dev login | `admin@admin.com` / `admin` |
 
 `php artisan serve` takes about 8 seconds to start listening. Only run one at a time.
 

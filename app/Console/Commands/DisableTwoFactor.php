@@ -9,7 +9,7 @@ use Illuminate\Console\Command;
  * The way back in when the authenticator app and the recovery codes are both
  * gone.
  *
- *     php artisan two-factor:disable admin@kargah.local
+ *     php artisan two-factor:disable admin@admin.com
  *
  * Turning on a second factor means a password on its own no longer opens the
  * account. That is the point, and it is also the risk: lose the phone, lose the

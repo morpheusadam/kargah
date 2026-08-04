@@ -38,7 +38,7 @@ use Modules\Core\Concerns\InteractsWithToasts;
  * self-hosted and single-user, and an emailed bypass would just be a second,
  * weaker password on the same account. The answer is the shell:
  *
- *     php artisan two-factor:disable admin@kargah.local
+ *     php artisan two-factor:disable admin@admin.com
  *
  * That clears the secret, the recovery codes and the confirmation, and the next
  * sign-in is password-only again — `App\Console\Commands\DisableTwoFactor`.

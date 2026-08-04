@@ -349,7 +349,7 @@ back.
 ## Environment notes that still hold
 
 - PHP `C:\Users\morph\PHP\8.3\php.exe`; Composer at `C:\Users\morph\PHP\8.3\composer.phar`
-- SQLite at `database/database.sqlite`; dev login `admin@kargah.local` / `kargah1234`
+- SQLite at `database/database.sqlite`; dev login `admin@admin.com` / `admin`
 - **Always `cd` to the project in every shell call** — the working directory silently reverts
 - `php artisan migrate --force`. **Never `migrate:fresh`.** Never bare `module:migrate`
 - `php timing-probe.php` measures every page warm. Budget 200 ms. Dashboard 101–134 ms, board
