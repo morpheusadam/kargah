@@ -245,7 +245,9 @@ class extends Component
             <h1 class="text-xl font-semibold text-mono">Suppression list</h1>
             <p class="text-sm text-secondary-foreground mt-1">Addresses no campaign may touch, on any provider.</p>
         </div>
-        <div class="flex items-center gap-2">
+        {{-- `flex-wrap`: at 375px this group ended at 396px and took the page
+             sideways with it. Same shape and same fix as ⚡recurring. --}}
+        <div class="flex flex-wrap items-center gap-2">
             <a href="{{ route('mail.contacts') }}" class="kt-btn kt-btn-ghost gap-2">
                 <i class="ki-filled ki-arrow-left"></i> Contacts
             </a>

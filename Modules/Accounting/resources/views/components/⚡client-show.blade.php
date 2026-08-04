@@ -812,8 +812,15 @@ class extends Component
 
         </div>
 
-        {{-- Tabs --}}
-        <div class="px-5 sm:px-6">
+        {{--
+            Tabs. `kt-scrollable-x-auto` because the strip is wider than a
+            375px screen — measured in Chrome: the "Notes" toggle ended at
+            414px against a 375px viewport, so the whole page scrolled
+            sideways, which the front-end conventions forbid outright. The
+            strip scrolls inside its own container instead, the same answer
+            the conventions already give for a wide table.
+        --}}
+        <div class="px-5 sm:px-6 kt-scrollable-x-auto">
             <div class="kt-tabs kt-tabs-line">
                 @foreach ($tabs as $key => $label)
                     <button wire:click="$set('tab', '{{ $key }}')"

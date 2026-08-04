@@ -104,6 +104,24 @@ class extends Component
 
     public function save(): void
     {
+        // 🔴 Two calls, and it has to be two.
+        //
+        // Passing a rules array to `validate()` **replaces** the `#[Validate]`
+        // attribute rules for that call rather than merging them. The single
+        // call that used to be here therefore validated `kind` and nothing
+        // else — and `kind` carries a default, so it always passed. `title` and
+        // `url` were never checked despite carrying `required|string|max:190`
+        // and `required|url|max:500` a few lines up, and an empty form reached
+        // `create()`: found in a browser on 4 August 2026, an empty submit
+        // produced the `bookmarks` row `title="" url=""` and redirected to the
+        // list with a success toast reading "Saved ".
+        //
+        // The bare call runs the attribute rules. The allow-list cannot join
+        // them, because it needs `Bookmark::KINDS` at runtime and a PHP
+        // attribute takes only constant expressions — `implode()` is a function
+        // call and is not one. Hence a second call rather than one merged array.
+        $this->validate();
+
         $this->validate([
             'kind' => 'required|string|in:'.implode(',', Bookmark::KINDS),
         ]);

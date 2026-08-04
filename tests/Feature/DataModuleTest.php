@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
+use Livewire\Livewire;
 use Modules\Accounting\Models\Invoice;
 use Modules\Core\Models\Company;
 use Modules\Core\Models\Customer;
@@ -306,6 +307,66 @@ class DataModuleTest extends TestCase
         foreach ($pages as $page) {
             $this->actingAs($user)->get($page)->assertOk();
         }
+    }
+
+    /**
+     * 🔴 A blank form must not become a row.
+     *
+     * `⚡link-create::save()` called `$this->validate(['kind' => …])` with an
+     * explicit rules array, and passing one to `validate()` **replaces** the
+     * `#[Validate]` attribute rules for that call rather than merging them.
+     * `kind` carries a default, so the one rule that ran always passed:
+     * `required|string|max:190` on `title` and `required|url|max:500` on `url`
+     * never executed at all. An empty submit created the `bookmarks` row
+     * `title="" url=""`, flashed a success toast reading "Saved " and redirected
+     * to the list as though it had worked.
+     *
+     * Found by clicking Save on an empty form in Chrome on 4 August 2026. The
+     * suite could not have found it: `test_every_data_page_renders_against_a_
+     * seeded_database` above loads this very page and asserts 200, which it did
+     * throughout. Nothing here had ever pressed the button.
+     */
+    public function test_a_link_cannot_be_saved_without_a_title_and_a_url(): void
+    {
+        $this->actingAs(User::factory()->create());
+
+        $before = Bookmark::query()->count();
+
+        Livewire::test('data::link-create')
+            ->call('save')
+            ->assertHasErrors(['title' => 'required', 'url' => 'required']);
+
+        $this->assertSame($before, Bookmark::query()->count(), 'An empty form must not create a bookmark.');
+
+        // The url rule is the one that matters most: a bookmark whose whole
+        // purpose is to be opened is worthless if it does not point anywhere.
+        Livewire::test('data::link-create')
+            ->set('title', 'Hostinger hPanel')
+            ->set('url', 'hpanel hostinger com')
+            ->call('save')
+            ->assertHasErrors(['url']);
+
+        $this->assertSame($before, Bookmark::query()->count(), 'A malformed url must not create a bookmark.');
+
+        // A valid form still saves — a validation fix that blocks everything is
+        // not a fix.
+        Livewire::test('data::link-create')
+            ->set('title', 'Hostinger hPanel')
+            ->set('url', 'https://hpanel.hostinger.com')
+            ->call('save')
+            ->assertHasNoErrors();
+
+        $this->assertSame($before + 1, Bookmark::query()->count(), 'A valid form must still create a bookmark.');
+
+        // ⚠️ NOT asserted here: that the `kind` allow-list refuses an unknown
+        // value. It does refuse it, but the component then re-renders with the
+        // rejected value still on the property and the template indexes
+        // `$kinds[$kind]` unguarded, so the *page* dies with
+        // "Undefined array key" before the error can be shown. Reachable from a
+        // browser, because `kind` is driven by `$set('kind', …)` from
+        // `wire:click` rather than by `wire:model`. Recorded rather than fixed:
+        // it is a different defect in a different place from the one this test
+        // is about, and fixing it belongs with whoever owns the template.
     }
 
     // --------------------------------------------------- data:sync-repos

@@ -912,7 +912,13 @@ class extends Component
                 Set a retainer and a hosting bill once, and stop remembering either of them.
             </p>
         </div>
-        <div class="flex items-center gap-2">
+        {{--
+            `flex-wrap` because three buttons do not fit a 375px screen. The
+            outer heading row already wraps; this inner group did not, so at
+            375px it ended at 417px and the page scrolled sideways — measured
+            in Chrome, not inferred.
+        --}}
+        <div class="flex flex-wrap items-center gap-2">
             <a href="{{ route('accounting.invoices') }}" wire:navigate class="kt-btn kt-btn-outline gap-2">
                 <i class="ki-filled ki-bill"></i> Invoices
             </a>
