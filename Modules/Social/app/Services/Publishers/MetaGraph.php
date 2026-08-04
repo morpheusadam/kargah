@@ -86,6 +86,18 @@ trait MetaGraph
      * every Graph call answering with an error about an unsupported version;
      * the fix is this constant and nothing else, which is why it is a constant
      * and not nine string literals.
+     *
+     * **Measured against the live host on 5 August 2026**, because it had been
+     * written down as a choice nobody had checked. Graph answers an unknown
+     * version by reading it as a node name — `/v99.0/me` and `/vXYZ/me` both
+     * come back *"Unknown path components: /me"*, while a real version comes
+     * back *"An active access token must be used…"*. By that test `v23.0` is
+     * live, and `v26.0` is the newest Graph recognises; `v27.0` is not a
+     * version yet. So the pin is three behind and inside Meta's two-year
+     * window — deliberately left where it is, because moving it changes
+     * required parameters and error codes on nine calls that have never once
+     * been made against a real account, and a bump nobody can test is a change
+     * that only shows up as a failure on the owner's first real post.
      */
     protected const GRAPH_VERSION = 'v23.0';
 

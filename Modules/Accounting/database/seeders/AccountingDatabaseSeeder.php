@@ -16,6 +16,7 @@ use Modules\Accounting\Models\InvoiceLine;
 use Modules\Accounting\Models\LedgerEntry;
 use Modules\Accounting\Models\Payment;
 use Modules\Accounting\Services\ExchangeRates;
+use Modules\Accounting\Services\InvoiceIssuer;
 use Modules\Accounting\Support\Currencies;
 use Modules\Accounting\Support\Money;
 use Modules\Core\Models\Company;
@@ -33,11 +34,20 @@ use Modules\Core\Models\Customer;
  *
  * Two deliberate departures:
  *
- * **Nothing here goes through `InvoiceIssuer`.** The service can only issue at
- * today's date — `issue()` refuses an invoice that already has an `issued_on`,
- * which is exactly right for the application and makes a back-dated fixture
- * impossible. The frozen figures are therefore computed here the same way the
- * service computes them, from the same `ExchangeRates` reader.
+ * **Nothing here goes through `InvoiceIssuer::issue()`.** The service can only
+ * issue at today's date — it refuses an invoice that already has an
+ * `issued_on`, which is exactly right for the application and makes a
+ * back-dated fixture impossible. The frozen figures are therefore computed here
+ * the same way the service computes them, from the same `ExchangeRates` reader.
+ *
+ * 🔴 **The reporting currency is asked of the service, not restated.** It used
+ * to be a hardcoded `USD` here while `config('accounting.reporting_currency')`
+ * shipped `TRY`, so a freshly seeded demo froze a currency the application
+ * would never have chosen — and because a converted figure is frozen and never
+ * re-derived, the dashboard's expense series then counted **none** of the eight
+ * seeded expenses and drew a flat zero. The seeder is the first thing anybody
+ * new sees; it has to demonstrate the shipped default rather than a second
+ * opinion about it.
  *
  * **Nothing goes through `PaymentRecorder` either**, for the same reason in
  * reverse: it creates rather than matches, so a second run would take every
@@ -49,8 +59,18 @@ use Modules\Core\Models\Customer;
  */
 class AccountingDatabaseSeeder extends Seeder
 {
-    /** How far back the rate history goes. */
-    private const RATE_DAYS = 40;
+    /**
+     * How far back the rate history goes.
+     *
+     * 🔴 It has to reach past the oldest thing the fixture dates: the Apple
+     * Store expense is 71 days old and `INV-0038` is issued 63 days back. At
+     * the 40 it used to be, `rateFor()` found nothing for either and both froze
+     * a null reporting figure — invisible while everything was frozen in USD at
+     * a rate of one, and immediately visible once the seeder started asking
+     * `InvoiceIssuer` what the reporting currency is. 75 leaves four days of
+     * margin; if a fixture is ever dated further back, this moves with it.
+     */
+    private const RATE_DAYS = 75;
 
     private ExchangeRates $rates;
 
@@ -94,13 +114,21 @@ class AccountingDatabaseSeeder extends Seeder
     // ----------------------------------------------------------------- rates
 
     /**
-     * Forty days of history, in the three series the module actually reads.
+     * The history, in the four series the module actually reads.
      *
      * USD/TRY twice over, because the market rate and the central bank's buying
      * rate are different numbers and which one an invoice must use is a legal
      * question rather than a preference. USDT/USD is stored even though it sits
      * at one, because a stablecoin that has depegged is something the owner
      * wants to know before invoicing in it.
+     *
+     * 🔴 **USDT/TRY is stored directly**, because `rateFor()` does not chain: it
+     * looks for the pair and its inverse and then gives up, so a USDT invoice
+     * reporting in lira has no figure at all unless the pair itself is on file.
+     * This is not an invention for the fixture's benefit — `accounting:fetch-rates`
+     * was run against the live sources on 5 August 2026 and CoinGecko answered
+     * `USDT/USD` **and** `USDT/TRY`, so the series exists in a real book too.
+     * (TCMB was skipped that run: `EVDS_API_KEY` is not set on this machine.)
      *
      * The values are arithmetic rather than random: a seeder that writes a
      * different rate on every run cannot be run twice and compared.
@@ -130,6 +158,18 @@ class AccountingDatabaseSeeder extends Seeder
             $this->rates->record(Currencies::USD, Currencies::TRY, (string) $market, 'frankfurter', $asOf, ExchangeRates::MARKET);
             $this->rates->record(Currencies::USD, Currencies::TRY, (string) $buying, 'tcmb_evds', $asOf, ExchangeRates::TCMB_BUY);
             $this->rates->record(Currencies::USDT, Currencies::USD, (string) $tether, 'coingecko', $asOf, ExchangeRates::MARKET);
+
+            // The cross of the two above, so the three series cannot disagree
+            // with each other by a rounding step and leave somebody comparing
+            // two figures that were never meant to differ.
+            $this->rates->record(
+                Currencies::USDT,
+                Currencies::TRY,
+                (string) $tether->multipliedBy($market)->toScale(Currencies::STORAGE_SCALE, RoundingMode::HalfUp),
+                'coingecko',
+                $asOf,
+                ExchangeRates::MARKET,
+            );
         }
     }
 
@@ -215,18 +255,23 @@ class AccountingDatabaseSeeder extends Seeder
      */
     private function frozenFigures(?Company $company, string $currency, string $total, string $issuedOn): array
     {
-        $figures = ['reporting_currency' => Currencies::USD];
+        $reporting = InvoiceIssuer::reportingCurrency();
 
-        if ($currency === Currencies::USD) {
+        $figures = ['reporting_currency' => $reporting];
+
+        if ($currency === $reporting) {
             $figures['reporting_rate'] = '1.000000';
             $figures['reporting_amount'] = $total;
         } else {
-            $rate = $this->rates->rateFor($currency, Currencies::USD, $issuedOn);
+            $rate = $this->rates->rateFor($currency, $reporting, $issuedOn);
 
+            // Null when no rate is on file for the pair, exactly as `InvoiceIssuer`
+            // leaves it. A demo invoice with no reporting figure is the honest
+            // picture of a book whose rate history has a hole in it.
             $figures['reporting_rate'] = $rate;
             $figures['reporting_amount'] = $rate === null
                 ? null
-                : Money::toStorage(Money::convert(Money::fromStorage($total, $currency), $rate, Currencies::USD));
+                : Money::toStorage(Money::convert(Money::fromStorage($total, $currency), $rate, $reporting));
         }
 
         if ($company === null || ! $company->is_domestic || $currency === Currencies::TRY) {
@@ -388,10 +433,21 @@ class AccountingDatabaseSeeder extends Seeder
     private function seedExpenses(?User $user): void
     {
         $rebill = Invoice::query()->where('number', 'INV-0039')->first();
+        $reporting = InvoiceIssuer::reportingCurrency();
 
         foreach ($this->expenses() as $data) {
             $spentOn = $this->dayAt($data['days_ago']);
             $amount = Money::of($data['amount'], Currencies::USD);
+
+            // Frozen at the spend date, in the currency the application reports
+            // in — the same rule the invoices above follow. `rateFor()` answers
+            // '1.000000' when the two currencies are the same, so USD reporting
+            // needs no special case here.
+            $reportingRate = $this->rates->rateFor(Currencies::USD, $reporting, $spentOn);
+
+            $reportingAmount = $reportingRate === null
+                ? null
+                : Money::toStorage(Money::convert($amount, $reportingRate, $reporting));
 
             // The Carbon, not `->toDateString()`. Eloquent writes a `date` cast
             // through the connection's own format, so the column holds
@@ -405,9 +461,9 @@ class AccountingDatabaseSeeder extends Seeder
                     'description' => $data['description'] ?? null,
                     'currency' => Currencies::USD,
                     'amount' => Money::toStorage($amount),
-                    'reporting_currency' => Currencies::USD,
-                    'reporting_rate' => '1.000000',
-                    'reporting_amount' => Money::toStorage($amount),
+                    'reporting_currency' => $reporting,
+                    'reporting_rate' => $reportingRate,
+                    'reporting_amount' => $reportingAmount,
                     'is_billable' => $data['billable'] ?? false,
                     'rebilled_on_invoice_id' => ($data['rebilled'] ?? false) ? $rebill?->id : null,
                     'receipt_reference' => $data['receipt'] ?? null,
@@ -425,8 +481,8 @@ class AccountingDatabaseSeeder extends Seeder
                 $data['vendor'].' — '.$data['category'],
                 $spentOn,
                 $user,
-                Currencies::USD,
-                (string) BigDecimal::of(Money::toStorage($amount))->negated(),
+                $reporting,
+                $reportingAmount === null ? null : (string) BigDecimal::of($reportingAmount)->negated(),
             );
         }
     }
