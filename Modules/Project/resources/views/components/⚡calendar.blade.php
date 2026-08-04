@@ -160,7 +160,15 @@ class extends Component
             'end' => null,
             'allDay' => true,
             'backgroundColor' => 'transparent',
-            'borderColor' => 'transparent',
+            // `currentColor`, not `transparent`. FullCalendar writes
+            // `border-color` as an *inline* style on the event anchor, which
+            // beats any class — so the dashed border that is supposed to be
+            // the whole difference between an item and a card was being drawn
+            // in transparent, and the two kinds looked identical apart from
+            // the tick in the title. `currentColor` resolves against the tone
+            // class's own `text-*`, so the outline arrives in the same colour
+            // the item's date already reads in.
+            'borderColor' => 'currentColor',
             'textColor' => 'inherit',
             'classNames' => [
                 ...explode(' ', Palette::tone($item->dueBadgeColour() ?? 'neutral')),
@@ -388,17 +396,22 @@ class extends Component
                 <p class="text-sm text-secondary-foreground mt-1">Start and due dates, in one month. Drag a card to reschedule it.</p>
             </div>
 
-            <div class="relative">
-                <button wire:click="toggleBoardPicker" class="kt-btn kt-btn-outline gap-2">
+            {{-- Escape on the wrapper, so the keystroke lands while the trigger still holds focus. --}}
+            <div class="relative" wire:keydown.escape="dismissPanels">
+                <button wire:click="toggleBoardPicker" class="kt-btn kt-btn-outline gap-2"
+                        aria-haspopup="true" aria-expanded="{{ $boardPickerOpen ? 'true' : 'false' }}">
                     <i class="ki-filled ki-down text-xs"></i> Switch board
                 </button>
                 <div class="kt-dropdown absolute z-20 mt-1 w-[220px] {{ $boardPickerOpen ? 'open' : '' }}">
                     <div class="p-2 flex flex-col gap-1">
                         @forelse ($boards as $b)
+                            {{-- `min-w-0` plus a `truncate` span: `kt-btn` is nowrap and does not clip. --}}
                             <button wire:click="selectBoard('{{ $b->slug }}')" wire:key="cal-pick-{{ $b->id }}"
-                                    class="kt-btn kt-btn-ghost justify-start gap-2 w-full {{ $b->slug === $activeBoard ? 'bg-accent/60' : '' }}">
-                                <span class="size-2.5 rounded-full {{ $b->dotClass() }}"></span>
-                                {{ $b->name }}
+                                    wire:loading.attr="disabled" wire:target="selectBoard"
+                                    title="{{ $b->name }}"
+                                    class="kt-btn kt-btn-ghost justify-start gap-2 w-full min-w-0 {{ $b->slug === $activeBoard ? 'bg-accent/60' : '' }}">
+                                <span class="size-2.5 rounded-full shrink-0 {{ $b->dotClass() }}"></span>
+                                <span class="truncate">{{ $b->name }}</span>
                             </button>
                         @empty
                             <p class="text-xs text-muted-foreground px-2 py-3 text-center">No boards yet.</p>
@@ -408,8 +421,8 @@ class extends Component
             </div>
         </div>
 
-        {{-- Views. ⚡boards.blade.php needs the matching switcher added by whoever owns it. --}}
-        <div class="flex items-center gap-1">
+        {{-- Views. Five pills since Activity landed — `flex-wrap` so they fold rather than overflow a narrow window. --}}
+        <div class="flex flex-wrap items-center justify-end gap-1">
             <a href="{{ route('projects.boards', ['board' => $activeBoard]) }}" wire:navigate class="kt-btn kt-btn-sm kt-btn-ghost gap-1.5">
                 <i class="ki-filled ki-row-horizontal text-sm"></i> Board
             </a>
@@ -598,7 +611,19 @@ class extends Component
         // Ask the library, never a data-* flag: the morph removes any
         // attribute the incoming HTML does not carry, so a flag would clear
         // itself on every render and leave a second instance on the node.
+        //
+        // The month being looked at is the one thing worth carrying across the
+        // rebuild. Every request here re-renders the page, and a fresh
+        // calendar starts on today — so dragging a card in September, or
+        // simply opening a card from "Coming up", used to snap the grid back
+        // to the current month and lose the reader's place. Ask the outgoing
+        // instance where it was before destroying it.
+        var startOn = null;
+        var startView = null;
+
         if (el._projectCalendar) {
+            startOn = el._projectCalendar.getDate();
+            startView = el._projectCalendar.view.type;
             el._projectCalendar.destroy();
             el._projectCalendar = null;
         }
@@ -612,7 +637,8 @@ class extends Component
         }
 
         var calendar = new FullCalendar.Calendar(el, {
-            initialView: 'dayGridMonth',
+            initialView: startView || 'dayGridMonth',
+            initialDate: startOn || undefined,
             height: 640,
             firstDay: 1,
             headerToolbar: { left: 'prev,next today', center: 'title', right: 'dayGridMonth,listMonth' },

@@ -12,7 +12,9 @@
     Deliberately no `styles.css` and no `kargah.css`. Nothing here uses a
     Tailwind class, so there is nothing to load and nothing that breaks when the
     stylesheet is next rebuilt. `@livewireStyles` stays because the page is
-    still a Livewire component.
+    still a Livewire component — and so does `@livewireScripts`, without which
+    the component's `@script` block is only ever a string inside `wire:effects`
+    and the Print button does nothing when clicked.
 --}}
 <!DOCTYPE html>
 <html lang="{{ str_replace('_', '-', app()->getLocale()) }}">
@@ -49,6 +51,8 @@
 
 <body>
     {{ $slot }}
+
+    @livewireScripts
 </body>
 
 </html>

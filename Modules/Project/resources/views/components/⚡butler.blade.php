@@ -542,21 +542,39 @@ class extends Component
             </div>
         </div>
 
+        {{-- Nothing here can be saved without a board to hang it on: `save()`
+             returns early when `board()` is null, and a form that swallows the
+             save is worse than a button that says it cannot be pressed. --}}
         <div class="flex items-center gap-1">
-            <button wire:click="create('{{ \Modules\Project\Butler\Kind::RULE }}')" class="kt-btn kt-btn-sm kt-btn-primary gap-1.5">
+            <button wire:click="create('{{ \Modules\Project\Butler\Kind::RULE }}')" class="kt-btn kt-btn-sm kt-btn-primary gap-1.5"
+                    @disabled($boards->isEmpty())>
                 <i class="ki-filled ki-flash text-sm"></i> New rule
             </button>
-            <button wire:click="create('{{ \Modules\Project\Butler\Kind::CARD_BUTTON }}')" class="kt-btn kt-btn-sm kt-btn-ghost gap-1.5">
+            <button wire:click="create('{{ \Modules\Project\Butler\Kind::CARD_BUTTON }}')" class="kt-btn kt-btn-sm kt-btn-ghost gap-1.5"
+                    @disabled($boards->isEmpty())>
                 <i class="ki-filled ki-note text-sm"></i> New card button
             </button>
-            <button wire:click="create('{{ \Modules\Project\Butler\Kind::BOARD_BUTTON }}')" class="kt-btn kt-btn-sm kt-btn-ghost gap-1.5">
+            <button wire:click="create('{{ \Modules\Project\Butler\Kind::BOARD_BUTTON }}')" class="kt-btn kt-btn-sm kt-btn-ghost gap-1.5"
+                    @disabled($boards->isEmpty())>
                 <i class="ki-filled ki-row-horizontal text-sm"></i> New board button
             </button>
         </div>
     </div>
 
+    @if ($boards->isEmpty())
+        <div class="kt-card">
+            <div class="kt-card-content flex flex-col items-center py-10 text-center px-5">
+                <i class="ki-filled ki-flash text-2xl text-muted-foreground mb-2"></i>
+                <p class="text-sm text-secondary-foreground">Butler works on one board at a time, and there is no board yet.</p>
+                <a href="{{ route('projects.boards') }}" wire:navigate class="kt-btn kt-btn-primary gap-2 mt-4">
+                    <i class="ki-filled ki-element-plus"></i> Make the first board
+                </a>
+            </div>
+        </div>
+    @endif
+
     @if ($formOpen)
-        <div class="kt-card border-primary/40">
+        <div class="kt-card border-primary/30">
             <div class="kt-card-header">
                 <h3 class="kt-card-title">
                     {{ $editingId === 0 ? 'New' : 'Edit' }} {{ mb_strtolower(\Modules\Project\Butler\Kind::LABELS[$kind] ?? 'command') }}
@@ -588,7 +606,7 @@ class extends Component
                 </div>
 
                 @if ($kind === \Modules\Project\Butler\Kind::RULE)
-                    <div class="flex flex-col gap-2 rounded-lg border border-input p-3">
+                    <div class="flex flex-col gap-2 rounded-lg border border-border p-3">
                         <span class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">When</span>
 
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -621,7 +639,7 @@ class extends Component
                     </div>
                 @endif
 
-                <div class="flex flex-col gap-2 rounded-lg border border-input p-3">
+                <div class="flex flex-col gap-2 rounded-lg border border-border p-3">
                     <div class="flex items-center justify-between">
                         <span class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                             {{ $kind === \Modules\Project\Butler\Kind::BOARD_BUTTON ? 'Only cards where' : 'Only if' }}
@@ -633,7 +651,8 @@ class extends Component
 
                     @forelse ($conditionRows as $i => $row)
                         <div class="flex items-start gap-2" wire:key="butler-cond-{{ $i }}">
-                            <select class="kt-select grow" wire:model.live="conditionRows.{{ $i }}.condition" aria-label="Condition">
+                            <select class="kt-select grow min-w-0" wire:model.live="conditionRows.{{ $i }}.condition"
+                                    aria-label="Condition {{ $i + 1 }}">
                                 <option value="">Pick a condition…</option>
                                 @foreach ($conditionCatalogue as $key => $meta)
                                     <option value="{{ $key }}">{{ $meta['label'] }}</option>
@@ -652,7 +671,7 @@ class extends Component
                             @endif
 
                             <button wire:click="removeCondition({{ $i }})" class="kt-btn kt-btn-sm kt-btn-ghost text-destructive shrink-0"
-                                    aria-label="Remove condition">
+                                    aria-label="Remove condition {{ $i + 1 }}">
                                 <i class="ki-filled ki-trash text-sm"></i>
                             </button>
                         </div>
@@ -663,7 +682,7 @@ class extends Component
                     @endforelse
                 </div>
 
-                <div class="flex flex-col gap-2 rounded-lg border border-input p-3">
+                <div class="flex flex-col gap-2 rounded-lg border border-border p-3">
                     <div class="flex items-center justify-between">
                         <span class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Then, in order</span>
                         <button wire:click="addAction" class="kt-btn kt-btn-sm kt-btn-ghost gap-1.5">
@@ -675,7 +694,8 @@ class extends Component
                         <div class="flex items-start gap-2" wire:key="butler-act-{{ $i }}">
                             <span class="kt-badge kt-badge-sm shrink-0 mt-1.5">{{ $i + 1 }}</span>
 
-                            <select class="kt-select grow" wire:model.live="actionRows.{{ $i }}.action" aria-label="Action">
+                            <select class="kt-select grow min-w-0" wire:model.live="actionRows.{{ $i }}.action"
+                                    aria-label="Action {{ $i + 1 }}">
                                 <option value="">Pick an action…</option>
                                 @foreach ($actionCatalogue as $key => $meta)
                                     <option value="{{ $key }}">{{ $meta['label'] }}</option>
@@ -694,7 +714,7 @@ class extends Component
                             @endif
 
                             <button wire:click="removeAction({{ $i }})" class="kt-btn kt-btn-sm kt-btn-ghost text-destructive shrink-0"
-                                    aria-label="Remove action">
+                                    aria-label="Remove action {{ $i + 1 }}">
                                 <i class="ki-filled ki-trash text-sm"></i>
                             </button>
                         </div>
@@ -740,7 +760,9 @@ class extends Component
 
             <div class="kt-card-content p-0">
                 @forelse ($commands->get($group, collect()) as $rule)
-                    <div class="flex items-start gap-3 px-4 py-3 border-b border-border last:border-b-0"
+                    {{-- `last:` has no compiled variant in kargah.css, so the last row is
+                         asked for by name rather than by a class Tailwind never emitted. --}}
+                    <div class="flex items-start gap-3 px-4 py-3 {{ $loop->last ? '' : 'border-b border-border' }}"
                          wire:key="butler-row-{{ $rule->id }}">
 
                         <span class="size-8 rounded-lg grid place-items-center shrink-0 {{ $rule->is_enabled ? 'bg-primary/15 text-primary' : 'bg-accent/60 text-muted-foreground' }}">
@@ -748,7 +770,12 @@ class extends Component
                         </span>
 
                         <div class="grow min-w-0">
-                            <p class="text-sm font-medium text-mono truncate">{{ $rule->name }}</p>
+                            <div class="flex flex-wrap items-center gap-2">
+                                <p class="text-sm font-medium text-mono truncate">{{ $rule->name }}</p>
+                                @unless ($rule->is_enabled)
+                                    <span class="kt-badge kt-badge-sm kt-badge-outline shrink-0">Disabled</span>
+                                @endunless
+                            </div>
                             <p class="text-xs text-muted-foreground mt-0.5">
                                 {{ $rule->triggerSentence() }} — {{ $this->summarise($rule) }}
                             </p>
@@ -765,15 +792,18 @@ class extends Component
                                 </button>
                             @endif
 
-                            <button wire:click="toggleEnabled({{ $rule->id }})" class="kt-btn kt-btn-sm kt-btn-ghost">
+                            <button wire:click="toggleEnabled({{ $rule->id }})" class="kt-btn kt-btn-sm kt-btn-ghost"
+                                    wire:loading.attr="disabled" wire:target="toggleEnabled({{ $rule->id }})"
+                                    aria-label="{{ $rule->is_enabled ? 'Disable' : 'Enable' }} {{ $rule->name }}">
                                 {{ $rule->is_enabled ? 'Disable' : 'Enable' }}
                             </button>
-                            <button wire:click="edit({{ $rule->id }})" class="kt-btn kt-btn-sm kt-btn-ghost" aria-label="Edit">
+                            <button wire:click="edit({{ $rule->id }})" class="kt-btn kt-btn-sm kt-btn-ghost"
+                                    aria-label="Edit {{ $rule->name }}">
                                 <i class="ki-filled ki-pencil text-sm"></i>
                             </button>
                             <button wire:click="deleteCommand({{ $rule->id }})"
                                     wire:confirm="Delete {{ $rule->name }}?"
-                                    class="kt-btn kt-btn-sm kt-btn-ghost text-destructive" aria-label="Delete">
+                                    class="kt-btn kt-btn-sm kt-btn-ghost text-destructive" aria-label="Delete {{ $rule->name }}">
                                 <i class="ki-filled ki-trash text-sm"></i>
                             </button>
                         </div>

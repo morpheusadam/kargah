@@ -157,7 +157,15 @@ new class extends Component
 
 ?>
 
-<div>
+{{--
+    `contents` on the root, for the same reason `⚡card-buttons.blade.php` has
+    it: a board with no custom fields should leave no trace on the card back,
+    and Livewire always renders the root element. The card back stacks its
+    sections with `flex flex-col gap-*`, so an empty block-level div is still a
+    flex item and still costs a gap of blank space between the description and
+    the watch button.
+--}}
+<div class="contents">
     @if ($fields->isNotEmpty())
         <div class="flex flex-col gap-3">
             <div class="flex items-center gap-2">
@@ -168,14 +176,24 @@ new class extends Component
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 @foreach ($fields as $field)
                     <div class="flex flex-col gap-1.5" wire:key="custom-field-{{ $field->id }}">
-                        <label class="kt-form-label text-xs flex items-center gap-1.5" for="custom-field-{{ $field->id }}">
-                            <i class="ki-filled {{ $field->type->icon() }} text-[11px] text-muted-foreground"></i>
-                            {{ $field->name }}
+                        {{-- `min-w-0` + `truncate`: a field named in a sentence must not
+                             push the second column of the grid off the drawer. --}}
+                        <label class="kt-form-label text-xs flex items-center gap-1.5 min-w-0"
+                               for="custom-field-{{ $field->id }}" title="{{ $field->name }}">
+                            <i class="ki-filled {{ $field->type->icon() }} text-[11px] text-muted-foreground shrink-0"></i>
+                            <span class="truncate">{{ $field->name }}</span>
                         </label>
 
                         @switch($field->type)
                             @case(CustomFieldType::Checkbox)
-                                <label class="inline-flex items-center gap-2 py-1.5">
+                                {{--
+                                    A span, not a second `<label>`. The label above already
+                                    names this checkbox through `for=`, and a wrapping label
+                                    on top of it makes the accessible name "Field name Yes" —
+                                    the current value read out as though it were part of what
+                                    the control is called.
+                                --}}
+                                <span class="inline-flex items-center gap-2 py-1.5">
                                     <input type="checkbox" class="kt-checkbox" id="custom-field-{{ $field->id }}"
                                            wire:click="toggleCheckbox({{ $field->id }})"
                                            wire:loading.attr="disabled" wire:target="toggleCheckbox({{ $field->id }})"
@@ -183,7 +201,7 @@ new class extends Component
                                     <span class="text-sm text-secondary-foreground">
                                         {{ ($drafts[$field->id] ?? false) ? 'Yes' : 'No' }}
                                     </span>
-                                </label>
+                                </span>
                                 @break
 
                             @case(CustomFieldType::Date)

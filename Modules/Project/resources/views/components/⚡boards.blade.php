@@ -1200,6 +1200,15 @@ class extends Component
     // as undefined the moment the island renders on its own.
     $boardBackgroundClass = $activeBoardModel?->backgroundClass() ?? '';
     $boardBackgroundStyle = $activeBoardModel?->backgroundStyle();
+
+    // The toolbar sits on the board background too — it is a child of the same
+    // root element — so the heading and its subtitle need the board's text tone
+    // for the same reason the list headers inside the island do. Recomputed
+    // there rather than shared, because a `@php` variable out here does not
+    // cross the island boundary.
+    $boardToolbarTone = $activeBoardModel !== null && ($boardBackgroundClass !== '' || $boardBackgroundStyle !== null)
+        ? $activeBoardModel->textToneClass()
+        : null;
 @endphp
 <div class="flex flex-col gap-5 h-full {{ $boardBackgroundClass }}"
      @if ($boardBackgroundStyle) style="{{ $boardBackgroundStyle }}" @endif>
@@ -1219,20 +1228,21 @@ class extends Component
 
         <div class="flex items-center gap-3">
             <div>
-                <h1 class="text-xl font-semibold text-mono">{{ $this->boardName() }}</h1>
-                <p class="text-sm text-secondary-foreground mt-1">Everything you owe a client, in the order you will do it.</p>
+                <h1 class="text-xl font-semibold truncate max-w-[420px] {{ $boardToolbarTone ?? 'text-mono' }}">{{ $this->boardName() }}</h1>
+                <p class="text-sm mt-1 {{ $boardToolbarTone ?? 'text-secondary-foreground' }}">Everything you owe a client, in the order you will do it.</p>
             </div>
 
             {{-- Board picker --}}
             <div class="relative">
-                <button wire:click="toggleBoardPicker" class="kt-btn kt-btn-outline gap-2" aria-haspopup="true" aria-expanded="{{ $boardPickerOpen ? 'true' : 'false' }}">
+                <button wire:click="toggleBoardPicker" class="kt-btn kt-btn-outline gap-2 max-w-[220px]" aria-haspopup="true" aria-expanded="{{ $boardPickerOpen ? 'true' : 'false' }}">
                     @foreach ($boards as $b)
                         @if ($b->slug === $activeBoard)
-                            <span class="size-2.5 rounded-full {{ $b->dotClass() }}"></span>
-                            {{ $b->name }}
+                            <span class="size-2.5 rounded-full shrink-0 {{ $b->dotClass() }}"></span>
+                            {{-- A long board name truncates rather than stretching the toolbar. --}}
+                            <span class="truncate">{{ $b->name }}</span>
                         @endif
                     @endforeach
-                    <i class="ki-filled ki-down text-xs"></i>
+                    <i class="ki-filled ki-down text-xs shrink-0"></i>
                 </button>
 
                 <div class="kt-dropdown absolute z-20 mt-1 w-[240px] start-0 {{ $boardPickerOpen ? 'open' : '' }}">
@@ -1247,9 +1257,11 @@ class extends Component
                         @forelse ($boards as $b)
                             <div wire:key="pick-{{ $b->id }}" class="flex items-center gap-1">
                                 <button wire:click="selectBoard('{{ $b->slug }}')"
-                                        class="kt-btn kt-btn-ghost justify-start gap-2 grow min-w-0 {{ $b->slug === $activeBoard ? 'bg-accent/60' : '' }}">
-                                    <span class="size-2.5 rounded-full {{ $b->dotClass() }}"></span>
-                                    {{ $b->name }}
+                                        class="kt-btn kt-btn-ghost justify-start gap-2 grow min-w-0 {{ $b->slug === $activeBoard ? 'bg-accent/60' : '' }}"
+                                        wire:loading.attr="disabled" wire:target="selectBoard">
+                                    <span class="size-2.5 rounded-full shrink-0 {{ $b->dotClass() }}"></span>
+                                    {{-- `truncate` on the name itself: `min-w-0` alone lets it overflow. --}}
+                                    <span class="truncate">{{ $b->name }}</span>
                                 </button>
                                 @php($isStarred = in_array((int) $b->id, $starredBoardIds, true))
                                 <button wire:click="toggleStar('{{ $b->slug }}')"
@@ -1494,15 +1506,30 @@ class extends Component
                     never binds to it and a card cannot be dropped into
                     somewhere with no visible place to land.
                 --}}
-                <div class="kt-card w-[48px] shrink-0 {{ $boardSurfaceClass }} self-stretch"
+                {{--
+                    `w-[50px]` and not `w-[48px]`: the compiled sheet has the
+                    first and not the second, and a width utility that is not in
+                    the sheet is a column with no width at all. `align-self` is
+                    inline for the same reason — there is no `self-stretch` in
+                    either sheet, and the parent row is `items-start`.
+                --}}
+                <div class="kt-card w-[50px] shrink-0 {{ $boardSurfaceClass }}"
+                     style="align-self: stretch;"
                      data-list-id="{{ $list->id }}" wire:key="list-{{ $list->id }}">
                     <button wire:click="toggleCollapse({{ $list->id }})"
                             class="flex flex-col items-center gap-3 w-full h-full py-3 rounded-lg hover:bg-accent/40 transition-colors"
-                            title="Expand {{ $list->name }}" aria-label="Expand {{ $list->name }}">
+                            title="Expand {{ $list->name }}" aria-label="Expand {{ $list->name }}"
+                            aria-expanded="false">
                         <i class="ki-filled ki-double-right text-sm {{ $boardTextTone ?? 'text-muted-foreground' }}"></i>
-                        <span class="{{ $list->wipBadgeClass($listCount) }}">{{ $listCount }}</span>
-                        {{-- Inline, not a Tailwind class: `writing-mode` has no utility in the compiled sheet. --}}
-                        <span class="text-sm font-semibold whitespace-nowrap {{ $boardTextTone ?? 'text-mono' }}"
+                        <span class="shrink-0 {{ $list->wipBadgeClass($listCount) }}">{{ $listCount }}</span>
+                        {{--
+                            Inline, not a Tailwind class: `writing-mode` has no
+                            utility in the compiled sheet. `truncate` and the
+                            height cap read vertically here, which is what stops
+                            a long list name from making the folded spine taller
+                            than the board itself.
+                        --}}
+                        <span class="text-sm font-semibold truncate max-h-[320px] {{ $boardTextTone ?? 'text-mono' }}"
                               style="writing-mode: vertical-rl;">{{ $list->name }}</span>
                     </button>
                 </div>
@@ -1525,15 +1552,26 @@ class extends Component
                         </span>
                     </div>
 
+                    {{--
+                        Both of these are ghost buttons, which take the theme's
+                        own foreground — dark in the light theme. Over a photo or
+                        a vivid background the list surface is `bg-black/30`, so
+                        without the board's text tone the two icons vanish into
+                        it exactly when the header is hardest to read.
+                    --}}
                     <div class="flex items-center gap-0.5 shrink-0">
-                        <button wire:click="toggleCollapse({{ $list->id }})" class="kt-btn kt-btn-icon kt-btn-ghost size-7"
-                                title="Collapse {{ $list->name }}" aria-label="Collapse {{ $list->name }}">
+                        <button wire:click="toggleCollapse({{ $list->id }})"
+                                class="kt-btn kt-btn-icon kt-btn-ghost size-7 {{ $boardTextTone ?? '' }}"
+                                title="Collapse {{ $list->name }}" aria-label="Collapse {{ $list->name }}"
+                                aria-expanded="true">
                             <i class="ki-filled ki-double-left text-sm"></i>
                         </button>
 
                         <div class="relative">
-                            <button wire:click="toggleListMenu({{ $list->id }})" class="kt-btn kt-btn-icon kt-btn-ghost size-7"
-                                    title="List actions" aria-label="List actions">
+                            <button wire:click="toggleListMenu({{ $list->id }})"
+                                    class="kt-btn kt-btn-icon kt-btn-ghost size-7 {{ $boardTextTone ?? '' }}"
+                                    title="List actions" aria-label="List actions"
+                                    aria-haspopup="true" aria-expanded="{{ $listMenuOpen === $list->id ? 'true' : 'false' }}">
                                 <i class="ki-filled ki-dots-horizontal text-sm"></i>
                             </button>
                             <div class="kt-dropdown absolute z-20 end-0 mt-1 w-[250px] {{ $listMenuOpen === $list->id ? 'open' : '' }}">
@@ -1562,15 +1600,18 @@ class extends Component
                                         </button>
                                         <span class="text-xs font-semibold text-mono">Move all cards to…</span>
                                     </div>
-                                    <div class="p-2 flex flex-col gap-1 max-h-[280px] overflow-y-auto kt-scrollable-y">
+                                    {{-- `max-h-[250px]`, not `[280px]`: only the first is in the compiled sheet. --}}
+                                    <div class="p-2 flex flex-col gap-1 max-h-[250px] overflow-y-auto kt-scrollable-y">
                                         @php($somewhereToGo = false)
                                         @foreach ($lists as $target)
                                             @if ($target['model']->id !== $list->id)
                                                 @php($somewhereToGo = true)
                                                 <button wire:click="moveAllCards({{ $list->id }}, {{ $target['model']->id }})"
                                                         wire:key="moveall-{{ $list->id }}-{{ $target['model']->id }}"
+                                                        wire:loading.attr="disabled" wire:target="moveAllCards"
                                                         class="kt-btn kt-btn-ghost justify-start gap-2 w-full text-sm">
-                                                    <i class="ki-filled ki-exit-right text-sm"></i>
+                                                    <i class="ki-filled ki-exit-right text-sm" wire:loading.remove wire:target="moveAllCards"></i>
+                                                    <i class="ki-filled ki-loading animate-spin text-sm" wire:loading wire:target="moveAllCards"></i>
                                                     <span class="truncate">{{ $target['model']->name }}</span>
                                                 </button>
                                             @endif
@@ -1595,6 +1636,7 @@ class extends Component
                                                aria-label="Card limit for {{ $list->name }}"
                                                placeholder="No limit"
                                                wire:model="wipLimitInput"
+                                               wire:keydown.escape="dismissPanels"
                                                wire:keydown.enter.prevent="saveWipLimit({{ $list->id }})">
                                         <p class="text-[11px] text-muted-foreground">
                                             The header warns when the list goes over. Nothing is refused. Leave it empty for no limit.
@@ -1625,8 +1667,21 @@ class extends Component
                                         <button wire:click="toggleCollapse({{ $list->id }})" class="kt-btn kt-btn-ghost justify-start gap-2 w-full">
                                             <i class="ki-filled ki-double-left text-sm"></i> Collapse this list
                                         </button>
-                                        <button wire:click="copyList({{ $list->id }})" class="kt-btn kt-btn-ghost justify-start gap-2 w-full">
-                                            <i class="ki-filled ki-copy text-sm"></i> Copy this list
+                                        {{--
+                                            The one action in this menu that is
+                                            slow enough to look broken: it copies
+                                            every card with its checklists,
+                                            attachments and comments.
+                                        --}}
+                                        <button wire:click="copyList({{ $list->id }})"
+                                                wire:loading.attr="disabled" wire:target="copyList"
+                                                class="kt-btn kt-btn-ghost justify-start gap-2 w-full">
+                                            <span wire:loading.remove wire:target="copyList" class="flex items-center gap-2">
+                                                <i class="ki-filled ki-copy text-sm"></i> Copy this list
+                                            </span>
+                                            <span wire:loading wire:target="copyList" class="flex items-center gap-2">
+                                                <i class="ki-filled ki-loading animate-spin text-sm"></i> Copying…
+                                            </span>
                                         </button>
 
                                         <div class="border-t border-border my-1"></div>
@@ -1669,7 +1724,14 @@ class extends Component
                             one card on the same board would otherwise collide
                             in the morph and only one of them would ever update.
                         --}}
+                        {{--
+                            `role="button" tabindex="0"` without a key handler is
+                            a control a keyboard can reach and not use. The
+                            `j`/`k` layer below drives the *selected* card, which
+                            is a different thing from the *focused* one.
+                        --}}
                         <div wire:click="openCard({{ $card->id }})"
+                             wire:keydown.enter="openCard({{ $card->id }})"
                              wire:key="placement-{{ $placement->id }}"
                              role="button" tabindex="0"
                              aria-label="Open card {{ $card->title }}"
@@ -1681,12 +1743,24 @@ class extends Component
                              data-placement-id="{{ $placement->id }}"
                              @if ($isArchived) data-archived="1" @endif>
 
+                            {{--
+                                The full-bleed geometry is inline, not utilities.
+                                None of `-mx-3`, `-mt-3`, `w-[calc(100%+1.5rem)]`,
+                                `object-cover` or `h-32` is in either compiled
+                                sheet, so the image was rendering at its own
+                                natural size — a 2000px photo overflowing a 290px
+                                column. `margin-inline` rather than a left/right
+                                pair so it stays correct in RTL. The tone and the
+                                band height stay classes: those two do exist.
+                            --}}
                             @if ($cardCover)
                                 @if ($cardCover['type'] === 'colour')
-                                    <div class="-mx-3 -mt-3 mb-2 rounded-t-lg {{ \Modules\Project\Support\Palette::tone($cardCover['colour']) }} {{ $cardCover['size'] === 'full' ? 'h-20' : 'h-8' }}"></div>
+                                    <div class="mb-2 rounded-t-lg {{ \Modules\Project\Support\Palette::tone($cardCover['colour']) }} {{ $cardCover['size'] === 'full' ? 'h-20' : 'h-8' }}"
+                                         style="margin-inline: -0.75rem; margin-top: -0.75rem;"></div>
                                 @else
                                     <img src="{{ $cardCover['url'] }}" alt=""
-                                         class="-mx-3 -mt-3 mb-2 rounded-t-lg w-[calc(100%+1.5rem)] object-cover {{ $cardCover['size'] === 'full' ? 'h-32' : 'h-16' }}">
+                                         class="mb-2 rounded-t-lg"
+                                         style="display: block; width: calc(100% + 1.5rem); height: {{ $cardCover['size'] === 'full' ? '8rem' : '4rem' }}; margin-inline: -0.75rem; margin-top: -0.75rem; object-fit: cover;">
                                 @endif
                             @endif
 
@@ -1717,7 +1791,8 @@ class extends Component
                                 </div>
                             @endif
 
-                            <p class="text-sm text-mono leading-snug">{{ $card->title }}</p>
+                            {{-- `break-words`: a title with a long unbroken token (a URL, a file name) overflows the column otherwise. --}}
+                            <p class="text-sm text-mono leading-snug break-words">{{ $card->title }}</p>
 
                             @if ((! $hideCardBadges && ($card->checklist_total > 0 || $card->due_on || $card->comments_count > 0 || $card->votes_count > 0)) || $card->members->isNotEmpty())
                                 <div class="flex items-center gap-3 mt-2.5 text-xs text-muted-foreground">
@@ -1754,7 +1829,7 @@ class extends Component
                             @endif
                         </div>
                     @empty
-                        <p class="text-xs text-muted-foreground text-center py-4">
+                        <p class="text-xs text-center py-4 {{ $boardTextTone ?? 'text-muted-foreground' }}">
                             {{ $activeFilters > 0 ? 'No cards match the filter.' : 'Nothing in this list yet.' }}
                         </p>
                     @endforelse
@@ -1782,7 +1857,7 @@ class extends Component
                     </div>
                 @else
                     <button wire:click="startAddCard({{ $list->id }})"
-                            class="kt-btn kt-btn-ghost w-full justify-start gap-2 text-sm text-secondary-foreground px-4 py-2.5 rounded-b-lg">
+                            class="kt-btn kt-btn-ghost w-full justify-start gap-2 text-sm px-4 py-2.5 rounded-b-lg {{ $boardTextTone ?? 'text-secondary-foreground' }}">
                         <i class="ki-filled ki-plus text-sm"></i> Add a card
                     </button>
                 @endif
@@ -1796,6 +1871,22 @@ class extends Component
                     <button wire:click="openTemplates" class="kt-btn kt-btn-primary gap-2 mt-4">
                         <i class="ki-filled ki-plus"></i> New board
                     </button>
+                </div>
+            @else
+                {{--
+                    A board with every list archived, or one that never had any.
+                    Without this the canvas is a single dashed "Add another list"
+                    button and nothing else, which reads as a page that failed to
+                    load rather than a board waiting for its first column.
+                --}}
+                <div class="kt-card w-[290px] shrink-0 {{ $boardSurfaceClass }} px-4 py-6 text-center">
+                    <i class="ki-filled ki-row-horizontal text-2xl {{ $boardTextTone ?? 'text-muted-foreground' }}"></i>
+                    <p class="text-sm mt-2 {{ $boardTextTone ?? 'text-secondary-foreground' }}">
+                        No lists on this board yet.
+                    </p>
+                    <p class="text-xs mt-1 {{ $boardTextTone ?? 'text-muted-foreground' }}">
+                        Start with something like Backlog, Doing, Done.
+                    </p>
                 </div>
             @endif
         @endforelse
@@ -1842,14 +1933,15 @@ class extends Component
     --}}
     <div id="kargah-shortcuts" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/50 p-4"
          role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
-        <div class="kt-card bg-background w-full max-w-[560px] max-h-[80vh] overflow-y-auto kt-scrollable-y">
+        {{-- `max-h-[70vh]`, not `[80vh]`: the compiled sheet has the first and not the second, and without a cap the sheet runs off the bottom of the screen with no way to scroll it. --}}
+        <div class="kt-card bg-background w-full max-w-[560px] max-h-[70vh] overflow-y-auto kt-scrollable-y">
             <div class="flex items-center justify-between px-5 py-4 border-b border-border">
                 <h2 class="text-sm font-semibold text-mono">Keyboard shortcuts</h2>
                 <button type="button" data-shortcuts-close class="kt-btn kt-btn-icon kt-btn-ghost size-7" aria-label="Close">
                     <i class="ki-filled ki-cross text-sm"></i>
                 </button>
             </div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 px-5 py-4 text-sm">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 px-5 py-4 text-sm">
                 @foreach ([
                     '?' => 'This list',
                     'j / ↓' => 'Next card',
@@ -2043,7 +2135,28 @@ class extends Component
                 if (event.metaKey || event.ctrlKey || event.altKey) return;
 
                 if (event.key === 'Escape') {
-                    if (sheetOpen()) { showSheet(false); event.preventDefault(); }
+                    if (sheetOpen()) { showSheet(false); event.preventDefault(); return; }
+
+                    // The two inline forms close themselves, through their own
+                    // wire:keydown.escape — leave them to it.
+                    if (isTyping(event.target)) return;
+
+                    // The filter panel, the board picker and the list ⋯ menu are
+                    // all `.kt-dropdown.open`, and until now none of them had a
+                    // keyboard way out: the click-away overlay is a pointer
+                    // target only, and `closeFilterPanel` was bound to the
+                    // filter panel alone. Scoped to this component's own root so
+                    // the card drawer's overlays are left to the drawer.
+                    const openPanel = keys.wire
+                        && keys.wire.$el
+                        && keys.wire.$el.isConnected
+                        && keys.wire.$el.querySelector('.kt-dropdown.open');
+
+                    if (openPanel) {
+                        keys.wire.dismissPanels();
+                        event.preventDefault();
+                    }
+
                     return;
                 }
 

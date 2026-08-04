@@ -462,7 +462,15 @@ class extends Component
 
 <div class="flex flex-col gap-5">
 
-    @if ($pickerPlacementId !== null || $editingPlacementId !== null || $boardPickerOpen)
+    {{--
+        Only the panels, never the inline editor. The sheet is `fixed inset-0`
+        and the cell input is in ordinary flow, so while it was also raised for
+        an open editor it sat *on top of* the very input it was meant to guard:
+        the box could be typed into (it autofocuses) but not clicked into, and
+        a click meant to put the caret mid-word was swallowed by the sheet. The
+        editor closes itself anyway — `wire:blur="saveEdit"` on the input.
+    --}}
+    @if ($pickerPlacementId !== null || $boardPickerOpen)
         <div class="fixed inset-0 z-10" wire:click="closePicker" aria-hidden="true"></div>
     @endif
 
@@ -481,17 +489,30 @@ class extends Component
                 data-kt-dropdown-toggle panel would snap shut on the next
                 unrelated write. See docs/frontend-conventions.md.
             --}}
-            <div class="relative">
-                <button wire:click="toggleBoardPicker" class="kt-btn kt-btn-outline gap-2">
+            {{--
+                Escape sits on the wrapper, not the panel: the trigger still
+                holds focus at the moment the panel opens, and a keystroke on
+                the trigger never bubbles through a sibling. The wrapper is the
+                nearest node both are inside — and still not the window, which
+                would answer every other Escape on the page.
+            --}}
+            <div class="relative" wire:keydown.escape="closePicker">
+                <button wire:click="toggleBoardPicker" class="kt-btn kt-btn-outline gap-2"
+                        aria-haspopup="true" aria-expanded="{{ $boardPickerOpen ? 'true' : 'false' }}">
                     <i class="ki-filled ki-down text-xs"></i> Switch board
                 </button>
                 <div class="kt-dropdown absolute z-20 mt-1 w-[220px] {{ $boardPickerOpen ? 'open' : '' }}">
                     <div class="p-2 flex flex-col gap-1">
                         @forelse ($boards as $b)
+                            {{-- `min-w-0` plus a `truncate` span: `kt-btn` is `white-space: nowrap`
+                                 and does not clip, so a long board name runs straight out of the
+                                 220px panel. Same fix as ⚡board-activity.blade.php. --}}
                             <button wire:click="selectBoard('{{ $b->slug }}')" wire:key="table-pick-{{ $b->id }}"
-                                    class="kt-btn kt-btn-ghost justify-start gap-2 w-full {{ $b->slug === $activeBoard ? 'bg-accent/60' : '' }}">
-                                <span class="size-2.5 rounded-full {{ $b->dotClass() }}"></span>
-                                {{ $b->name }}
+                                    wire:loading.attr="disabled" wire:target="selectBoard"
+                                    title="{{ $b->name }}"
+                                    class="kt-btn kt-btn-ghost justify-start gap-2 w-full min-w-0 {{ $b->slug === $activeBoard ? 'bg-accent/60' : '' }}">
+                                <span class="size-2.5 rounded-full shrink-0 {{ $b->dotClass() }}"></span>
+                                <span class="truncate">{{ $b->name }}</span>
                             </button>
                         @empty
                             <p class="text-xs text-muted-foreground px-2 py-3 text-center">No boards yet.</p>
@@ -501,8 +522,14 @@ class extends Component
             </div>
         </div>
 
-        {{-- Views. ⚡boards.blade.php needs the matching switcher added by whoever owns it. --}}
-        <div class="flex items-center gap-1">
+        {{--
+            Views. Five of them since Activity landed, and five `kt-btn-sm`
+            pills are wider than a narrow window: `flex-wrap` so the strip
+            folds onto a second line instead of pushing the toolbar into a
+            horizontal scroll, and `justify-end` so the folded rows stay
+            aligned with the edge they started from.
+        --}}
+        <div class="flex flex-wrap items-center justify-end gap-1">
             <a href="{{ route('projects.boards', ['board' => $activeBoard]) }}" wire:navigate class="kt-btn kt-btn-sm kt-btn-ghost gap-1.5">
                 <i class="ki-filled ki-row-horizontal text-sm"></i> Board
             </a>
@@ -542,23 +569,34 @@ class extends Component
                                 <tr wire:key="row-{{ $placement->id }}"
                                     style="content-visibility: auto; contain-intrinsic-size: auto 52px;">
                                     <td>
-                                        <div class="flex items-center gap-2">
+                                        <div class="flex items-center gap-2 min-w-0">
                                             <button wire:click="openCard({{ $card->id }})" class="text-muted-foreground hover:text-primary shrink-0"
                                                     title="Open card" aria-label="Open card">
                                                 <i class="ki-filled ki-eye text-sm"></i>
                                             </button>
                                             @if ($editingPlacementId === $placement->id && $editingField === 'title')
                                                 <input type="text" class="kt-input kt-input-sm" wire:model="editingValue" autofocus
+                                                       aria-label="Card title"
                                                        wire:keydown.enter="saveEdit" wire:keydown.escape="cancelEdit" wire:blur="saveEdit">
                                             @else
+                                                {{--
+                                                    `max-w-[420px]` and a `truncate` span rather than `truncate` on
+                                                    the button. A table cell is sized by its content, so a nowrap
+                                                    button never actually elides — it just widens the column until
+                                                    the whole table scrolls sideways and every other row's cells go
+                                                    off screen. The cap bounds the column; the span is what elides;
+                                                    the mirror icon and the Archived badge sit outside it so they
+                                                    survive the ellipsis instead of being the first thing cut.
+                                                --}}
                                                 <button wire:click="startEdit({{ $placement->id }}, 'title', @js($card->title))"
-                                                        class="text-start text-mono hover:text-primary truncate">
-                                                    {{ $card->title }}
+                                                        title="{{ $card->title }}" aria-label="Rename {{ $card->title }}"
+                                                        class="flex items-center gap-1 min-w-0 max-w-[420px] text-start text-mono hover:text-primary">
+                                                    <span class="truncate">{{ $card->title }}</span>
                                                     @if ($placement->isMirror())
-                                                        <i class="ki-filled ki-devices-2 text-xs text-muted-foreground ms-1" title="Mirror"></i>
+                                                        <i class="ki-filled ki-devices-2 text-xs text-muted-foreground shrink-0" title="Mirror"></i>
                                                     @endif
                                                     @if ($card->isArchived())
-                                                        <span class="kt-badge kt-badge-sm kt-badge-outline ms-1">Archived</span>
+                                                        <span class="kt-badge kt-badge-sm kt-badge-outline shrink-0">Archived</span>
                                                     @endif
                                                 </button>
                                             @endif
@@ -566,7 +604,10 @@ class extends Component
                                     </td>
                                     <td>
                                         {{-- An archived mirror is a note about where the card went, not a live card — see boards.blade.php. Not draggable there, not movable here. --}}
-                                        <select class="kt-select kt-select-sm" wire:change="changeList({{ $placement->id }}, $event.target.value)" @disabled($card->isArchived())>
+                                        <select class="kt-select kt-select-sm" wire:change="changeList({{ $placement->id }}, $event.target.value)"
+                                                aria-label="List for {{ $card->title }}"
+                                                wire:loading.attr="disabled" wire:target="changeList"
+                                                @disabled($card->isArchived())>
                                             @foreach ($lists as $list)
                                                 <option value="{{ $list->id }}" @selected($list->id === $placement->board_list_id)>{{ $list->name }}</option>
                                             @endforeach
@@ -575,17 +616,24 @@ class extends Component
                                     <td>
                                         @if ($editingPlacementId === $placement->id && $editingField === 'due')
                                             <input type="date" class="kt-input kt-input-sm" wire:model="editingValue" autofocus
+                                                   aria-label="Due date"
                                                    wire:keydown.enter="saveEdit" wire:keydown.escape="cancelEdit" wire:blur="saveEdit">
                                         @else
+                                            {{-- The dash is the empty state, and a screen reader reads it as nothing at all. --}}
                                             <button wire:click="startEdit({{ $placement->id }}, 'due', @js($card->due_on?->format('Y-m-d') ?? ''))"
+                                                    aria-label="{{ $card->due_on ? 'Change the due date, '.$card->due_on->format('j M Y') : 'Set a due date' }}"
                                                     class="text-start hover:opacity-80 {{ $card->due_on ? \Modules\Project\Support\Palette::tone($card->dueBadgeColour() ?? 'neutral') : 'text-secondary-foreground' }} rounded px-1">
                                                 {{ $card->due_on?->format('j M Y') ?? '—' }}
                                             </button>
                                         @endif
                                     </td>
                                     <td>
-                                        <div class="relative">
-                                            <button wire:click="togglePicker({{ $placement->id }}, 'labels')" class="flex flex-wrap gap-1 items-center min-h-[24px]">
+                                        <div class="relative" wire:keydown.escape="closePicker">
+                                            {{-- Capped: a card with eight labels would otherwise widen the column past its 160px header. --}}
+                                            <button wire:click="togglePicker({{ $placement->id }}, 'labels')"
+                                                    aria-label="Labels on {{ $card->title }}" aria-haspopup="true"
+                                                    aria-expanded="{{ $pickerPlacementId === $placement->id && $pickerType === 'labels' ? 'true' : 'false' }}"
+                                                    class="flex flex-wrap gap-1 items-center min-h-[24px] max-w-[160px] text-start">
                                                 @forelse ($card->labels as $label)
                                                     <span class="text-[10px] font-medium px-1.5 py-0.5 rounded {{ $label->chipClass() }}">{{ $label->name }}</span>
                                                 @empty
@@ -595,12 +643,19 @@ class extends Component
                                             <div class="kt-dropdown absolute z-20 mt-1 w-[220px] {{ $pickerPlacementId === $placement->id && $pickerType === 'labels' ? 'open' : '' }}">
                                                 <div class="p-2 flex flex-col gap-1">
                                                     @forelse ($labels as $label)
+                                                        @php($labelOn = $card->labels->contains('id', $label->id))
+                                                        {{--
+                                                            The tick alone was the whole "is it on?" signal, and it sits at
+                                                            the far end of the row where the eye is not. `aria-pressed` says
+                                                            it out loud and the tinted row says it at a glance.
+                                                        --}}
                                                         <button wire:click="toggleLabel({{ $placement->id }}, {{ $label->id }})" wire:key="tl-{{ $placement->id }}-{{ $label->id }}"
-                                                                class="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-start hover:bg-accent/60">
-                                                            <span class="size-3 rounded-sm {{ $label->dotClass() }}"></span>
-                                                            <span class="grow text-secondary-foreground">{{ $label->name }}</span>
-                                                            @if ($card->labels->contains('id', $label->id))
-                                                                <i class="ki-filled ki-check text-sm text-primary"></i>
+                                                                aria-pressed="{{ $labelOn ? 'true' : 'false' }}"
+                                                                class="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-start hover:bg-accent/60 {{ $labelOn ? 'bg-accent/60' : '' }}">
+                                                            <span class="size-3 rounded-sm shrink-0 {{ $label->dotClass() }}"></span>
+                                                            <span class="grow min-w-0 truncate text-secondary-foreground">{{ $label->name }}</span>
+                                                            @if ($labelOn)
+                                                                <i class="ki-filled ki-check text-sm text-primary shrink-0"></i>
                                                             @endif
                                                         </button>
                                                     @empty
@@ -611,8 +666,11 @@ class extends Component
                                         </div>
                                     </td>
                                     <td>
-                                        <div class="relative">
-                                            <button wire:click="togglePicker({{ $placement->id }}, 'members')" class="flex items-center gap-1 min-h-[24px]">
+                                        <div class="relative" wire:keydown.escape="closePicker">
+                                            <button wire:click="togglePicker({{ $placement->id }}, 'members')"
+                                                    aria-label="Members on {{ $card->title }}" aria-haspopup="true"
+                                                    aria-expanded="{{ $pickerPlacementId === $placement->id && $pickerType === 'members' ? 'true' : 'false' }}"
+                                                    class="flex flex-wrap items-center gap-1 min-h-[24px] max-w-[160px] text-start">
                                                 @forelse ($card->members as $member)
                                                     <span class="size-6 rounded-full grid place-items-center text-[10px] font-semibold bg-primary/15 text-primary"
                                                           title="{{ $member->name }}">{{ $member->initials() }}</span>
@@ -623,12 +681,14 @@ class extends Component
                                             <div class="kt-dropdown absolute z-20 mt-1 end-0 w-[220px] {{ $pickerPlacementId === $placement->id && $pickerType === 'members' ? 'open' : '' }}">
                                                 <div class="p-2 flex flex-col gap-1">
                                                     @forelse ($members as $member)
+                                                        @php($memberOn = $card->members->contains('id', $member->id))
                                                         <button wire:click="toggleMember({{ $placement->id }}, {{ $member->id }})" wire:key="tm-{{ $placement->id }}-{{ $member->id }}"
-                                                                class="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-start hover:bg-accent/60">
-                                                            <span class="size-6 rounded-full grid place-items-center text-[10px] font-semibold bg-primary/15 text-primary">{{ $member->initials() }}</span>
-                                                            <span class="grow text-secondary-foreground">{{ $member->name }}</span>
-                                                            @if ($card->members->contains('id', $member->id))
-                                                                <i class="ki-filled ki-check text-sm text-primary"></i>
+                                                                aria-pressed="{{ $memberOn ? 'true' : 'false' }}"
+                                                                class="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-start hover:bg-accent/60 {{ $memberOn ? 'bg-accent/60' : '' }}">
+                                                            <span class="size-6 rounded-full grid place-items-center text-[10px] font-semibold bg-primary/15 text-primary shrink-0">{{ $member->initials() }}</span>
+                                                            <span class="grow min-w-0 truncate text-secondary-foreground">{{ $member->name }}</span>
+                                                            @if ($memberOn)
+                                                                <i class="ki-filled ki-check text-sm text-primary shrink-0"></i>
                                                             @endif
                                                         </button>
                                                     @empty
@@ -656,23 +716,37 @@ class extends Component
                 </div>
             </div>
 
-            @if ($rows->hasPages())
-                <div class="kt-card-footer flex items-center justify-between gap-3">
-                    <span class="text-xs text-muted-foreground">{{ $totalRows }} rows across {{ $totalCards }} cards.</span>
-                    <div class="flex items-center gap-2">
-                        <button wire:click="goToCursor('{{ $rows->previousCursor()?->encode() }}')"
-                                wire:loading.attr="disabled" wire:target="goToCursor"
-                                @disabled($rows->onFirstPage())
-                                class="kt-btn kt-btn-sm kt-btn-outline gap-1.5 disabled:opacity-40">
-                            <i class="ki-filled ki-black-left text-xs"></i> Newer
-                        </button>
-                        <button wire:click="goToCursor('{{ $rows->nextCursor()?->encode() }}')"
-                                wire:loading.attr="disabled" wire:target="goToCursor"
-                                @disabled(! $rows->hasMorePages())
-                                class="kt-btn kt-btn-sm kt-btn-outline gap-1.5 disabled:opacity-40">
-                            Older <i class="ki-filled ki-arrow-right text-xs"></i>
-                        </button>
-                    </div>
+            {{--
+                The footer used to be gated on `hasPages()` alone, which is
+                false for any board that fits on one page — so the row count,
+                the one place the table says how big it is, appeared only once
+                a board grew past 25 rows and never below it. The count is now
+                tied to there being rows to count, and the two buttons to there
+                being somewhere to go: an empty board says nothing rather than
+                "0 rows across 0 cards" under an empty state that already said
+                it better.
+            --}}
+            @if ($totalRows > 0)
+                <div class="kt-card-footer flex flex-wrap items-center justify-between gap-3">
+                    <span class="text-xs text-muted-foreground">
+                        {{ $totalRows }} {{ str('row')->plural($totalRows) }} across {{ $totalCards }} {{ str('card')->plural($totalCards) }}.
+                    </span>
+                    @if ($rows->hasPages())
+                        <div class="flex items-center gap-2">
+                            <button wire:click="goToCursor('{{ $rows->previousCursor()?->encode() }}')"
+                                    wire:loading.attr="disabled" wire:target="goToCursor"
+                                    @disabled($rows->onFirstPage())
+                                    class="kt-btn kt-btn-sm kt-btn-outline gap-1.5 disabled:opacity-40">
+                                <i class="ki-filled ki-black-left text-xs"></i> Newer
+                            </button>
+                            <button wire:click="goToCursor('{{ $rows->nextCursor()?->encode() }}')"
+                                    wire:loading.attr="disabled" wire:target="goToCursor"
+                                    @disabled(! $rows->hasMorePages())
+                                    class="kt-btn kt-btn-sm kt-btn-outline gap-1.5 disabled:opacity-40">
+                                Older <i class="ki-filled ki-black-right text-xs"></i>
+                            </button>
+                        </div>
+                    @endif
                 </div>
             @endif
         </div>

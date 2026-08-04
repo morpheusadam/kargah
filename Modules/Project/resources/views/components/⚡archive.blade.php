@@ -606,23 +606,36 @@ class extends Component
                                     @php($restore = 'restore'.ucfirst($row['kind']))
                                     @php($delete = 'delete'.ucfirst($row['kind']))
 
+                                    {{-- `wire:target` carries the row id as well as the method: named
+                                         by method alone, one click put every row in the table into
+                                         its "Restoring…" state at once. --}}
                                     <div class="inline-flex items-center gap-1">
                                         <button wire:click="{{ $restore }}({{ $row['id'] }})"
-                                                wire:loading.attr="disabled" wire:target="{{ $restore }}"
-                                                class="kt-btn kt-btn-sm kt-btn-outline gap-1">
-                                            <span wire:loading.remove wire:target="{{ $restore }}" class="inline-flex items-center gap-1">
+                                                wire:loading.attr="disabled" wire:target="{{ $restore }}({{ $row['id'] }})"
+                                                class="kt-btn kt-btn-sm kt-btn-outline gap-1"
+                                                aria-label="Restore {{ $row['title'] }}">
+                                            <span wire:loading.remove wire:target="{{ $restore }}({{ $row['id'] }})" class="inline-flex items-center gap-1">
                                                 <i class="ki-filled ki-arrow-circle-left text-sm"></i> Restore
                                             </span>
-                                            <span wire:loading wire:target="{{ $restore }}" class="inline-flex items-center gap-1">
+                                            <span wire:loading wire:target="{{ $restore }}({{ $row['id'] }})" class="inline-flex items-center gap-1">
                                                 <i class="ki-filled ki-loading animate-spin"></i> Restoring…
                                             </span>
                                         </button>
 
+                                        {{-- The only unguarded step on this page was this one: a single
+                                             click took a board and everything under it out of the
+                                             application with nothing to stop a mis-aim. --}}
                                         <button wire:click="{{ $delete }}({{ $row['id'] }})"
-                                                wire:loading.attr="disabled" wire:target="{{ $delete }}"
+                                                wire:confirm="Delete {{ $row['title'] }}?&#10;&#10;{{ $row['kind'] === 'card' ? 'It leaves the archive, and nothing in Kargah brings it back.' : 'Every list and card on it goes too. It leaves the archive, and nothing in Kargah brings it back.' }}"
+                                                wire:loading.attr="disabled" wire:target="{{ $delete }}({{ $row['id'] }})"
                                                 class="kt-btn kt-btn-sm kt-btn-ghost text-destructive gap-1"
                                                 title="Delete {{ $row['title'] }}" aria-label="Delete {{ $row['title'] }}">
-                                            <i class="ki-filled ki-trash text-sm"></i> Delete
+                                            <span wire:loading.remove wire:target="{{ $delete }}({{ $row['id'] }})" class="inline-flex items-center gap-1">
+                                                <i class="ki-filled ki-trash text-sm"></i> Delete
+                                            </span>
+                                            <span wire:loading wire:target="{{ $delete }}({{ $row['id'] }})" class="inline-flex items-center gap-1">
+                                                <i class="ki-filled ki-loading animate-spin"></i> Deleting…
+                                            </span>
                                         </button>
                                     </div>
                                 </td>

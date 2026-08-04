@@ -269,17 +269,22 @@ class extends Component
                 </p>
             </div>
 
-            <div class="relative">
-                <button wire:click="toggleBoardPicker" class="kt-btn kt-btn-outline gap-2">
+            {{-- Escape on the wrapper, so the keystroke lands while the trigger still holds focus. --}}
+            <div class="relative" wire:keydown.escape="dismissPanels">
+                <button wire:click="toggleBoardPicker" class="kt-btn kt-btn-outline gap-2"
+                        aria-haspopup="true" aria-expanded="{{ $boardPickerOpen ? 'true' : 'false' }}">
                     <i class="ki-filled ki-down text-xs"></i> Switch board
                 </button>
                 <div class="kt-dropdown absolute z-20 mt-1 w-[220px] {{ $boardPickerOpen ? 'open' : '' }}">
                     <div class="p-2 flex flex-col gap-1">
                         @forelse ($boards as $b)
+                            {{-- `min-w-0` plus a `truncate` span: `kt-btn` is nowrap and does not clip. --}}
                             <button wire:click="selectBoard('{{ $b->slug }}')" wire:key="dash-pick-{{ $b->id }}"
-                                    class="kt-btn kt-btn-ghost justify-start gap-2 w-full {{ $b->slug === $activeBoard ? 'bg-accent/60' : '' }}">
-                                <span class="size-2.5 rounded-full {{ $b->dotClass() }}"></span>
-                                {{ $b->name }}
+                                    wire:loading.attr="disabled" wire:target="selectBoard"
+                                    title="{{ $b->name }}"
+                                    class="kt-btn kt-btn-ghost justify-start gap-2 w-full min-w-0 {{ $b->slug === $activeBoard ? 'bg-accent/60' : '' }}">
+                                <span class="size-2.5 rounded-full shrink-0 {{ $b->dotClass() }}"></span>
+                                <span class="truncate">{{ $b->name }}</span>
                             </button>
                         @empty
                             <p class="text-xs text-muted-foreground px-2 py-3 text-center">No boards yet.</p>
@@ -289,8 +294,8 @@ class extends Component
             </div>
         </div>
 
-        {{-- Views. ⚡boards.blade.php needs the matching switcher added by whoever owns it. --}}
-        <div class="flex items-center gap-1">
+        {{-- Views. Five pills since Activity landed — `flex-wrap` so they fold rather than overflow a narrow window. --}}
+        <div class="flex flex-wrap items-center justify-end gap-1">
             <a href="{{ route('projects.boards', ['board' => $activeBoard]) }}" wire:navigate class="kt-btn kt-btn-sm kt-btn-ghost gap-1.5">
                 <i class="ki-filled ki-row-horizontal text-sm"></i> Board
             </a>
@@ -321,9 +326,17 @@ class extends Component
                          data-categories="{{ json_encode($listChart['categories']) }}"
                          data-series="{{ json_encode($listChart['series']) }}"></div>
                 @else
+                    {{--
+                        Two different nothings. A board with lists but no cards
+                        was being told "No lists to count yet" while four named
+                        lists sat on the canvas next door, which reads as the
+                        page having lost them rather than as an empty board.
+                    --}}
                     <div class="flex flex-col items-center py-12 text-center">
                         <i class="ki-filled ki-row-horizontal text-3xl text-muted-foreground mb-3"></i>
-                        <p class="text-sm text-secondary-foreground">No lists to count yet.</p>
+                        <p class="text-sm text-secondary-foreground">
+                            {{ $listChart['categories'] === [] ? 'No lists on this board yet.' : 'Nothing in these lists yet.' }}
+                        </p>
                     </div>
                 @endif
             </div>
@@ -355,8 +368,17 @@ class extends Component
             <div class="kt-card-content p-4 flex flex-col gap-3">
                 @forelse ($perMember as $row)
                     <div class="flex items-center gap-3">
+                        {{--
+                            First and last initial, capped at two, which is what
+                            `User::initials()` returns everywhere else in Kargah.
+                            One letter per word overflowed the 28px circle the
+                            moment somebody had a middle name.
+                        --}}
                         <span class="size-7 rounded-full grid place-items-center text-[10px] font-semibold bg-primary/15 text-primary shrink-0">
-                            {{ collect(explode(' ', $row->name))->map(fn ($p) => mb_substr($p, 0, 1))->join('') }}
+                            @php($parts = preg_split('/\s+/', trim((string) $row->name)) ?: [])
+                            {{ count($parts) >= 2
+                                ? mb_strtoupper(mb_substr($parts[0], 0, 1).mb_substr($parts[count($parts) - 1], 0, 1))
+                                : mb_strtoupper(mb_substr((string) $row->name, 0, 2)) }}
                         </span>
                         <span class="text-sm text-secondary-foreground w-[120px] truncate">{{ $row->name }}</span>
                         <div class="grow h-2 rounded-full bg-muted overflow-hidden">

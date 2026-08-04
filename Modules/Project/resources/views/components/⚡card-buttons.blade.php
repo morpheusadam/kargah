@@ -95,7 +95,14 @@ new class extends Component
 
 ?>
 
-<div>
+{{--
+    `contents` on the root, so that on a board with no card buttons this
+    component leaves no trace at all. Livewire always renders the root element;
+    the card back stacks its sections with `flex flex-col gap-*`, and an empty
+    block-level div is still a flex item, so without this the drawer showed a
+    gap of blank space where the Butler section would have been.
+--}}
+<div class="contents">
     @if ($buttons->isNotEmpty())
         <div class="flex flex-col gap-3">
             <div class="flex items-center gap-2">
@@ -105,11 +112,21 @@ new class extends Component
 
             <div class="flex flex-wrap gap-2">
                 @foreach ($buttons as $button)
+                    {{--
+                        `min-w-0 max-w-full` plus a `truncate` span: `kt-btn` is
+                        `white-space: nowrap` and never clips, so a button named
+                        after the sentence it runs would push out of the drawer.
+                        The full name stays reachable in `title`.
+                    --}}
                     <button wire:click="press({{ $button->id }})" wire:key="butler-card-button-{{ $button->id }}"
                             wire:loading.attr="disabled" wire:target="press({{ $button->id }})"
-                            class="kt-btn kt-btn-sm kt-btn-outline gap-1.5">
-                        <i class="{{ $button->iconClass() }} text-sm"></i>
-                        {{ $button->name }}
+                            title="{{ $button->name }}"
+                            class="kt-btn kt-btn-sm kt-btn-outline gap-1.5 min-w-0 max-w-full">
+                        <i class="{{ $button->iconClass() }} text-sm shrink-0"
+                           wire:loading.remove wire:target="press({{ $button->id }})"></i>
+                        <i class="ki-filled ki-loading animate-spin text-sm shrink-0"
+                           wire:loading wire:target="press({{ $button->id }})"></i>
+                        <span class="truncate">{{ $button->name }}</span>
                     </button>
                 @endforeach
             </div>

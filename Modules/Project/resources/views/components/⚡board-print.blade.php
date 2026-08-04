@@ -133,6 +133,30 @@ class extends Component
             background: #fff;
             font-size: 13px;
             line-height: 1.45;
+            /* Paper has no horizontal scrollbar. A card title with a long
+               unbroken token in it — a URL, a branch name, a file path — runs
+               off the right margin and is simply not printed, so every box on
+               this page is told to break inside a word rather than overflow. */
+            overflow-wrap: break-word;
+            word-wrap: break-word;
+        }
+
+        /* A description is user markdown: it can contain an image, a fenced
+           code block or a table, none of which know how wide the paper is. */
+        .kargah-print img {
+            max-width: 100%;
+            height: auto;
+        }
+
+        .kargah-print pre {
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .kargah-print table {
+            width: 100%;
+            table-layout: fixed;
+            border-collapse: collapse;
         }
 
         .kargah-print h1,
@@ -204,9 +228,14 @@ class extends Component
 
         .kargah-print-list-head h2 {
             font-size: 14px;
+            /* A flex item will not shrink below its content unless told to, so
+               without this a long list name pushes the count off the sheet. */
+            min-width: 0;
         }
 
         .kargah-print-count {
+            flex: none;
+            white-space: nowrap;
             font-size: 11px;
             color: #444;
         }

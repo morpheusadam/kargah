@@ -162,7 +162,11 @@ class extends Component
                 'placements.list.board',
                 'labels',
                 'members',
-                'checklists.items',
+                // `.assignee` and not just `.items`: every item row draws the
+                // avatar of whoever is carrying it, so without this a
+                // twenty-line checklist is twenty queries the drawer did not
+                // have to make.
+                'checklists.items.assignee',
                 'comments.author',
                 // The grouped chips need every row, and the tooltip on each
                 // chip needs the name behind it — one load for both, rather
@@ -459,15 +463,7 @@ class extends Component
 
         $this->editingTitle = false;
         $this->editingDescription = false;
-        $this->labelPopoverOpen = false;
-        $this->memberPopoverOpen = false;
-        $this->startPopoverOpen = false;
-        $this->duePopoverOpen = false;
-        $this->movePopoverOpen = false;
-        $this->mirrorPopoverOpen = false;
-        $this->coverPopoverOpen = false;
-        $this->votersPopoverOpen = false;
-        $this->reactionPickerFor = null;
+        $this->closePopovers();
         $this->mentionOpen = false;
         $this->itemEditing = null;
         $this->mirrorBoard = (string) ($card->list?->board_id ?? '');
@@ -496,6 +492,13 @@ class extends Component
         $this->hydrateFrom($card);
 
         $this->open = true;
+
+        // The drawer is `aria-modal`, so the focus has to follow it in. Without
+        // this the focus stays on the board underneath, which means `Escape`
+        // never reaches the panel and a keyboard user is still tabbing through
+        // the page the drawer is covering. Handled by the script at the foot of
+        // this file.
+        $this->dispatch('card-drawer-opened');
     }
 
     /**
@@ -529,6 +532,27 @@ class extends Component
     public function close(): void
     {
         $this->open = false;
+        $this->closePopovers();
+        $this->mentionOpen = false;
+        $this->itemEditing = null;
+
+        // So the browser can put the focus back where it was before the drawer
+        // took it, rather than dropping it on `<body>` — see `openCard()`.
+        $this->dispatch('card-drawer-closed');
+    }
+
+    /**
+     * Shut every popover in the drawer.
+     *
+     * There are nine and exactly one may be open at a time: they overlap each
+     * other in the two rows they sit in, so a second one opening on top of the
+     * first is two panels fighting over the same few hundred pixels. The emoji
+     * picker used to sit outside this rule — it closed nothing and nothing
+     * closed it — which is how a reaction picker ended up open behind the
+     * cover picker with no way to tell which click belonged to which.
+     */
+    private function closePopovers(): void
+    {
         $this->labelPopoverOpen = false;
         $this->memberPopoverOpen = false;
         $this->startPopoverOpen = false;
@@ -538,8 +562,58 @@ class extends Component
         $this->coverPopoverOpen = false;
         $this->votersPopoverOpen = false;
         $this->reactionPickerFor = null;
+    }
+
+    private function aPopoverIsOpen(): bool
+    {
+        return $this->labelPopoverOpen
+            || $this->memberPopoverOpen
+            || $this->startPopoverOpen
+            || $this->duePopoverOpen
+            || $this->movePopoverOpen
+            || $this->mirrorPopoverOpen
+            || $this->coverPopoverOpen
+            || $this->votersPopoverOpen
+            || $this->reactionPickerFor !== null;
+    }
+
+    /**
+     * Escape, one layer at a time.
+     *
+     * The panel used to close on any Escape at all, so dismissing a date picker
+     * also threw away the card being read — and Escape typed into the title box
+     * or the description cancelled the edit *and* shut the drawer, because both
+     * handlers fire as the event bubbles. Escape now takes the top thing off:
+     * the mention list, then whatever popover is open, then the checklist item
+     * editor, and only when there is nothing left the drawer itself.
+     */
+    public function escape(): void
+    {
+        if ($this->mentionOpen) {
+            $this->mentionOpen = false;
+
+            return;
+        }
+
+        if ($this->aPopoverIsOpen()) {
+            $this->closePopovers();
+
+            return;
+        }
+
+        if ($this->itemEditing !== null) {
+            $this->itemEditing = null;
+
+            return;
+        }
+
+        $this->close();
+    }
+
+    /** Dismiss the `@` autocomplete, leaving what has been typed alone. */
+    public function closeMentions(): void
+    {
         $this->mentionOpen = false;
-        $this->itemEditing = null;
     }
 
     /* Title and description ---------------------------------------------- */
@@ -623,27 +697,17 @@ class extends Component
 
     public function toggleLabelPopover(): void
     {
-        $this->labelPopoverOpen = ! $this->labelPopoverOpen;
-        $this->memberPopoverOpen = false;
-        $this->startPopoverOpen = false;
-        $this->duePopoverOpen = false;
-        $this->movePopoverOpen = false;
-        $this->mirrorPopoverOpen = false;
-        $this->coverPopoverOpen = false;
-        $this->votersPopoverOpen = false;
+        $open = ! $this->labelPopoverOpen;
+        $this->closePopovers();
+        $this->labelPopoverOpen = $open;
     }
 
     /** Opening a picker is not worth announcing. */
     public function toggleMemberPopover(): void
     {
-        $this->memberPopoverOpen = ! $this->memberPopoverOpen;
-        $this->labelPopoverOpen = false;
-        $this->startPopoverOpen = false;
-        $this->duePopoverOpen = false;
-        $this->movePopoverOpen = false;
-        $this->mirrorPopoverOpen = false;
-        $this->coverPopoverOpen = false;
-        $this->votersPopoverOpen = false;
+        $open = ! $this->memberPopoverOpen;
+        $this->closePopovers();
+        $this->memberPopoverOpen = $open;
     }
 
     /**
@@ -763,14 +827,9 @@ class extends Component
 
     public function toggleStartPopover(): void
     {
-        $this->startPopoverOpen = ! $this->startPopoverOpen;
-        $this->labelPopoverOpen = false;
-        $this->memberPopoverOpen = false;
-        $this->duePopoverOpen = false;
-        $this->movePopoverOpen = false;
-        $this->mirrorPopoverOpen = false;
-        $this->coverPopoverOpen = false;
-        $this->votersPopoverOpen = false;
+        $open = ! $this->startPopoverOpen;
+        $this->closePopovers();
+        $this->startPopoverOpen = $open;
     }
 
     /**
@@ -842,19 +901,17 @@ class extends Component
         $this->toastSuccess('Start date removed', $card->title.' no longer has a start date.');
     }
 
+    /**
+     * `coverPopoverOpen` was once missing from this one toggle's list while
+     * every other toggle cleared it, and the emoji picker was missing from all
+     * nine. Both are why the closing is `closePopovers()` now rather than a
+     * hand-written list per method that has to be kept in step by hand.
+     */
     public function toggleDuePopover(): void
     {
-        $this->duePopoverOpen = ! $this->duePopoverOpen;
-        $this->labelPopoverOpen = false;
-        $this->memberPopoverOpen = false;
-        $this->startPopoverOpen = false;
-        $this->movePopoverOpen = false;
-        $this->mirrorPopoverOpen = false;
-        // `coverPopoverOpen` was missing from this one list while every other
-        // toggle cleared it — opening the due picker left the cover picker
-        // open behind it, and the two overlap in the same row.
-        $this->coverPopoverOpen = false;
-        $this->votersPopoverOpen = false;
+        $open = ! $this->duePopoverOpen;
+        $this->closePopovers();
+        $this->duePopoverOpen = $open;
     }
 
     /**
@@ -1423,14 +1480,9 @@ class extends Component
     /** Opening a list of names is not worth announcing. */
     public function toggleVotersPopover(): void
     {
-        $this->votersPopoverOpen = ! $this->votersPopoverOpen;
-        $this->labelPopoverOpen = false;
-        $this->memberPopoverOpen = false;
-        $this->startPopoverOpen = false;
-        $this->duePopoverOpen = false;
-        $this->movePopoverOpen = false;
-        $this->mirrorPopoverOpen = false;
-        $this->coverPopoverOpen = false;
+        $open = ! $this->votersPopoverOpen;
+        $this->closePopovers();
+        $this->votersPopoverOpen = $open;
     }
 
     /**
@@ -1476,9 +1528,17 @@ class extends Component
         $this->cardChanged();
     }
 
+    /**
+     * The ninth popover, and for a while the only one outside the rule: it
+     * closed nothing when it opened and nothing closed it, so an emoji picker
+     * left open on a comment stayed open behind the cover or label picker the
+     * next click opened.
+     */
     public function toggleReactionPicker(int $commentId): void
     {
-        $this->reactionPickerFor = $this->reactionPickerFor === $commentId ? null : $commentId;
+        $next = $this->reactionPickerFor === $commentId ? null : $commentId;
+        $this->closePopovers();
+        $this->reactionPickerFor = $next;
     }
 
     /**
@@ -1555,14 +1615,9 @@ class extends Component
 
     public function toggleMovePopover(): void
     {
-        $this->movePopoverOpen = ! $this->movePopoverOpen;
-        $this->labelPopoverOpen = false;
-        $this->memberPopoverOpen = false;
-        $this->startPopoverOpen = false;
-        $this->duePopoverOpen = false;
-        $this->mirrorPopoverOpen = false;
-        $this->coverPopoverOpen = false;
-        $this->votersPopoverOpen = false;
+        $open = ! $this->movePopoverOpen;
+        $this->closePopovers();
+        $this->movePopoverOpen = $open;
 
         if ($this->movePopoverOpen) {
             $this->moveToList = (string) ($this->card()?->originPlacement?->board_list_id ?? '');
@@ -1636,14 +1691,9 @@ class extends Component
     /** Opening a picker is not worth announcing. */
     public function toggleMirrorPopover(): void
     {
-        $this->mirrorPopoverOpen = ! $this->mirrorPopoverOpen;
-        $this->labelPopoverOpen = false;
-        $this->memberPopoverOpen = false;
-        $this->startPopoverOpen = false;
-        $this->duePopoverOpen = false;
-        $this->movePopoverOpen = false;
-        $this->coverPopoverOpen = false;
-        $this->votersPopoverOpen = false;
+        $open = ! $this->mirrorPopoverOpen;
+        $this->closePopovers();
+        $this->mirrorPopoverOpen = $open;
 
         if ($this->mirrorPopoverOpen) {
             $this->mirrorBoard = (string) ($this->card()?->list?->board_id ?? '');
@@ -1661,14 +1711,9 @@ class extends Component
 
     public function toggleCoverPopover(): void
     {
-        $this->coverPopoverOpen = ! $this->coverPopoverOpen;
-        $this->labelPopoverOpen = false;
-        $this->memberPopoverOpen = false;
-        $this->startPopoverOpen = false;
-        $this->duePopoverOpen = false;
-        $this->movePopoverOpen = false;
-        $this->mirrorPopoverOpen = false;
-        $this->votersPopoverOpen = false;
+        $open = ! $this->coverPopoverOpen;
+        $this->closePopovers();
+        $this->coverPopoverOpen = $open;
     }
 
     /**
@@ -1990,7 +2035,15 @@ class extends Component
 
 ?>
 
+{{--
+    `inert` while shut, not only `pointer-events-none`. The panel stays in the
+    DOM when it closes — it is slid off screen, not removed — and without
+    `inert` every button in it is still in the tab order, so a keyboard user
+    tabs into a dialog the screen reader has just been told is not there.
+    `inert` takes the whole subtree out of focus and hit testing at once.
+--}}
 <div class="fixed inset-0 z-50 overflow-hidden {{ $open ? '' : 'pointer-events-none' }}"
+     @if (! $open) inert @endif
      aria-hidden="{{ $open ? 'false' : 'true' }}">
 
     {{-- Backdrop --}}
@@ -2000,8 +2053,9 @@ class extends Component
     {{-- Slide-over --}}
     <aside class="absolute inset-y-0 end-0 w-full max-w-[760px] bg-background border-s border-border shadow-lg
                   flex flex-col transition-transform duration-200 ease-out {{ $open ? 'translate-x-0' : 'translate-x-full' }}"
+           id="card-drawer-panel"
            role="dialog" aria-modal="true" aria-label="Card detail" tabindex="-1"
-           wire:keydown.escape="close">
+           wire:keydown.escape="escape">
 
         @if ($card)
             {{-- Header --}}
@@ -2011,7 +2065,8 @@ class extends Component
                         <div class="flex flex-col gap-2">
                             <input type="text" class="kt-input @error('title') border-destructive @enderror"
                                    aria-label="Card title" wire:model="title"
-                                   wire:keydown.escape="cancelTitle" wire:keydown.enter.prevent="saveTitle" autofocus>
+                                   {{-- `.stop`, or the same Escape bubbles to the panel and shuts the drawer as well as cancelling the rename. --}}
+                                   wire:keydown.escape.stop="cancelTitle" wire:keydown.enter.prevent="saveTitle" autofocus>
                             @error('title')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
                             <div class="flex items-center gap-2">
                                 <button wire:click="saveTitle" wire:loading.attr="disabled" wire:target="saveTitle"
@@ -2080,7 +2135,8 @@ class extends Component
                                                     <i class="ki-filled ki-cross text-xs"></i>
                                                 </button>
                                             </div>
-                                            <div class="p-2 flex flex-col gap-1">
+                                            {{-- Capped and scrolled: a board's label list has no ceiling, and a popover taller than the drawer cannot be reached at the bottom. --}}
+                                            <div class="p-2 flex flex-col gap-1 max-h-[250px] overflow-y-auto">
                                                 @forelse ($labels as $label)
                                                     <button wire:click="toggleLabel({{ $label->id }})" wire:key="label-{{ $label->id }}"
                                                             class="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-start hover:bg-accent/60">
@@ -2196,7 +2252,7 @@ class extends Component
                                                     <i class="ki-filled ki-cross text-xs"></i>
                                                 </button>
                                             </div>
-                                            <div class="p-2 flex flex-col gap-1">
+                                            <div class="p-2 flex flex-col gap-1 max-h-[250px] overflow-y-auto">
                                                 @foreach ($members as $member)
                                                     <button wire:click="toggleMember({{ $member->id }})" wire:key="member-{{ $member->id }}"
                                                             class="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-start hover:bg-accent/60">
@@ -2252,9 +2308,10 @@ class extends Component
                                                         <i class="ki-filled ki-cross text-xs"></i>
                                                     </button>
                                                 </div>
-                                                <div class="p-2 flex flex-col gap-1">
+                                                {{-- Forty voters is forty rows: capped, or the list runs off the bottom of the drawer with no way to reach the end of it. --}}
+                                                <div class="p-2 flex flex-col gap-1 max-h-[250px] overflow-y-auto">
                                                     @foreach ($voters as $voter)
-                                                        <span class="px-2 py-1.5 text-sm text-secondary-foreground" wire:key="voter-{{ $voter['id'] }}">
+                                                        <span class="px-2 py-1.5 text-sm text-secondary-foreground break-words" wire:key="voter-{{ $voter['id'] }}">
                                                             {{ $voter['name'] }}
                                                         </span>
                                                     @endforeach
@@ -2391,9 +2448,10 @@ class extends Component
                                         @endforeach
                                         <span class="text-[11px] text-muted-foreground ms-auto pe-1">Markdown</span>
                                     </div>
+                                    {{-- `.stop` for the same reason the title box has it: Escape here cancelled the edit and closed the drawer behind it. --}}
                                     <textarea id="card-description" rows="7" class="kt-textarea border-0 rounded-none w-full"
                                               aria-label="Card description" wire:model="description"
-                                              wire:keydown.escape="cancelDescription"
+                                              wire:keydown.escape.stop="cancelDescription" autofocus
                                               placeholder="What has to be true before this card can move?"></textarea>
                                 </div>
                                 <div class="flex items-center gap-2">
@@ -2417,7 +2475,15 @@ class extends Component
                                             built out of `e()`-escaped names. No user byte reaches
                                             the page without passing the converter.
                                         --}}
-                                        <div class="text-sm text-secondary-foreground leading-relaxed [&_p]:mb-2 last:[&_p]:mb-0">{!! \Modules\Project\Support\Mentions::toHtml($card->description, $members) !!}</div>
+                                        {{--
+                                            `break-words` and `overflow-x-auto` because the content
+                                            is markdown somebody typed: a pasted URL is one unbroken
+                                            word that would otherwise widen the whole drawer, and a
+                                            fenced code block is a `<pre>` that never wraps. Prose
+                                            still wraps normally, so the scrollbar only appears for
+                                            the one thing that genuinely cannot.
+                                        --}}
+                                        <div class="text-sm text-secondary-foreground leading-relaxed break-words overflow-x-auto [&_p]:mb-2 last:[&_p]:mb-0">{!! \Modules\Project\Support\Mentions::toHtml($card->description, $members) !!}</div>
                                     @else
                                         <span class="text-sm text-muted-foreground">Add a more detailed description…</span>
                                     @endif
@@ -2480,7 +2546,8 @@ class extends Component
                                                    wire:click="toggleChecklistItem({{ $item->id }})"
                                                    @checked($item->is_done)>
                                             <label for="check-{{ $item->id }}"
-                                                   class="grow text-sm cursor-pointer {{ $item->is_done ? 'text-muted-foreground line-through' : 'text-secondary-foreground' }}">
+                                                   {{-- `min-w-0` so a long line shrinks instead of shoving the avatar, the due badge and both buttons off the row; `break-words` for the one that is a single unbroken string. --}}
+                                                   class="grow min-w-0 break-words text-sm cursor-pointer {{ $item->is_done ? 'text-muted-foreground line-through' : 'text-secondary-foreground' }}">
                                                 {{ $item->text }}
                                             </label>
 
@@ -2655,7 +2722,7 @@ class extends Component
                                             <span class="text-xs text-muted-foreground">{{ $comment->created_at?->format('j M, H:i') }}</span>
                                         </div>
                                         {{-- The same sanitising renderer as the description, for the same reason: a comment is user input too. --}}
-                                        <div class="text-sm text-secondary-foreground mt-1 rounded-lg bg-muted/40 border border-border px-3 py-2 [&_p]:mb-2 last:[&_p]:mb-0">
+                                        <div class="text-sm text-secondary-foreground mt-1 rounded-lg bg-muted/40 border border-border px-3 py-2 break-words overflow-x-auto [&_p]:mb-2 last:[&_p]:mb-0">
                                             {!! \Modules\Project\Support\Mentions::toHtml($comment->body, $members) !!}
                                         </div>
 
@@ -2848,10 +2915,23 @@ class extends Component
                             trailing token stops looking like a mention.
                         --}}
                         <textarea rows="2" class="kt-textarea" placeholder="Write a comment… type @ to mention somebody"
-                                  aria-label="New comment" wire:model.live.debounce.400ms="newComment"></textarea>
+                                  aria-label="New comment" wire:model.live.debounce.400ms="newComment"
+                                  {{-- `.stop` so dismissing the suggestion list does not also close the drawer and lose the half-written comment. --}}
+                                  wire:keydown.escape.stop="closeMentions"></textarea>
 
                         @if ($mentionSuggestions->isNotEmpty())
-                            <div class="kt-dropdown open absolute z-30 bottom-full mb-1 start-0 w-[260px] p-1"
+                            {{--
+                                `bottom: 100%` as an inline style, and `z-20` rather than `z-30`.
+                                Both of the classes that used to do this — `bottom-full` and
+                                `z-30` — are absent from the compiled sheet, so the list had no
+                                offset and no stacking order at all: it rendered at its static
+                                position, directly over the Comment button underneath it, and
+                                clicking a name hit whatever painted last. `z-20` is the value
+                                every other popover in this file uses and is in the sheet;
+                                `bottom-full` has no compiled equivalent, so it is written out.
+                            --}}
+                            <div class="kt-dropdown open absolute z-20 mb-1 start-0 w-[260px] p-1"
+                                 style="bottom: 100%;"
                                  role="listbox" aria-label="People you can mention">
                                 @foreach ($mentionSuggestions as $person)
                                     <button wire:click="insertMention({{ $person->id }})" wire:key="mention-{{ $person->id }}"
@@ -2928,6 +3008,53 @@ class extends Component
             textarea.dispatchEvent(new Event('input', { bubbles: true }));
             textarea.focus();
             textarea.setSelectionRange(caret, caret);
+        });
+    })();
+
+    /*
+     * Where the focus goes when the drawer opens and closes.
+     *
+     * The panel is `role="dialog" aria-modal="true"`, but nothing was moving
+     * the focus into it, so `wire:keydown.escape` on the panel never fired for
+     * anybody who had opened the card with the mouse — the key went to whatever
+     * still had the focus on the board behind. Focusing the panel fixes Escape
+     * and puts a keyboard user inside the dialog rather than behind it.
+     *
+     * The element to come back to is remembered as it is focused rather than
+     * read when the drawer opens: by then the round trip has been and gone and
+     * Livewire's morph may have replaced the node that was clicked.
+     *
+     * `setTimeout` and not `requestAnimationFrame`, because the panel is
+     * `inert` while shut and `focus()` on an inert subtree is silently ignored;
+     * a task boundary guarantees the morph that drops the attribute has run.
+     */
+    (function initCardDrawerFocus() {
+        if (window.kargahCardDrawerFocus) return;
+        window.kargahCardDrawerFocus = true;
+
+        var returnTo = null;
+
+        var panel = function () { return document.getElementById('card-drawer-panel'); };
+
+        document.addEventListener('focusin', function (event) {
+            var el = panel();
+            if (el && el.contains(event.target)) return;
+            returnTo = event.target;
+        });
+
+        window.addEventListener('card-drawer-opened', function () {
+            setTimeout(function () {
+                var el = panel();
+                if (el) el.focus();
+            }, 0);
+        });
+
+        window.addEventListener('card-drawer-closed', function () {
+            setTimeout(function () {
+                if (returnTo && returnTo.isConnected && typeof returnTo.focus === 'function') {
+                    returnTo.focus();
+                }
+            }, 0);
         });
     })();
 </script>

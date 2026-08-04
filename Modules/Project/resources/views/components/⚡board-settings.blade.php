@@ -1743,10 +1743,20 @@ class extends Component
 
                         @if ($backgroundPhoto)
                             <div class="flex items-center gap-3">
-                                <span class="text-sm text-mono truncate">{{ $backgroundPhoto['name'] }}</span>
-                                <button wire:click="removeBackgroundPhoto" wire:loading.attr="disabled" wire:target="removeBackgroundPhoto"
-                                        class="kt-btn kt-btn-sm kt-btn-ghost text-destructive gap-1">
-                                    <i class="ki-filled ki-trash text-sm"></i> Remove
+                                {{-- `truncate` alone does nothing to a flex child: its default
+                                     `min-width: auto` refuses to shrink, so a long file name
+                                     pushed the Remove button off the card instead of ellipsing. --}}
+                                <span class="text-sm text-mono truncate min-w-0" title="{{ $backgroundPhoto['name'] }}">{{ $backgroundPhoto['name'] }}</span>
+                                <button wire:click="removeBackgroundPhoto"
+                                        wire:confirm="Remove the background photo from {{ $record->name }}?"
+                                        wire:loading.attr="disabled" wire:target="removeBackgroundPhoto"
+                                        class="kt-btn kt-btn-sm kt-btn-ghost text-destructive gap-1 shrink-0">
+                                    <span wire:loading.remove wire:target="removeBackgroundPhoto" class="inline-flex items-center gap-1">
+                                        <i class="ki-filled ki-trash text-sm"></i> Remove
+                                    </span>
+                                    <span wire:loading wire:target="removeBackgroundPhoto" class="inline-flex items-center gap-1">
+                                        <i class="ki-filled ki-loading animate-spin"></i> Removing…
+                                    </span>
                                 </button>
                             </div>
                         @endif
@@ -1825,9 +1835,13 @@ class extends Component
 
                                     <div class="flex items-center gap-1.5">
                                         @foreach ($labelColours as $colourKey => $option)
+                                            {{-- `aria-pressed`, not just a border: the ring around the
+                                                 chosen swatch is the only thing that said which colour
+                                                 was picked, and a ring is not readable aloud. --}}
                                             <button wire:click="$set('labelColourDraft', '{{ $colourKey }}')"
                                                     wire:key="draft-{{ $label->id }}-{{ $colourKey }}"
                                                     class="size-6 rounded-md {{ $option['dot'] }} border-2 {{ $labelColourDraft === $colourKey ? 'border-mono' : 'border-transparent' }}"
+                                                    aria-pressed="{{ $labelColourDraft === $colourKey ? 'true' : 'false' }}"
                                                     title="{{ $option['name'] }}" aria-label="Use {{ $option['name'] }}"></button>
                                         @endforeach
                                     </div>
@@ -1851,8 +1865,14 @@ class extends Component
                                         <button wire:click="startEditLabel({{ $label->id }})" class="kt-btn kt-btn-sm kt-btn-ghost gap-1">
                                             <i class="ki-filled ki-pencil text-sm"></i> Edit
                                         </button>
-                                        <button wire:click="deleteLabel({{ $label->id }})" wire:loading.attr="disabled" wire:target="deleteLabel"
-                                                class="kt-btn kt-btn-sm kt-btn-ghost text-destructive gap-1">
+                                        {{-- Irreversible, and it comes off every card wearing it —
+                                             the one destructive control in this card that asked
+                                             nothing before doing it. --}}
+                                        <button wire:click="deleteLabel({{ $label->id }})"
+                                                wire:confirm="Delete the {{ $label->name }} label?&#10;&#10;{{ $label->cards_count === 0 ? 'No card is wearing it.' : 'It comes off '.$label->cards_count.' '.($label->cards_count === 1 ? 'card' : 'cards').'.' }}"
+                                                wire:loading.attr="disabled" wire:target="deleteLabel({{ $label->id }})"
+                                                class="kt-btn kt-btn-sm kt-btn-ghost text-destructive gap-1"
+                                                aria-label="Delete the {{ $label->name }} label">
                                             <i class="ki-filled ki-trash text-sm"></i> Delete
                                         </button>
                                     </div>
@@ -1875,7 +1895,8 @@ class extends Component
                                 <button wire:click="$set('newLabelColour', '{{ $colourKey }}')"
                                         wire:key="new-{{ $colourKey }}"
                                         class="size-6 rounded-md {{ $option['dot'] }} border-2 {{ $newLabelColour === $colourKey ? 'border-mono' : 'border-transparent' }}"
-                                        title="{{ $option['name'] }}" aria-label="Use {{ $option['name'] }}"></button>
+                                        aria-pressed="{{ $newLabelColour === $colourKey ? 'true' : 'false' }}"
+                                        title="{{ $option['name'] }}" aria-label="Use {{ $option['name'] }} for the new label"></button>
                             @endforeach
                         </div>
                         <button wire:click="createLabel" wire:loading.attr="disabled" wire:target="createLabel"
@@ -1982,9 +2003,13 @@ class extends Component
                                                             class="text-xs text-mono hover:text-primary" title="Rename {{ $option['label'] }}">
                                                         {{ $option['label'] }}
                                                     </button>
+                                                    {{-- Deleting the field asks twice; deleting one of its
+                                                         options used to go on a single click, and it takes
+                                                         that option off every card already carrying it. --}}
                                                     <button wire:click="deleteOption({{ $field->id }}, {{ $option['id'] }})"
+                                                            wire:confirm="Remove {{ $option['label'] }} from {{ $field->name }}?&#10;&#10;Cards already carrying it will show no value."
                                                             class="kt-btn kt-btn-icon kt-btn-sm kt-btn-ghost text-destructive"
-                                                            title="Remove {{ $option['label'] }}" aria-label="Remove {{ $option['label'] }}">
+                                                            title="Remove {{ $option['label'] }}" aria-label="Remove {{ $option['label'] }} from {{ $field->name }}">
                                                         <i class="ki-filled ki-cross text-[10px]"></i>
                                                     </button>
                                                 @endif

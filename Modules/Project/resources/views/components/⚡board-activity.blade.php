@@ -537,16 +537,29 @@ class extends Component
                 unrelated write. See docs/frontend-conventions.md.
             --}}
             <div class="relative">
-                <button wire:click="toggleBoardPicker" class="kt-btn kt-btn-outline gap-2">
+                <button wire:click="toggleBoardPicker" class="kt-btn kt-btn-outline gap-2"
+                        aria-haspopup="true" aria-expanded="{{ $boardPickerOpen ? 'true' : 'false' }}">
                     <i class="ki-filled ki-down text-xs"></i> Switch board
                 </button>
-                <div class="kt-dropdown absolute z-20 mt-1 w-[220px] {{ $boardPickerOpen ? 'open' : '' }}">
+                {{--
+                    Escape closes it, the same way the canvas filter panel does.
+                    The handler sits on the panel rather than the window because
+                    the keystroke bubbles up from whichever row has focus, and a
+                    window listener would fire for every other Escape on the page.
+                --}}
+                <div class="kt-dropdown absolute z-20 mt-1 w-[220px] {{ $boardPickerOpen ? 'open' : '' }}"
+                     wire:keydown.escape="closeBoardPicker">
                     <div class="p-2 flex flex-col gap-1">
                         @forelse ($boards as $b)
+                            {{-- `min-w-0` plus a `truncate` span: `kt-btn` is `white-space: nowrap`
+                                 and does not clip, so a long board name would otherwise run
+                                 straight out of the 220px panel. --}}
                             <button wire:click="selectBoard('{{ $b->slug }}')" wire:key="activity-pick-{{ $b->id }}"
-                                    class="kt-btn kt-btn-ghost justify-start gap-2 w-full {{ $b->slug === $activeBoard ? 'bg-accent/60' : '' }}">
-                                <span class="size-2.5 rounded-full {{ $b->dotClass() }}"></span>
-                                {{ $b->name }}
+                                    wire:loading.attr="disabled" wire:target="selectBoard"
+                                    title="{{ $b->name }}"
+                                    class="kt-btn kt-btn-ghost justify-start gap-2 w-full min-w-0 {{ $b->slug === $activeBoard ? 'bg-accent/60' : '' }}">
+                                <span class="size-2.5 rounded-full shrink-0 {{ $b->dotClass() }}"></span>
+                                <span class="truncate">{{ $b->name }}</span>
                             </button>
                         @empty
                             <p class="text-xs text-muted-foreground px-2 py-3 text-center">No boards yet.</p>
@@ -580,20 +593,29 @@ class extends Component
         <div class="kt-card-header flex-wrap gap-3">
             <h3 class="kt-card-title">History</h3>
 
-            <div class="flex items-center gap-1">
-                <button wire:click="filterByLog('')"
+            {{--
+                Which one is on is carried twice: in the fill, for anyone who
+                can see it, and in `aria-pressed`, for anyone who cannot. A
+                colour on its own is not a state a screen reader can read out.
+            --}}
+            <div class="flex items-center gap-1" role="group" aria-label="Filter activity by what it happened to">
+                <button wire:click="filterByLog('')" aria-pressed="{{ $logName === '' ? 'true' : 'false' }}"
+                        wire:loading.attr="disabled" wire:target="filterByLog"
                         class="kt-btn kt-btn-sm {{ $logName === '' ? 'kt-btn-primary' : 'kt-btn-ghost' }}">
                     Everything
                 </button>
-                <button wire:click="filterByLog('card')"
+                <button wire:click="filterByLog('card')" aria-pressed="{{ $logName === 'card' ? 'true' : 'false' }}"
+                        wire:loading.attr="disabled" wire:target="filterByLog"
                         class="kt-btn kt-btn-sm {{ $logName === 'card' ? 'kt-btn-primary' : 'kt-btn-ghost' }}">
                     Cards
                 </button>
-                <button wire:click="filterByLog('list')"
+                <button wire:click="filterByLog('list')" aria-pressed="{{ $logName === 'list' ? 'true' : 'false' }}"
+                        wire:loading.attr="disabled" wire:target="filterByLog"
                         class="kt-btn kt-btn-sm {{ $logName === 'list' ? 'kt-btn-primary' : 'kt-btn-ghost' }}">
                     Lists
                 </button>
-                <button wire:click="filterByLog('board')"
+                <button wire:click="filterByLog('board')" aria-pressed="{{ $logName === 'board' ? 'true' : 'false' }}"
+                        wire:loading.attr="disabled" wire:target="filterByLog"
                         class="kt-btn kt-btn-sm {{ $logName === 'board' ? 'kt-btn-primary' : 'kt-btn-ghost' }}">
                     Board
                 </button>
@@ -602,10 +624,18 @@ class extends Component
 
         @island(name: 'feed')
         <div>
-            <div class="kt-card-content p-0">
+            {{--
+                `divide-y divide-border` rather than a `border-b` on every row
+                with `last:border-b-0` to undo the last one: that variant is not
+                in the compiled sheet, so the last row kept a border it should
+                not have, doubled up against the card edge. `divide-y` is the
+                rule every other feed in this app uses and it is compiled.
+            --}}
+            <div class="kt-card-content p-0 divide-y divide-border"
+                 wire:loading.class="opacity-50" wire:target="filterByLog,selectBoard,goToCursor">
                 @forelse ($entries as $entry)
                     <div wire:key="activity-{{ $entry['id'] }}"
-                         class="flex items-start gap-3 px-5 py-3 border-b border-border last:border-b-0"
+                         class="flex items-start gap-3 px-5 py-3"
                          style="content-visibility: auto; contain-intrinsic-size: auto 56px;">
                         <span class="size-8 rounded-full grid place-items-center text-[11px] font-semibold shrink-0 bg-primary/15 text-primary"
                               title="{{ $entry['who'] }}">
@@ -613,7 +643,13 @@ class extends Component
                         </span>
 
                         <div class="min-w-0 grow">
-                            <p class="text-sm text-secondary-foreground">
+                            {{--
+                                The sentence has a card title inside it, and a
+                                card title can be one unbroken token — a URL, a
+                                branch name. `break-words` is what stops it
+                                running out past the timestamp column.
+                            --}}
+                            <p class="text-sm text-secondary-foreground break-words">
                                 <span class="font-medium text-mono">{{ $entry['who'] }}</span>
                                 {{ $entry['text'] }}
                             </p>
@@ -627,11 +663,29 @@ class extends Component
                         </div>
                     </div>
                 @empty
+                    {{--
+                        Three different nothings, and saying the wrong one is
+                        how a page looks broken. A filter that matches nothing
+                        is not an empty board, and telling someone who has just
+                        clicked Lists that "nothing has happened on this board"
+                        reads as a bug in the feed rather than as a filter.
+                    --}}
                     <div class="flex flex-col items-center justify-center text-center py-14">
                         <i class="ki-filled ki-time text-3xl text-muted-foreground mb-3"></i>
                         <p class="text-sm text-secondary-foreground">
-                            {{ $boards->isEmpty() ? 'No boards yet.' : 'Nothing has happened on this board yet.' }}
+                            @if ($boards->isEmpty())
+                                No boards yet.
+                            @elseif ($logName !== '')
+                                Nothing on this board has happened to a {{ $logName }} yet.
+                            @else
+                                Nothing has happened on this board yet.
+                            @endif
                         </p>
+                        @if ($logName !== '' && ! $boards->isEmpty())
+                            <button wire:click="filterByLog('')" class="kt-btn kt-btn-sm kt-btn-ghost mt-3">
+                                Show everything
+                            </button>
+                        @endif
                     </div>
                 @endforelse
             </div>

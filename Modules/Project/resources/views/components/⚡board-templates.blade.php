@@ -180,6 +180,10 @@ class extends Component
     /** Create the board, its lists and its seed cards, then go and look at it. */
     public function createBoard(): void
     {
+        // Trimmed before the rules run, not after: "  " satisfies `min:2` and
+        // then `trim()` below turns it into a board with no name at all.
+        $this->name = trim($this->name);
+
         $this->validate();
 
         $templates = $this->templates();
@@ -361,4 +365,74 @@ class extends Component
             </div>
         </div>
     </div>
+
+    {{--
+        `wire:keydown.escape` above only fires for a keypress that starts inside
+        this element, and `.kt-modal:not(.open)` is `display:none` — so until
+        something in here holds focus, Escape did nothing at all and Tab walked
+        straight out onto the board behind the dialog.
+
+        Bound to the root once rather than on every render: Livewire never
+        replaces a component's root node, so the listener survives the morph and
+        needs no `data-*` flag to guard it.
+    --}}
+    @script
+    <script>
+    (function () {
+        var root = $wire.$el;
+        var returnTo = null;
+
+        function focusable() {
+            var selector = 'a[href], button:not([disabled]), input:not([disabled]),'
+                + ' select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+            return Array.prototype.filter.call(root.querySelectorAll(selector), function (el) {
+                return el.offsetParent !== null;
+            });
+        }
+
+        root.addEventListener('keydown', function (event) {
+            if (event.key !== 'Tab') return;
+
+            var items = focusable();
+
+            if (items.length === 0) return;
+
+            var first = items[0];
+            var last = items[items.length - 1];
+
+            if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last.focus();
+            } else if (! event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first.focus();
+            }
+        });
+
+        $wire.$watch('open', function (open) {
+            if (open) {
+                returnTo = document.activeElement;
+
+                requestAnimationFrame(function () {
+                    // The name box, not the first tab stop — the first tab stop
+                    // is the close button, and opening a dialog on its own
+                    // dismiss control reads as an accident.
+                    var name = root.querySelector('#new-board-name');
+
+                    (name || focusable()[0] || root).focus();
+                });
+
+                return;
+            }
+
+            if (returnTo && returnTo.isConnected) {
+                returnTo.focus();
+            }
+
+            returnTo = null;
+        });
+    })();
+    </script>
+    @endscript
 </div>

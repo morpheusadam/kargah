@@ -47,14 +47,19 @@
 
     @case('number')
         <input type="number" class="kt-input w-full" wire:model="{{ $model }}"
+               aria-label="{{ $placeholder ?? 'How many' }}"
                placeholder="{{ $placeholder ?? 'a number' }}">
         @break
 
     @case('date')
-        <input type="date" class="kt-input w-full" wire:model="{{ $model }}">
+        {{-- A date input carries no placeholder of its own, so without this it
+             reaches a screen reader as an unnamed control. --}}
+        <input type="date" class="kt-input w-full" wire:model="{{ $model }}"
+               aria-label="{{ $placeholder ?? 'Date' }}">
         @break
 
     @default
         <input type="text" class="kt-input w-full" wire:model="{{ $model }}"
+               aria-label="{{ $placeholder ?? 'Text to match' }}"
                placeholder="{{ $placeholder ?? 'text' }}">
 @endswitch
