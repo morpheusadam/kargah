@@ -1,0 +1,30 @@
+{
+    "name": "kargah/blog",
+    "description": "Articles, published to a WordPress site through the Social module's own publishing spine.",
+    "authors": [
+        {
+            "name": "Kargah",
+            "email": "nima@kargah.local"
+        }
+    ],
+    "extra": {
+        "laravel": {
+            "providers": [],
+            "aliases": {
+
+            }
+        }
+    },
+    "autoload": {
+        "psr-4": {
+            "Modules\\Blog\\": "app/",
+            "Modules\\Blog\\Database\\Factories\\": "database/factories/",
+            "Modules\\Blog\\Database\\Seeders\\": "database/seeders/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Modules\\Blog\\Tests\\": "tests/"
+        }
+    }
+}

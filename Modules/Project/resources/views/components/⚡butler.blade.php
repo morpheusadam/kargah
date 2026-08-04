@@ -548,7 +548,7 @@ class extends Component
         <div class="flex items-center gap-1">
             <button wire:click="create('{{ \Modules\Project\Butler\Kind::RULE }}')" class="kt-btn kt-btn-sm kt-btn-primary gap-1.5"
                     @disabled($boards->isEmpty())>
-                <i class="ki-filled ki-flash text-sm"></i> New rule
+                <i class="ki-filled ki-flash-circle text-sm"></i> New rule
             </button>
             <button wire:click="create('{{ \Modules\Project\Butler\Kind::CARD_BUTTON }}')" class="kt-btn kt-btn-sm kt-btn-ghost gap-1.5"
                     @disabled($boards->isEmpty())>
@@ -564,7 +564,7 @@ class extends Component
     @if ($boards->isEmpty())
         <div class="kt-card">
             <div class="kt-card-content flex flex-col items-center py-10 text-center px-5">
-                <i class="ki-filled ki-flash text-2xl text-muted-foreground mb-2"></i>
+                <i class="ki-filled ki-flash-circle text-2xl text-muted-foreground mb-2"></i>
                 <p class="text-sm text-secondary-foreground">Butler works on one board at a time, and there is no board yet.</p>
                 <a href="{{ route('projects.boards') }}" wire:navigate class="kt-btn kt-btn-primary gap-2 mt-4">
                     <i class="ki-filled ki-element-plus"></i> Make the first board
@@ -600,7 +600,7 @@ class extends Component
                         <label class="kt-form-label text-xs" for="butler-icon">
                             {{ $kind === \Modules\Project\Butler\Kind::RULE ? 'Icon (unused for rules)' : 'Button icon' }}
                         </label>
-                        <input id="butler-icon" type="text" class="kt-input" wire:model="icon" placeholder="ki-flash">
+                        <input id="butler-icon" type="text" class="kt-input" wire:model="icon" placeholder="ki-flash-circle">
                         @error('icon') <span class="text-xs text-destructive">{{ $message }}</span> @enderror
                     </div>
                 </div>
@@ -810,7 +810,7 @@ class extends Component
                     </div>
                 @empty
                     <div class="flex flex-col items-center py-8 text-center">
-                        <i class="ki-filled ki-flash text-2xl text-muted-foreground mb-2"></i>
+                        <i class="ki-filled ki-flash-circle text-2xl text-muted-foreground mb-2"></i>
                         <p class="text-sm text-secondary-foreground">Nothing here yet.</p>
                     </div>
                 @endforelse

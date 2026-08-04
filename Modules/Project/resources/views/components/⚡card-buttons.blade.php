@@ -106,7 +106,7 @@ new class extends Component
     @if ($buttons->isNotEmpty())
         <div class="flex flex-col gap-3">
             <div class="flex items-center gap-2">
-                <i class="ki-filled ki-flash text-sm text-muted-foreground"></i>
+                <i class="ki-filled ki-flash-circle text-sm text-muted-foreground"></i>
                 <h3 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Butler</h3>
             </div>
 

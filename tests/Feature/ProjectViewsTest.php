@@ -117,9 +117,14 @@ class ProjectViewsTest extends TestCase
     {
         $empty = Board::factory()->create(['name' => 'Empty Board', 'slug' => 'empty-board']);
 
+        // "No lists to count yet" until the UI audit split one nothing into two:
+        // a board with lists but no cards was being told there were no lists
+        // while four named ones sat on the canvas next door. This board has no
+        // lists at all, so it gets the first of the two. See the comment at the
+        // `@else` in ⚡board-dashboard.blade.php.
         $this->get('/projects/dashboard?board=empty-board')
             ->assertOk()
-            ->assertSee('No lists to count yet');
+            ->assertSee('No lists on this board yet');
     }
 
     /* Table: mirror counting --------------------------------------------------- */

@@ -42,6 +42,11 @@ return [
         'data' => base_path('Modules/Data/resources/views/components'),
         'social' => base_path('Modules/Social/resources/views/components'),
         'platform' => base_path('Modules/Platform/resources/views/components'),
+        // Registered here as well as in `BlogServiceProvider::bootLivewireNamespace()`.
+        // The calls are idempotent and write the same path; this list is the one
+        // place a person looks to find out which namespaces exist, and a module
+        // missing from it reads as a module that does not have one.
+        'blog' => base_path('Modules/Blog/resources/views/components'),
     ],
 
     /*

@@ -5,5 +5,6 @@
     "Data": true,
     "Social": true,
     "Core": true,
-    "Platform": true
+    "Platform": true,
+    "Blog": true
 }

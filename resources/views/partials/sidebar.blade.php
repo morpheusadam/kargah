@@ -74,6 +74,16 @@
                 ['label' => 'Accounts',      'route' => 'social.accounts', 'match' => ['social.accounts', 'social.account-*']],
             ],
         ],
+        [
+            'key'   => 'blog',
+            'label' => 'Blog',
+            'icon'  => 'ki-notepad',
+            'match' => 'blog.*',
+            'items' => [
+                ['label' => 'Articles', 'route' => 'blog.articles'],
+                ['label' => 'Compose',  'route' => 'blog.compose'],
+            ],
+        ],
     ];
 
     // Drop anything whose module has been disabled rather than blowing up on route().

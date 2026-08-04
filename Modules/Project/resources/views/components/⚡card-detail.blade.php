@@ -2172,7 +2172,24 @@ class extends Component
                                         {{ $card->start_on ? $card->start_on->format('j M Y') : 'No start date' }}
                                     </button>
 
-                                    <div class="kt-dropdown absolute z-20 mt-1 start-0 w-[240px] p-4 flex flex-col gap-3 {{ $startPopoverOpen ? 'open' : '' }}">
+                                    {{--
+    🔴 `flex flex-col gap-3` belongs **inside** the conditional, and every panel
+    on this page that uses `.kt-dropdown` has to do the same.
+
+    The theme hides a closed panel with `.kt-dropdown:not(.open) { display: none }`,
+    which lives in the components layer. Tailwind's `.flex` lives in the utilities
+    layer, and **a cascade layer beats specificity outright** — so a panel carrying
+    both was `display: flex` whether or not it was open, from the moment the card
+    drawer first rendered. All five popovers on this card back were permanently
+    visible, stacked on top of each other and on top of the description.
+
+    Written out whole rather than built from parts because Tailwind's scanner reads
+    source text; `'open ' . $layout` would generate nothing. See
+    docs/frontend-conventions.md — "pick one mechanism per panel, never both" was
+    already the rule, and this is the shape the violation takes when the second
+    mechanism is a layer rather than a script.
+--}}
+<div class="kt-dropdown absolute z-20 mt-1 start-0 w-[240px] p-4 {{ $startPopoverOpen ? 'open flex flex-col gap-3' : '' }}">
                                         <label class="kt-form-label text-xs" for="card-start">Starts on</label>
                                         <input id="card-start" type="date" class="kt-input" wire:model="startDate">
                                         <div class="flex items-center gap-2">
@@ -2199,7 +2216,7 @@ class extends Component
                                             {{ $card->due_on ? $card->due_on->format('j M Y') : 'No due date' }}
                                         </button>
 
-                                        <div class="kt-dropdown absolute z-20 mt-1 start-0 w-[240px] p-4 flex flex-col gap-3 {{ $duePopoverOpen ? 'open' : '' }}">
+                                        <div class="kt-dropdown absolute z-20 mt-1 start-0 w-[240px] p-4 {{ $duePopoverOpen ? 'open flex flex-col gap-3' : '' }}">
                                             <label class="kt-form-label text-xs" for="card-due">Due on</label>
                                             <input id="card-due" type="date" class="kt-input" wire:model="dueDate">
                                             <div class="flex items-center gap-2">
@@ -2343,7 +2360,7 @@ class extends Component
                                         @endif
                                     </button>
 
-                                    <div class="kt-dropdown absolute z-20 mt-1 start-0 w-[280px] p-4 flex flex-col gap-3 {{ $coverPopoverOpen ? 'open' : '' }}">
+                                    <div class="kt-dropdown absolute z-20 mt-1 start-0 w-[280px] p-4 {{ $coverPopoverOpen ? 'open flex flex-col gap-3' : '' }}">
                                         <div>
                                             <h4 class="text-sm font-semibold text-mono">Cover</h4>
                                             <p class="text-[11px] text-muted-foreground mt-1">A full cover replaces the badges on the card front with the picture.</p>
@@ -2788,7 +2805,7 @@ class extends Component
                                 <i class="ki-filled ki-arrow-right text-sm"></i> Move
                             </button>
 
-                            <div class="kt-dropdown absolute z-20 mt-1 end-0 w-[240px] p-4 flex flex-col gap-3 {{ $movePopoverOpen ? 'open' : '' }}">
+                            <div class="kt-dropdown absolute z-20 mt-1 end-0 w-[240px] p-4 {{ $movePopoverOpen ? 'open flex flex-col gap-3' : '' }}">
                                 <label class="kt-form-label text-xs" for="card-move-list">Move to list</label>
                                 <select id="card-move-list" class="kt-select" wire:model="moveToList">
                                     @foreach ($lists as $option)
@@ -2821,7 +2838,7 @@ class extends Component
                                 <i class="ki-filled ki-devices-2 text-sm"></i> Mirror
                             </button>
 
-                            <div class="kt-dropdown absolute z-20 mt-1 end-0 w-[280px] p-4 flex flex-col gap-3 {{ $mirrorPopoverOpen ? 'open' : '' }}">
+                            <div class="kt-dropdown absolute z-20 mt-1 end-0 w-[280px] p-4 {{ $mirrorPopoverOpen ? 'open flex flex-col gap-3' : '' }}">
                                 <div>
                                     <h4 class="text-sm font-semibold text-mono">Mirror to…</h4>
                                     <p class="text-[11px] text-muted-foreground mt-1">

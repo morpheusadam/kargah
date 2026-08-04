@@ -1,0 +1,11 @@
+{
+  "name": "Blog",
+  "alias": "blog",
+  "description": "Articles: one composer that writes to a WordPress site and to the social networks as one intention.",
+  "keywords": [],
+  "priority": 10,
+  "providers": [
+    "Modules\\Blog\\Providers\\BlogServiceProvider"
+  ],
+  "files": []
+}
