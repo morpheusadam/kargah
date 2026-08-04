@@ -5,7 +5,14 @@ namespace Modules\Accounting\Support;
 use Brick\Money\Currency;
 use Brick\Money\CurrencyConverter;
 use Brick\Money\Exception\UnknownCurrencyException;
-use Brick\Money\ISOCurrencyProvider;
+// 🔴 `IsoCurrencyProvider`, with that exact casing. The file in brick/money is
+// `src/IsoCurrencyProvider.php`, and PSR-4 resolves a class name to a path — so
+// `ISOCurrencyProvider` finds it on Windows, whose filesystem does not care
+// about case, and finds nothing on Linux, whose filesystem does. Every test
+// passed on the development machine while the first deployed page load answered
+// `Class "Brick\Money\ISOCurrencyProvider" not found`, from the dashboard,
+// after a clean install. Measured on the server 5 August 2026.
+use Brick\Money\IsoCurrencyProvider;
 use Modules\Accounting\Services\ExchangeRates;
 
 /**
@@ -56,7 +63,7 @@ final class Currencies
         }
 
         try {
-            return ISOCurrencyProvider::getInstance()->getCurrency($code);
+            return IsoCurrencyProvider::getInstance()->getCurrency($code);
         } catch (UnknownCurrencyException) {
             // Re-thrown with somewhere to go: "Unknown currency code: XBT" does
             // not tell whoever hit it where the list of known ones lives.
