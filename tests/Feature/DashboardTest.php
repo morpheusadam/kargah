@@ -6,11 +6,14 @@ use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Livewire\Livewire;
+use Modules\Accounting\Contracts\ExpenseReader as ExpenseReaderContract;
 use Modules\Accounting\Contracts\InvoiceReader as InvoiceReaderContract;
+use Modules\Accounting\Models\Expense;
 use Modules\Accounting\Models\Invoice;
 use Modules\Accounting\Models\Payment;
 use Modules\Accounting\Support\Money;
 use Modules\Core\Contracts\Notifier;
+use Modules\Core\Models\Customer;
 use Modules\Mailbox\Models\Email;
 use Modules\Project\Models\Board;
 use Modules\Project\Models\BoardList;
@@ -250,6 +253,299 @@ class DashboardTest extends TestCase
         }
     }
 
+    /* The charts ------------------------------------------------------------- */
+
+    /**
+     * The progressive-enhancement promise, asserted rather than described.
+     *
+     * The chart is handed one payload and the table under it is rendered from
+     * another, and if those two ever drift the person without JavaScript is
+     * reading a different book from the person with it. Both are checked
+     * against the same figure in the same HTTP response — the response a
+     * browser with no ApexCharts would get, which is the only reader this
+     * test is about.
+     *
+     * The chart card is deliberately not inside an island, which is what
+     * makes this assertable on the raw response at all; the stat tiles are,
+     * and `assertSee` cannot reach them.
+     */
+    public function test_the_fallback_table_and_the_chart_payload_carry_the_same_figure(): void
+    {
+        Invoice::factory()->sent()->create([
+            'number' => 'INV-9101', 'currency' => 'TRY',
+            'subtotal' => '12000.000000', 'total' => '12000.000000',
+            'issued_on' => now()->startOfMonth()->toDateString(),
+            'sent_at' => now()->startOfMonth(),
+            'due_on' => now()->addDays(10)->toDateString(),
+        ]);
+
+        $html = $this->get('/dashboard')->assertOk()->getContent();
+
+        // What the table prints: Accounting's own formatted string.
+        $this->assertStringContainsString(Money::format('12000.000000', 'TRY'), $html);
+        $this->assertStringContainsString('data-trend-fallback', $html);
+
+        // What the chart is handed: the same amount, unformatted, inside the
+        // payload attribute. json_encode escapes the lira sign, so the amount
+        // is what can be compared across both — which is the point, since it
+        // is the figure, not the glyph, that must agree.
+        $this->assertStringContainsString('12000.000000', $html);
+        $this->assertStringContainsString('data-trend-chart', $html);
+
+        // And the bundle tag actually reached the response. `@push('scripts')`
+        // inside a Livewire component is discarded silently — no error, no
+        // warning, no script — so "the chart never appears" would otherwise
+        // look exactly like a passing test. Matched without its directory
+        // because Livewire ships an `@script` block inside `wire:effects` as
+        // JSON, where every slash in the path is escaped to `\/`.
+        $this->assertStringContainsString('apexcharts.min.js', $html);
+
+        $rows = collect(Livewire::test('pages::dashboard')->viewData('trend')['rows']);
+        $month = $rows->firstWhere('label', now()->format('M Y'));
+
+        $this->assertSame('12000.000000', $month['revenue']);
+        $this->assertSame(Money::format('12000.000000', 'TRY'), $month['revenue_formatted']);
+    }
+
+    /**
+     * The rule the whole chart rests on: an invoice that never got a rate is
+     * excluded **and counted**, never converted at today's rate and never
+     * silently dropped. A series that quietly loses four invoices reads as a
+     * bad quarter, and nobody can tell from looking at it.
+     */
+    public function test_an_invoice_with_no_lira_figure_is_excluded_from_the_series_and_counted_out_loud(): void
+    {
+        // Dollars, issued, and nothing on the document says what it was worth
+        // in lira — exactly what the factory produces, and exactly what an
+        // invoice raised for a foreign client looks like when the TCMB fetch
+        // failed at issue.
+        Invoice::factory()->sent()->create([
+            'number' => 'INV-9102', 'currency' => 'USD',
+            'subtotal' => '1000.000000', 'total' => '1000.000000',
+            'issued_on' => now()->startOfMonth()->toDateString(),
+            'sent_at' => now()->startOfMonth(),
+            'due_on' => now()->addDays(10)->toDateString(),
+        ]);
+
+        $revenue = app(InvoiceReaderContract::class)->revenueByMonth(12);
+
+        $this->assertSame(1, $revenue['excluded']);
+        $this->assertSame(0, $revenue['counted']);
+
+        $thisMonth = collect($revenue['months'])->firstWhere('month', now()->format('Y-m'));
+        $this->assertSame('0.000000', $thisMonth['amount'], 'A rate was invented for an invoice that has none.');
+
+        $trend = Livewire::test('pages::dashboard')->viewData('trend');
+
+        $this->assertNotNull($trend['note'], 'The excluded invoice is nowhere on the page.');
+        $this->assertStringContainsString('1 invoice', $trend['note']);
+    }
+
+    /**
+     * A frozen figure is used, and it is used exactly as frozen. The invoice
+     * is in dollars; the lira figure on the series is the one `issue_rate_to_try`
+     * produced on the day it was issued, not the dollar amount and not
+     * anything re-derived from a rate table read today.
+     */
+    public function test_a_dollar_invoice_contributes_the_lira_figure_frozen_on_the_document(): void
+    {
+        Invoice::factory()->sent()->create([
+            'number' => 'INV-9103', 'currency' => 'USD',
+            'subtotal' => '1000.000000', 'total' => '1000.000000',
+            'issue_rate_to_try' => '33.000000',
+            'issue_rate_source' => 'tcmb',
+            'issue_rate_date' => now()->startOfMonth()->toDateString(),
+            'try_equivalent' => '33000.000000',
+            'issued_on' => now()->startOfMonth()->toDateString(),
+            'sent_at' => now()->startOfMonth(),
+            'due_on' => now()->addDays(10)->toDateString(),
+        ]);
+
+        $revenue = app(InvoiceReaderContract::class)->revenueByMonth(12);
+        $thisMonth = collect($revenue['months'])->firstWhere('month', now()->format('Y-m'));
+
+        $this->assertSame('33000.000000', $thisMonth['amount']);
+        $this->assertSame(0, $revenue['excluded']);
+    }
+
+    /**
+     * Two currencies are never added into one figure. A book owed $980 and
+     * ₺64,800 is owed two amounts, and the aging bucket says so — it does not
+     * say 65,780 of anything.
+     */
+    public function test_two_currencies_are_reported_side_by_side_and_never_added(): void
+    {
+        Invoice::factory()->overdue()->create([
+            'number' => 'INV-9104', 'currency' => 'USD',
+            'subtotal' => '980.000000', 'total' => '980.000000',
+        ]);
+        Invoice::factory()->overdue()->create([
+            'number' => 'INV-9105', 'currency' => 'TRY',
+            'subtotal' => '64800.000000', 'total' => '64800.000000',
+        ]);
+
+        $buckets = collect(app(InvoiceReaderContract::class)->agedReceivables()['buckets'])
+            ->keyBy('key');
+
+        $late = $buckets['1_30']['totals'];
+
+        $this->assertSame('980.000000', collect($late)->firstWhere('currency', 'USD')['amount']);
+        $this->assertSame('64800.000000', collect($late)->firstWhere('currency', 'TRY')['amount']);
+        $this->assertSame(2, $buckets['1_30']['count']);
+
+        $line = collect(Livewire::test('pages::dashboard')->viewData('receivables')['buckets'])
+            ->firstWhere('key', '1_30')['money'];
+
+        // Both figures on the line, joined — never one number.
+        $this->assertStringContainsString(Money::format('980.000000', 'USD'), $line);
+        $this->assertStringContainsString(Money::format('64800.000000', 'TRY'), $line);
+        $this->assertStringNotContainsString('65,780', $line);
+    }
+
+    /**
+     * The buckets are a split of the same money `totals()` reports, not a
+     * second definition of outstanding. Adding them back up has to give the
+     * tile's own figure, or the page is showing two answers to one question.
+     */
+    public function test_the_aging_buckets_add_back_up_to_the_books_outstanding_total(): void
+    {
+        Invoice::factory()->sent()->create([
+            'number' => 'INV-9106', 'currency' => 'USD',
+            'subtotal' => '450.000000', 'total' => '450.000000',
+            'due_on' => now()->addDays(5)->toDateString(),
+        ]);
+        Invoice::factory()->overdue()->create([
+            'number' => 'INV-9107', 'currency' => 'USD',
+            'subtotal' => '900.000000', 'total' => '900.000000',
+        ]);
+
+        $reader = app(InvoiceReaderContract::class);
+
+        $bucketed = Money::sum(
+            collect($reader->agedReceivables()['buckets'])
+                ->flatMap(fn (array $bucket): array => $bucket['totals'])
+                ->where('currency', 'USD')
+                ->pluck('amount'),
+            'USD',
+        );
+
+        $outstanding = collect($reader->totals()['outstanding'])->firstWhere('currency', 'USD')['amount'];
+
+        $this->assertSame($outstanding, Money::toStorage($bucketed));
+        $this->assertSame('1350.000000', $outstanding);
+    }
+
+    /**
+     * A fully-settled invoice whose status has not caught up owes nothing, so
+     * it is in no bucket and in no count. Counting it would tell somebody
+     * deciding whether to chase that two invoices are late when one is.
+     */
+    public function test_an_invoice_that_owes_nothing_is_in_no_aging_bucket(): void
+    {
+        $invoice = Invoice::factory()->overdue()->create([
+            'number' => 'INV-9108', 'currency' => 'USD',
+            'subtotal' => '500.000000', 'total' => '500.000000',
+        ]);
+        Payment::factory()->create([
+            'invoice_id' => $invoice->id,
+            'currency' => 'USD',
+            'amount' => '500.000000',
+            'applied_amount' => '500.000000',
+        ]);
+
+        $this->assertSame(0, app(InvoiceReaderContract::class)->agedReceivables()['count']);
+    }
+
+    /**
+     * Revenue by client is grouped and rolled up inside Accounting — the page
+     * receives finished rows. The "other" row exists so a book with thirty
+     * clients still draws six slices and one honest remainder rather than
+     * thirty unreadable ones.
+     */
+    public function test_revenue_by_client_groups_inside_accounting_and_rolls_the_tail_into_one_row(): void
+    {
+        foreach (['Northwind Studio', 'Karaköy Bilişim', 'Atlas Freight'] as $index => $name) {
+            $customer = Customer::factory()->create(['name' => $name]);
+
+            Invoice::factory()->sent()->create([
+                'number' => 'INV-92'.$index.'0', 'currency' => 'TRY',
+                'customer_id' => $customer->id,
+                'subtotal' => (string) (($index + 1) * 1000).'.000000',
+                'total' => (string) (($index + 1) * 1000).'.000000',
+                'issued_on' => now()->startOfMonth()->toDateString(),
+                'sent_at' => now()->startOfMonth(),
+                'due_on' => now()->addDays(10)->toDateString(),
+            ]);
+        }
+
+        $revenue = app(InvoiceReaderContract::class)->revenueByClient(12, 2);
+
+        // Biggest first, then everything past the limit as one row.
+        $this->assertSame('Atlas Freight', $revenue['clients'][0]['name']);
+        $this->assertSame('3000.000000', $revenue['clients'][0]['amount']);
+        $this->assertTrue($revenue['clients'][2]['is_other']);
+        $this->assertSame('1000.000000', $revenue['clients'][2]['amount']);
+        $this->assertSame(3, $revenue['counted']);
+
+        $rows = Livewire::test('pages::dashboard')->viewData('clientRevenue')['rows'];
+
+        $this->assertSame('Atlas Freight', $rows[0]['name']);
+        $this->assertSame(Money::format('3000.000000', 'TRY'), $rows[0]['formatted']);
+    }
+
+    /**
+     * The expense half of the trend obeys the same rule from the other side:
+     * an expense reported in dollars carries no lira figure, so it is counted
+     * out rather than converted. The factory's default is exactly that, which
+     * is why this is the case worth pinning.
+     */
+    public function test_expenses_join_the_trend_in_lira_and_the_unconvertible_ones_are_counted(): void
+    {
+        Expense::factory()->create([
+            'currency' => 'TRY',
+            'amount' => '2500.000000',
+            'reporting_currency' => 'TRY',
+            'reporting_rate' => '1.000000',
+            'reporting_amount' => '2500.000000',
+            'spent_on' => now()->startOfMonth()->toDateString(),
+        ]);
+        Expense::factory()->create([
+            'spent_on' => now()->startOfMonth()->toDateString(),
+        ]);
+
+        $expenses = app(ExpenseReaderContract::class)->expensesByMonth(12);
+        $thisMonth = collect($expenses['months'])->firstWhere('month', now()->format('Y-m'));
+
+        $this->assertSame('2500.000000', $thisMonth['amount']);
+        $this->assertSame(1, $expenses['excluded']);
+
+        $trend = Livewire::test('pages::dashboard')->viewData('trend');
+        $row = collect($trend['rows'])->firstWhere('label', now()->format('M Y'));
+
+        $this->assertSame('2500.000000', $row['expenses']);
+        $this->assertStringContainsString('1 expense', $trend['note']);
+    }
+
+    /**
+     * The rule this page's own docblock states, enforced rather than trusted:
+     * money is summed inside Accounting and read back already summed. A
+     * `->sum(` or an `array_sum(` appearing here would mean a figure was
+     * added on this side of the module boundary, where there is no `Money`
+     * and no currency to check it against.
+     */
+    public function test_the_dashboard_adds_no_money_of_its_own(): void
+    {
+        $source = file_get_contents(resource_path('views/pages/⚡dashboard.blade.php'));
+
+        foreach (['array_sum(', '->sum(', 'Money::sum', 'SUM('] as $forbidden) {
+            $this->assertStringNotContainsString(
+                $forbidden,
+                $source,
+                'The dashboard is adding money itself. It must read it already summed from Accounting.',
+            );
+        }
+    }
+
     public function test_exactly_four_islands_each_lazy_and_none_inside_a_loop(): void
     {
         $source = file_get_contents(resource_path('views/pages/⚡dashboard.blade.php'));
@@ -259,7 +555,7 @@ class DashboardTest extends TestCase
         // ordinal of the directive in the file, so a directive inside a
         // `@foreach` shares one token across every row.
         $this->assertSame(4, substr_count($source, '@island('));
-        $this->assertSame(4, substr_count($source, "lazy: true"));
+        $this->assertSame(4, substr_count($source, 'lazy: true'));
 
         foreach (['stats', 'due-cards', 'agenda', 'activity'] as $name) {
             $this->assertStringContainsString("name: '{$name}'", $source);

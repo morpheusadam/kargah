@@ -6,6 +6,7 @@ use Illuminate\Support\Str;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
+use Modules\Accounting\Contracts\ExpenseReader as ExpenseReaderContract;
 use Modules\Accounting\Contracts\InvoiceReader as InvoiceReaderContract;
 use Modules\Core\Contracts\Notifier as NotifierContract;
 use Modules\Mailbox\Contracts\EmailReader as EmailReaderContract;
@@ -46,6 +47,37 @@ use Spatie\Activitylog\Models\Activity;
  * (`App\Models\User`, an application model) are read; `subject` is never
  * touched, because resolving it would mean knowing what a card or an invoice
  * is.
+ *
+ * **This is the first page in Kargah to load ApexCharts, and it is loaded
+ * here rather than in the layout.** `layouts/app.blade.php` says why: the
+ * bundle is 563 KB, and having it and FullCalendar in the layout once added
+ * 854 KB to every page and made the single-threaded dev server queue requests
+ * until they timed out. It stays out of the layout; this page pulls it from
+ * inside `@script`, exactly as `Modules\Social`'s calendar pulls FullCalendar.
+ *
+ * `⚡client-show.blade.php` chose twelve plain divs over this same library and
+ * that decision was right and stands. The difference is not taste, it is what
+ * the mark has to say: a sparkline says "bigger than last month" and a bar
+ * per month says that perfectly, whereas these two want a shared y axis
+ * across twelve months and two series, a tooltip carrying a formatted lira
+ * figure per point, and a proportional split across clients — none of which a
+ * div can do without becoming a chart library written badly. Where a div
+ * still suffices, keep the div.
+ *
+ * **Nothing here is drawn without also being written down.** Every chart has
+ * a server-rendered table of the same figures beneath it, hidden by the
+ * script only once the chart has actually rendered, so a page served without
+ * the bundle shows the numbers rather than an empty box.
+ *
+ * **The charts follow the same money rule as the tiles.** The series are
+ * summed inside Accounting — `InvoiceReader::revenueByMonth()`,
+ * `revenueByClient()`, `agedReceivables()` and `ExpenseReader
+ * ::expensesByMonth()` — and arrive already added and already formatted.
+ * Nothing on this page sums money, and the JavaScript below does no
+ * arithmetic on it: it plots the amounts and prints the server's own
+ * formatted strings. Documents that carry no lira figure are **excluded and
+ * counted**, and the count is printed under the chart, because a series that
+ * silently drops four invoices reads as a bad quarter.
  */
 new
 #[Title('Dashboard — Kargah')]
@@ -73,7 +105,32 @@ class extends Component
 
     public const CACHE_ACTIVITY = 'dashboard.activity.v1';
 
+    public const CACHE_TREND = 'dashboard.trend.v1';
+
+    public const CACHE_REVENUE_BY_CLIENT = 'dashboard.revenue-by-client.v1';
+
+    public const CACHE_RECEIVABLES = 'dashboard.receivables.v1';
+
     private const RANGE_DAYS = ['7d' => 7, '30d' => 30, '90d' => 90];
+
+    /**
+     * How each aging bucket reads. Whole class strings in a map, never built
+     * by concatenation — the Tailwind scanner reads source text, so
+     * `"text-{$tone}"` produces a class that exists nowhere in the stylesheet.
+     *
+     * @var array<string, array{tone: string, dot: string}>
+     */
+    private const RECEIVABLE_TONES = [
+        'not_due' => ['tone' => 'text-mono', 'dot' => 'bg-primary'],
+        '1_30' => ['tone' => 'text-warning', 'dot' => 'bg-warning'],
+        '31_60' => ['tone' => 'text-warning', 'dot' => 'bg-warning'],
+        'over_60' => ['tone' => 'text-destructive', 'dot' => 'bg-destructive'],
+    ];
+
+    /** How many months the trend covers, and how many clients get their own slice. */
+    private const TREND_MONTHS = 12;
+
+    private const CLIENT_SLICES = 6;
 
     #[Url]
     public string $range = '30d';
@@ -156,6 +213,148 @@ class extends Component
     private function invoiceTotals(): array
     {
         return Cache::flexible(self::CACHE_INVOICE_TOTALS, [15, 180], fn (): array => app(InvoiceReaderContract::class)->totals());
+    }
+
+    /**
+     * Revenue against expenses, twelve months, in lira.
+     *
+     * Two readers, joined on the `YYYY-MM` key both of them emit — which is
+     * why `ExpenseReader::expensesByMonth()` calls `InvoiceReader
+     * ::monthWindow()` rather than building its own window. Joining is not
+     * arithmetic on money: every amount here is a string this page received
+     * already summed, and a month with no matching entry renders as an em
+     * dash rather than a zero this page invented.
+     *
+     * @return array{rows: list<array<string, string>>, series: array<string, mixed>, note: ?string}
+     */
+    private function trend(): array
+    {
+        return Cache::flexible(self::CACHE_TREND, [15, 180], function (): array {
+            $revenue = app(InvoiceReaderContract::class)->revenueByMonth(self::TREND_MONTHS);
+            $expenses = app(ExpenseReaderContract::class)->expensesByMonth(self::TREND_MONTHS);
+
+            $spentByMonth = [];
+
+            foreach ($expenses['months'] as $month) {
+                $spentByMonth[$month['month']] = $month;
+            }
+
+            $rows = array_map(function (array $month) use ($spentByMonth): array {
+                $spent = $spentByMonth[$month['month']] ?? null;
+
+                return [
+                    'label' => $month['label'],
+                    'revenue' => $month['amount'],
+                    'revenue_formatted' => $month['formatted'],
+                    'expenses' => $spent === null ? '0' : $spent['amount'],
+                    'expenses_formatted' => $spent === null ? '—' : $spent['formatted'],
+                ];
+            }, $revenue['months']);
+
+            return [
+                'rows' => $rows,
+                'series' => [
+                    'symbol' => $revenue['symbol'],
+                    'labels' => array_column($rows, 'label'),
+                    'revenue' => array_column($rows, 'revenue'),
+                    'expenses' => array_column($rows, 'expenses'),
+                    'revenueFormatted' => array_column($rows, 'revenue_formatted'),
+                    'expensesFormatted' => array_column($rows, 'expenses_formatted'),
+                ],
+                'note' => $this->excludedNote([
+                    'invoice' => $revenue['excluded'],
+                    'expense' => $expenses['excluded'],
+                ]),
+            ];
+        });
+    }
+
+    /**
+     * Who the practice actually rests on, twelve months, in lira.
+     *
+     * @return array{rows: list<array<string, string>>, series: array<string, mixed>, note: ?string}
+     */
+    private function revenueByClient(): array
+    {
+        return Cache::flexible(self::CACHE_REVENUE_BY_CLIENT, [15, 180], function (): array {
+            $revenue = app(InvoiceReaderContract::class)->revenueByClient(self::TREND_MONTHS, self::CLIENT_SLICES);
+
+            $rows = array_values(array_filter(
+                $revenue['clients'],
+                // A client at zero is a client with nothing to show on a
+                // donut, and a zero slice draws as a label with no wedge.
+                fn (array $client): bool => $client['amount'] !== '0.000000',
+            ));
+
+            return [
+                'rows' => $rows,
+                'series' => [
+                    'labels' => array_column($rows, 'name'),
+                    'values' => array_column($rows, 'amount'),
+                    'formatted' => array_column($rows, 'formatted'),
+                ],
+                'note' => $this->excludedNote(['invoice' => $revenue['excluded']]),
+            ];
+        });
+    }
+
+    /**
+     * What is owed, split by how late it is.
+     *
+     * Per currency inside each bucket, never added across them — see
+     * `InvoiceReader::agedReceivables()`. `moneyLine()` is the same joiner the
+     * unpaid-invoices tile already uses, so "$980.00 · ₺64,800.00" reads the
+     * same way in both places.
+     *
+     * @return array{buckets: list<array<string, string|int>>, count: int}
+     */
+    private function receivables(): array
+    {
+        return Cache::flexible(self::CACHE_RECEIVABLES, [15, 180], function (): array {
+            $aged = app(InvoiceReaderContract::class)->agedReceivables();
+
+            return [
+                'buckets' => array_map(fn (array $bucket): array => [
+                    'key' => $bucket['key'],
+                    'label' => $bucket['label'],
+                    'money' => $this->moneyLine($bucket['totals']) ?: '—',
+                    'count' => $bucket['count'],
+                    'sub' => $bucket['count'].' '.Str::plural('invoice', $bucket['count']),
+                    'tone' => self::RECEIVABLE_TONES[$bucket['key']]['tone'],
+                    'dot' => self::RECEIVABLE_TONES[$bucket['key']]['dot'],
+                ], $aged['buckets']),
+                'count' => $aged['count'],
+            ];
+        });
+    }
+
+    /**
+     * "4 invoices and 7 expenses are not on this chart…" — the sentence
+     * `ACCOUNTING-BRIEF.md` insists a chart must be able to say. A row that
+     * never got a rate is counted out loud rather than converted at today's
+     * rate, which would make last March move every time the lira does.
+     *
+     * @param  array<string, int>  $counts  noun => how many
+     */
+    private function excludedNote(array $counts): ?string
+    {
+        $parts = [];
+        $total = 0;
+
+        foreach ($counts as $noun => $count) {
+            if ($count > 0) {
+                $parts[] = $count.' '.Str::plural($noun, $count);
+                $total += $count;
+            }
+        }
+
+        if ($parts === []) {
+            return null;
+        }
+
+        return implode(' and ', $parts).' '.($total === 1 ? 'is' : 'are').' not on this chart. '
+            .'Nothing on those documents says what they were worth in lira, and converting them at '
+            .'today’s rate would invent a figure nobody could defend.';
     }
 
     /** @return array{due_soon_count: int, overdue_count: int} */
@@ -373,6 +572,12 @@ class extends Component
                 ],
             ],
 
+            // Already summed and already formatted inside Accounting. This
+            // page joins and labels; it never adds.
+            'receivables' => $this->receivables(),
+            'trend' => $this->trend(),
+            'clientRevenue' => $this->revenueByClient(),
+
             'agenda' => array_map(fn (array $item): array => [
                 'label' => $this->dueLabel($item['due_on']),
                 'title' => $item['title'],
@@ -456,6 +661,37 @@ class extends Component
     </div>
     @endisland
 
+    {{--
+        What is owed and how late it is. Not an island: the figures come from
+        one reader call the page already caches, and a person deciding whether
+        to chase an invoice should not watch it fade in.
+    --}}
+    <div class="kt-card">
+        <div class="kt-card-header">
+            <h3 class="kt-card-title">Outstanding receivables</h3>
+            <a href="{{ route('accounting.invoices') }}" wire:navigate class="kt-btn kt-btn-sm kt-btn-ghost gap-1">
+                Invoices <i class="ki-filled ki-black-right text-xs"></i>
+            </a>
+        </div>
+        <div class="kt-card-content grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 p-5">
+            @foreach ($receivables['buckets'] as $bucket)
+                <div class="rounded-lg border border-border p-4" wire:key="receivable-{{ $bucket['key'] }}">
+                    <div class="flex items-center gap-2">
+                        <span class="size-2 rounded-full shrink-0 {{ $bucket['dot'] }}"></span>
+                        <span class="text-xs text-muted-foreground">{{ $bucket['label'] }}</span>
+                    </div>
+                    <div class="text-lg font-semibold mt-2 {{ $bucket['tone'] }}">{{ $bucket['money'] }}</div>
+                    <div class="text-xs text-muted-foreground mt-0.5">{{ $bucket['sub'] }}</div>
+                </div>
+            @endforeach
+        </div>
+        <div class="kt-card-footer">
+            <span class="text-xs text-muted-foreground">
+                One figure per currency, never added across them — a client billed in lira and in dollars owes two amounts.
+            </span>
+        </div>
+    </div>
+
     <div class="grid grid-cols-12 gap-5 items-start">
 
         {{-- Left column --}}
@@ -463,18 +699,92 @@ class extends Component
 
             <div class="kt-card">
                 <div class="kt-card-header">
-                    <h3 class="kt-card-title">Revenue and expenses</h3>
+                    <div>
+                        <h3 class="kt-card-title">Revenue and expenses</h3>
+                        <p class="text-xs text-muted-foreground mt-0.5">Twelve months, in lira, at the rate each document froze.</p>
+                    </div>
                     <a href="{{ route('accounting.reports') }}" wire:navigate class="kt-btn kt-btn-sm kt-btn-ghost gap-1">
                         Reports <i class="ki-filled ki-black-right text-xs"></i>
                     </a>
                 </div>
-                <div class="kt-card-content p-5">
-                    <div class="min-h-[200px] flex items-center justify-center">
-                        <div class="flex flex-col items-center text-center">
-                            <i class="ki-filled ki-chart-line-up text-4xl text-muted-foreground mb-3"></i>
-                            <p class="text-sm text-secondary-foreground">Revenue and expense trends live in Reports, not here yet.</p>
-                        </div>
+                <div class="kt-card-content p-5 flex flex-col gap-4">
+                    <div data-trend-chart
+                         class="min-h-[280px]"
+                         data-series="{{ json_encode($trend['series']) }}"></div>
+
+                    {{--
+                        The same twelve figures as a table. Shown until the chart
+                        genuinely draws, and for good if the bundle never arrives —
+                        a page without JavaScript shows the numbers, not a hole.
+                    --}}
+                    <div data-trend-fallback class="kt-scrollable-x-auto">
+                        <table class="kt-table">
+                            <thead>
+                                <tr>
+                                    <th class="text-start">Month</th>
+                                    <th class="text-end">Invoiced</th>
+                                    <th class="text-end">Spent</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach ($trend['rows'] as $row)
+                                    <tr wire:key="trend-{{ $loop->index }}">
+                                        <td class="text-sm text-secondary-foreground">{{ $row['label'] }}</td>
+                                        <td class="text-sm text-mono text-end">{{ $row['revenue_formatted'] }}</td>
+                                        <td class="text-sm text-mono text-end">{{ $row['expenses_formatted'] }}</td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
                     </div>
+
+                    @if ($trend['note'])
+                        <p class="text-xs text-muted-foreground">{{ $trend['note'] }}</p>
+                    @endif
+                </div>
+            </div>
+
+            <div class="kt-card">
+                <div class="kt-card-header">
+                    <div>
+                        <h3 class="kt-card-title">Revenue by client</h3>
+                        <p class="text-xs text-muted-foreground mt-0.5">Twelve months, in lira — how much of the practice rests on one client.</p>
+                    </div>
+                </div>
+                <div class="kt-card-content p-5 flex flex-col gap-4">
+                    @if (count($clientRevenue['rows']) > 0)
+                        <div data-client-chart
+                             class="min-h-[280px]"
+                             data-series="{{ json_encode($clientRevenue['series']) }}"></div>
+
+                        <div data-client-fallback class="kt-scrollable-x-auto">
+                            <table class="kt-table">
+                                <thead>
+                                    <tr>
+                                        <th class="text-start">Client</th>
+                                        <th class="text-end">Invoiced</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach ($clientRevenue['rows'] as $row)
+                                        <tr wire:key="client-revenue-{{ $loop->index }}">
+                                            <td class="text-sm text-secondary-foreground">{{ $row['name'] }}</td>
+                                            <td class="text-sm text-mono text-end">{{ $row['formatted'] }}</td>
+                                        </tr>
+                                    @endforeach
+                                </tbody>
+                            </table>
+                        </div>
+                    @else
+                        <div class="flex flex-col items-center py-10 text-center">
+                            <i class="ki-filled ki-chart-pie-simple text-4xl text-muted-foreground mb-3"></i>
+                            <p class="text-sm text-secondary-foreground">No invoice in the last twelve months carries a lira figure yet.</p>
+                        </div>
+                    @endif
+
+                    @if ($clientRevenue['note'])
+                        <p class="text-xs text-muted-foreground">{{ $clientRevenue['note'] }}</p>
+                    @endif
                 </div>
             </div>
 
@@ -601,4 +911,230 @@ class extends Component
 
         </div>
     </div>
+{{--
+    Kept inside the component's root element on purpose. Livewire renders one
+    root node and discards everything after it, and it carries neither a pushed
+    stack nor @assets through to the layout — a @push('scripts') here would be
+    dropped silently, with no error and no script.
+
+    ApexCharts is fetched here rather than from the layout because it is 563 KB
+    and only two pages will ever want it. See the class docblock.
+--}}
+@script
+<script src="/assets/vendors/apexcharts/apexcharts.min.js"></script>
+<script>
+(function () {
+    // 🔴 Series colours are hex literals rather than the theme's own CSS
+    // variables, and that is not laziness. `--color-primary` and friends
+    // compute to `oklch(…)` in this theme, and ApexCharts' `hexToRgba()` —
+    // which every solid fill is passed through — replaces any colour string
+    // not starting with `#` by the grey `#999999`. Both series would come out
+    // the same grey, on a chart that still rendered, so nothing would look
+    // broken. Verified by reading the shipped bundle, not assumed.
+    //
+    // Everything ApexCharts picks for itself — label colour, tooltip skin — is
+    // steered by `theme.mode` below instead, which is what keeps the chart
+    // legible in both themes without a second colour table here.
+    var REVENUE = '#1b84ff';
+    var EXPENSE = '#f8285a';
+    var SLICES = ['#1b84ff', '#17c653', '#f6b100', '#7239ea', '#f8285a', '#26a8d3', '#78829d'];
+
+    function isDark() {
+        return document.documentElement.classList.contains('dark');
+    }
+
+    function grid() {
+        return isDark() ? '#26272f' : '#f1f1f4';
+    }
+
+    function read(el) {
+        try {
+            return JSON.parse(el.dataset.series || 'null');
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // The mount key, not a data-* flag. Livewire's morph strips any attribute
+    // the incoming HTML does not carry, so a flag would clear itself on every
+    // render and leave a second chart bound to the same node; a property on
+    // the element is invisible to the morph. Comparing the payload as well
+    // means an unrelated re-render does not tear a drawn chart down and
+    // rebuild it, and a theme flip does.
+    function unchanged(el, payload) {
+        return el._chart && el._chartKey === payload + '|' + (isDark() ? 'dark' : 'light');
+    }
+
+    function drawn(el, chart, payload, fallback) {
+        el._chart = chart;
+        el._chartKey = payload + '|' + (isDark() ? 'dark' : 'light');
+
+        hide(fallback);
+    }
+
+    // Hidden only once the chart has genuinely drawn — and re-hidden on every
+    // pass, because the morph strips the class again each time: the class was
+    // put there by JavaScript, so the incoming HTML never carries it.
+    function hide(fallback) {
+        if (fallback) fallback.classList.add('hidden');
+    }
+
+    function destroy(el) {
+        if (el._chart) {
+            el._chart.destroy();
+            el._chart = null;
+        }
+    }
+
+    function trend(root) {
+        var el = root.querySelector('[data-trend-chart]');
+        if (! el) return;
+
+        var payload = el.dataset.series;
+        var fallback = root.querySelector('[data-trend-fallback]');
+
+        if (unchanged(el, payload)) {
+            hide(fallback);
+
+            return;
+        }
+
+        var data = read(el);
+        if (! data) return;
+
+        destroy(el);
+
+        // The one place a money figure becomes a double is here, where it
+        // becomes a pixel height — never to be added, compared or rounded.
+        // Every figure a person actually reads on this chart is the string the
+        // server formatted through brick/money: the tooltips below index into
+        // it, and the table underneath prints it.
+        var revenue = data.revenue.map(Number);
+        var expenses = data.expenses.map(Number);
+        var symbol = data.symbol;
+
+        var chart = new ApexCharts(el, {
+            chart: {
+                type: 'line',
+                height: 280,
+                background: 'transparent',
+                toolbar: { show: false },
+                animations: { enabled: false },
+                fontFamily: 'inherit'
+            },
+            theme: { mode: isDark() ? 'dark' : 'light' },
+            colors: [REVENUE, EXPENSE],
+            series: [
+                { name: 'Invoiced', data: revenue },
+                { name: 'Spent', data: expenses }
+            ],
+            stroke: { curve: 'straight', width: 2 },
+            markers: { size: 3, strokeWidth: 0 },
+            dataLabels: { enabled: false },
+            legend: { position: 'top', horizontalAlign: 'left' },
+            xaxis: { categories: data.labels, axisBorder: { show: false }, axisTicks: { show: false } },
+            yaxis: {
+                labels: {
+                    // An axis tick is a position ApexCharts chose in order to
+                    // draw a scale, not a figure out of the book. Grouping it
+                    // for legibility is presentation; no figure the person is
+                    // asked to trust is produced here.
+                    formatter: function (value) {
+                        return symbol + Math.round(value).toLocaleString('en');
+                    }
+                }
+            },
+            grid: { borderColor: grid(), strokeDashArray: 4 },
+            tooltip: {
+                y: {
+                    formatter: function (value, opts) {
+                        var formatted = opts.seriesIndex === 0 ? data.revenueFormatted : data.expensesFormatted;
+
+                        return formatted[opts.dataPointIndex];
+                    }
+                }
+            }
+        });
+
+        chart.render();
+        drawn(el, chart, payload, fallback);
+    }
+
+    function clients(root) {
+        var el = root.querySelector('[data-client-chart]');
+        if (! el) return;
+
+        var payload = el.dataset.series;
+        var fallback = root.querySelector('[data-client-fallback]');
+
+        if (unchanged(el, payload)) {
+            hide(fallback);
+
+            return;
+        }
+
+        var data = read(el);
+        if (! data || ! data.values.length) return;
+
+        destroy(el);
+
+        var chart = new ApexCharts(el, {
+            chart: { type: 'donut', height: 280, background: 'transparent', fontFamily: 'inherit' },
+            theme: { mode: isDark() ? 'dark' : 'light' },
+            colors: SLICES,
+            series: data.values.map(Number),
+            labels: data.labels,
+            // A share of the whole is a percentage, which is not money — the
+            // same reasoning ⚡client-show gives for its twelve div heights.
+            dataLabels: { enabled: true, formatter: function (percent) { return Math.round(percent) + '%'; } },
+            legend: { position: 'bottom' },
+            stroke: { width: 0 },
+            tooltip: {
+                y: {
+                    formatter: function (value, opts) {
+                        return data.formatted[opts.seriesIndex];
+                    }
+                }
+            }
+        });
+
+        chart.render();
+        drawn(el, chart, payload, fallback);
+    }
+
+    function mount() {
+        // A closure left behind by a wire:navigate must not touch the page
+        // that replaced it.
+        if (! $wire.$el || ! $wire.$el.isConnected) return;
+
+        // No bundle, no chart — leave the tables in place rather than an empty
+        // box. This is the whole of the progressive-enhancement promise.
+        if (typeof ApexCharts === 'undefined') return;
+
+        trend($wire.$el);
+        clients($wire.$el);
+    }
+
+    // Once per component, not once per DOM node touched.
+    Livewire.hook('morphed', mount);
+
+    // The theme toggle flips a class on <html> and dispatches nothing, so a
+    // chart drawn in the dark would keep dark axis labels on a white card
+    // until the next render. Watching the class is the only signal there is.
+    var watcher = new MutationObserver(function () {
+        if (! $wire.$el || ! $wire.$el.isConnected) {
+            watcher.disconnect();
+
+            return;
+        }
+
+        mount();
+    });
+
+    watcher.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+
+    mount();
+})();
+</script>
+@endscript
 </div>

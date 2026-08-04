@@ -2,10 +2,13 @@
 
 namespace Modules\Accounting\Services;
 
+use Brick\Money\Money as BrickMoney;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Pagination\Cursor;
+use Illuminate\Support\Carbon;
 use Modules\Accounting\Contracts\ExpenseReader as ExpenseReaderContract;
 use Modules\Accounting\Models\Expense;
+use Modules\Accounting\Support\Currencies;
 use Modules\Accounting\Support\Money;
 
 /** `ExpenseReader` over the real table. Read only — there is no issue-style action for an expense. */
@@ -50,6 +53,79 @@ class ExpenseReader implements ExpenseReaderContract
             'prev_cursor' => $paginator->previousCursor()?->encode(),
             'per_page' => $perPage,
         ];
+    }
+
+    /** See the contract. One query, and no conversion performed anywhere in it. */
+    public function expensesByMonth(int $months = 12): array
+    {
+        // Deliberately the same window InvoiceReader builds, called rather
+        // than reimplemented: the two series are joined on this key, so a
+        // month that exists in one and not the other would silently drop out
+        // of the chart.
+        $window = InvoiceReader::monthWindow($months);
+
+        $firstMonth = array_key_first($window);
+        $lastMonth = array_key_last($window);
+
+        $expenses = Expense::query()
+            ->whereBetween('spent_on', [
+                $firstMonth.'-01',
+                Carbon::parse($lastMonth.'-01')->endOfMonth()->toDateString(),
+            ])
+            ->get(['id', 'currency', 'amount', 'reporting_currency', 'reporting_amount', 'spent_on']);
+
+        $totals = array_map(fn (): BrickMoney => Money::zero(Currencies::TRY), $window);
+        $counted = 0;
+        $excluded = 0;
+
+        foreach ($expenses as $expense) {
+            $key = $expense->spent_on->format('Y-m');
+
+            if (! array_key_exists($key, $totals)) {
+                continue;
+            }
+
+            $lira = $this->lira($expense);
+
+            if ($lira === null) {
+                $excluded++;
+
+                continue;
+            }
+
+            $totals[$key] = $totals[$key]->plus($lira, Money::ROUNDING);
+            $counted++;
+        }
+
+        return [
+            'currency' => Currencies::TRY,
+            'symbol' => Currencies::symbol(Currencies::TRY),
+            'months' => array_values(array_map(fn (string $key): array => [
+                'month' => $key,
+                'label' => $window[$key],
+                'amount' => Money::toStorage($totals[$key]),
+                'formatted' => Money::format(Money::toStorage($totals[$key]), Currencies::TRY),
+            ], array_keys($window))),
+            'counted' => $counted,
+            'excluded' => $excluded,
+        ];
+    }
+
+    /**
+     * What one expense is worth in lira, or null when nothing on the row says.
+     * Never derives a rate — see the contract's docblock.
+     */
+    private function lira(Expense $expense): ?BrickMoney
+    {
+        if ($expense->currency === Currencies::TRY) {
+            return Money::fromStorage((string) $expense->amount, Currencies::TRY);
+        }
+
+        if ($expense->reporting_currency !== Currencies::TRY || $expense->reporting_amount === null) {
+            return null;
+        }
+
+        return Money::fromStorage((string) $expense->reporting_amount, Currencies::TRY);
     }
 
     private function query(): Builder

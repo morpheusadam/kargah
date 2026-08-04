@@ -10,10 +10,12 @@ use Livewire\Component;
 use Modules\Accounting\Models\Expense;
 use Modules\Accounting\Models\Invoice;
 use Modules\Accounting\Models\Payment;
+use Modules\Accounting\Models\RecurringInvoice;
 use Modules\Accounting\Support\Currencies;
 use Modules\Accounting\Support\Money;
 use Modules\Core\Concerns\InteractsWithToasts;
 use Modules\Core\Models\Customer;
+use Modules\Mailbox\Contracts\EmailReader;
 use Modules\Project\Contracts\CardReader;
 
 /**
@@ -23,7 +25,13 @@ use Modules\Project\Contracts\CardReader;
  * and every document either side has raised. The tab lives in the query string
  * so a link to "Northwind, invoices tab" is a link someone can actually send.
  *
- * Four things are worth knowing before changing anything.
+ * Five things are worth knowing before changing anything.
+ *
+ * **Archive is the ordinary answer; delete is the rare one.** A client is shared
+ * by four modules and named by financial records that have to outlive them, so
+ * `delete()` refuses anything an invoice, a schedule, a card or a message still
+ * points at, and says which. See its own docblock for why the one case it does
+ * allow is a `forceDelete` rather than a soft one.
  *
  * **A client that is not there is not an error.** The id comes out of the URL,
  * so it may be a client that was deleted, or one that never existed. That gets
@@ -66,6 +74,8 @@ class extends Component
 
     private ?Collection $resolvedExpenses = null;
 
+    private ?Collection $resolvedCards = null;
+
     public function mount(string $client): void
     {
         $this->clientId = $client;
@@ -90,12 +100,23 @@ class extends Component
         return $this->resolvedCustomer ??= Customer::query()->find((int) $this->clientId);
     }
 
-    /** This client's cards, read across the module boundary by contract. */
-    private function cards(): \Illuminate\Support\Collection
+    /**
+     * This client's cards, read across the module boundary by contract.
+     *
+     * Memoised: the Projects tab and the delete guard both want them, and
+     * without this the page asks Project for the same cards twice per render.
+     */
+    private function cards(): Collection
     {
+        if ($this->resolvedCards !== null) {
+            return $this->resolvedCards;
+        }
+
         $customer = $this->customer();
 
-        return $customer === null ? collect() : app(CardReader::class)->forCustomer($customer->id);
+        return $this->resolvedCards = $customer === null
+            ? collect()
+            : app(CardReader::class)->forCustomer($customer->id);
     }
 
     /* Reading the books ------------------------------------------------------- */
@@ -385,6 +406,15 @@ class extends Component
             // card; it may not hold one — see Modules\Project\Contracts\CardReader.
             'cards' => $this->cards(),
 
+            // Whether the delete offers a confirmation or only an explanation.
+            // The card count here is the *active* one, because those cards are
+            // already loaded for the Projects tab and asking Project a second
+            // time on every render to catch an archived card is not worth a
+            // query. `delete()` re-asks including the archive and is the
+            // authority; the worst this optimism costs is a confirmation
+            // followed by a refusal that names the card.
+            'deletable' => $this->whatStillPointsAtThisClient($this->cards()->count()) === [],
+
             'stats' => [
                 [
                     'label' => 'Lifetime value',
@@ -550,6 +580,142 @@ class extends Component
                 'They are off the active list. Every invoice and note is untouched.',
             );
     }
+
+    /**
+     * Delete a client — but only one that nothing at all refers to.
+     *
+     * 🔴 **Archive is the right answer for almost every client, and this method
+     * exists for the one case it is not.** A `customers` row is named by
+     * `invoices.customer_id`, and an invoice carries **no snapshot** of who it
+     * was for: no billing name, no address, nothing but the foreign key. Remove
+     * the client and the invoice can no longer say whose it was, which is
+     * strictly worse than a long client list. Every one of those columns is
+     * `nullOnDelete`, so the database will happily do exactly that on request.
+     *
+     * The one case worth serving is the client typed in by mistake: wrong
+     * spelling, wrong address, nothing raised against them. Archive does not
+     * serve it, and the reason is `⚡clients`' `unique:customers,email` rule —
+     * it counts a soft-deleted row, so an archived or soft-deleted typo holds
+     * that email address hostage for ever and the client cannot be re-added.
+     * Neither page offers an edit, so the address would simply be lost.
+     *
+     * 🔴 **Hence `forceDelete()`, not `delete()`.** A soft delete here would be
+     * the worst of both: the row claims to be gone while still blocking its own
+     * email address. It is only reached when nothing anywhere points at the
+     * client, so a hard delete orphans nothing — and "delete" then means what
+     * the confirmation says it means.
+     *
+     * What counts as "points at": an invoice in any state including soft-deleted
+     * and voided (a number is never reused, so the document survives its own
+     * deletion), a recurring schedule, a card on the boards, a message in the
+     * mailbox. The last two are read through Project's and Mailbox's contracts,
+     * never their models.
+     *
+     * **Known blind spot:** `contacts.customer_id` and `campaigns.customer_id`
+     * in Mailbox have no contract to count them, and both are `nullOnDelete`, so
+     * a delete would quietly unlink them. Neither is a financial record and
+     * neither is lost, but if a Mailbox reader ever grows a count for them it
+     * belongs in the list below.
+     */
+    public function delete(): void
+    {
+        $customer = $this->customer();
+
+        if ($customer === null) {
+            $this->toastError('That client is not here', 'Nothing was changed.');
+
+            return;
+        }
+
+        // The authoritative count, unlike the one the page rendered with:
+        // archived cards are included, because a card in the archive still names
+        // this client and comes back naming them if it is restored.
+        $blockers = $this->whatStillPointsAtThisClient(
+            app(CardReader::class)->forCustomer($customer->id, includeArchived: true)->count(),
+        );
+
+        if ($blockers !== []) {
+            $this->toastError(
+                $customer->name.' cannot be deleted',
+                'Kargah still has '.$this->readableList($blockers).' naming them, and a record whose '
+                .'client cannot be named is worse than a long client list. Archive them instead — that '
+                .'takes them off the active list and changes nothing else.',
+            );
+
+            return;
+        }
+
+        $name = $customer->name;
+        $email = $customer->email;
+
+        $customer->forceDelete();
+
+        $this->flashToast(
+            'success',
+            $name.' deleted',
+            'Nothing was pointing at them — no invoice, no schedule, no card, no message — so the record '
+            .'is gone rather than archived, and '.$email.' is free to use again.',
+        );
+
+        $this->redirect(route('accounting.clients'), navigate: true);
+    }
+
+    /**
+     * Everything that would be left naming nobody if this client went.
+     *
+     * The card count is a parameter rather than read here, because the two
+     * callers legitimately want different counts: the render wants the cards it
+     * has already loaded, and `delete()` wants the archive included too.
+     *
+     * Counting rows in SQL is fine — it is *adding money* in SQL that is not.
+     *
+     * @return list<string> phrases like "2 invoices", empty when nothing refers
+     */
+    private function whatStillPointsAtThisClient(int $cardCount): array
+    {
+        $customer = $this->customer();
+
+        if ($customer === null) {
+            return [];
+        }
+
+        /** @var list<array{0: string, 1: string, 2: int}> $counts */
+        $counts = [
+            ['invoice', 'invoices', Invoice::query()->withTrashed()->where('customer_id', $customer->id)->count()],
+            ['recurring schedule', 'recurring schedules', RecurringInvoice::query()->withTrashed()->where('customer_id', $customer->id)->count()],
+            ['card on the boards', 'cards on the boards', $cardCount],
+            ['message in the mailbox', 'messages in the mailbox', app(EmailReader::class)->countForCustomer($customer->id)],
+        ];
+
+        $phrases = [];
+
+        foreach ($counts as [$singular, $plural, $count]) {
+            if ($count > 0) {
+                $phrases[] = $count.' '.($count === 1 ? $singular : $plural);
+            }
+        }
+
+        return $phrases;
+    }
+
+    /**
+     * A list a person would read aloud.
+     *
+     * `implode(', ')` on three things gives a sentence nobody writes, and the
+     * refusal is the whole point of the feature — it has to be readable.
+     *
+     * @param  list<string>  $phrases
+     */
+    private function readableList(array $phrases): string
+    {
+        if (count($phrases) < 2) {
+            return implode('', $phrases);
+        }
+
+        $last = array_pop($phrases);
+
+        return implode(', ', $phrases).' and '.$last;
+    }
 };
 
 ?>
@@ -625,6 +791,16 @@ class extends Component
                                         class="kt-btn kt-btn-ghost justify-start gap-2 {{ $customer->isArchived() ? '' : 'text-destructive' }}">
                                     <i class="ki-filled ki-archive"></i>
                                     {{ $customer->isArchived() ? 'Restore client' : 'Archive client' }}
+                                </button>
+                                {{-- Offered always, permitted rarely. No `wire:confirm` when
+                                     something still refers to the client: nothing is going to
+                                     happen, and the click's job is to say what refers to them.
+                                     When it is permitted the confirmation names the address that
+                                     comes free again, because that is the reason to want it. --}}
+                                <button wire:click="delete" wire:loading.attr="disabled" wire:target="delete"
+                                        @if ($deletable) wire:confirm="Delete {{ $customer->name }} for good?&#10;&#10;No invoice, schedule, card or message refers to them, so the record goes rather than being archived and {{ $customer->email }} is free to use again. Nothing in Kargah brings it back." @endif
+                                        class="kt-btn kt-btn-ghost justify-start gap-2 text-destructive">
+                                    <i class="ki-filled ki-trash"></i> Delete client
                                 </button>
                             </div>
                         </div>

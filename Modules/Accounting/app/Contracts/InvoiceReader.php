@@ -103,4 +103,94 @@ interface InvoiceReader
      * @return array{outstanding: list<MoneyArray>, overdue: list<MoneyArray>}
      */
     public function totals(): array;
+
+    /**
+     * Invoiced revenue per month for the trailing `$months` months, in lira.
+     *
+     * This is the one place in this contract that returns a single figure
+     * across currencies, and it is allowed to only because it never performs a
+     * conversion. Each invoice contributes the lira figure **it already
+     * carries**:
+     *
+     * - an invoice raised in lira contributes its own `total` — nothing to
+     *   convert, so nothing to get wrong;
+     * - an invoice raised in dollars or tether contributes `try_equivalent`,
+     *   which `InvoiceIssuer` froze at issue against a named TCMB rate on a
+     *   named date;
+     * - an invoice that has neither is **excluded and counted**, never
+     *   converted at today's rate. That is the difference between this and
+     *   `totals()`: `totals()` refuses a single figure because outstanding
+     *   balance is *dynamic* and multiplying it by an issue-time rate would
+     *   invent a number; a revenue series is the invoice's *face* total, which
+     *   is exactly what the frozen figure is the frozen figure of.
+     *
+     * `excluded` therefore has to be shown wherever `months` is shown. "Three
+     * invoices are not on this chart because they have no lira rate" is a
+     * sentence somebody can act on; a series that quietly drops them is a
+     * series that reads as a bad month.
+     *
+     * Invoiced revenue is **not** cash received. There is deliberately no
+     * cash-in equivalent of this method: a `payments` row carries
+     * `settlement_rate` to the *invoice's* currency and no rate to lira at
+     * all, so a cash-in-lira series could only be produced by re-converting,
+     * which is the thing this docblock exists to refuse.
+     *
+     * `symbol` is the lira sign, so no caller — least of all a chart's
+     * JavaScript — needs a currency symbol table of its own. `month` is
+     * `YYYY-MM`, which is what a caller joins two series on; `label` is how it
+     * reads on an axis.
+     *
+     * @return array{
+     *     currency: string, symbol: string,
+     *     months: list<array{month: string, label: string, amount: string, formatted: string}>,
+     *     counted: int, excluded: int
+     * }
+     */
+    public function revenueByMonth(int $months = 12): array;
+
+    /**
+     * The same trailing-`$months` lira revenue, grouped by client instead of
+     * by month, biggest first, with everything past `$limit` rolled into one
+     * `is_other` row. It answers concentration risk: how much of the practice
+     * rests on one client.
+     *
+     * Same frozen-figure rule and same `excluded` count as
+     * `revenueByMonth()` — see that docblock. An invoice with no client at all
+     * is its own row rather than being dropped, because "billed to nobody" is
+     * a data problem worth seeing rather than hiding.
+     *
+     * @return array{
+     *     currency: string, symbol: string,
+     *     clients: list<array{name: string, amount: string, formatted: string, is_other: bool}>,
+     *     counted: int, excluded: int
+     * }
+     */
+    public function revenueByClient(int $months = 12, int $limit = 6): array;
+
+    /**
+     * Outstanding money split by how overdue it is — the aging report every
+     * source ranks alongside P&L as essential for a freelancer, because unpaid
+     * invoices are the cash-flow risk.
+     *
+     * **Per currency inside each bucket, never converted.** Unlike
+     * `revenueByMonth()`, an outstanding balance is what is left after
+     * payments, so it is dynamic and no document froze a lira figure for it —
+     * exactly the reasoning `totals()` gives for staying per currency. Adding
+     * the buckets' `totals` back up gives `totals()['outstanding']` exactly.
+     *
+     * An invoice that owes nothing — fully paid but not yet marked so — is in
+     * no bucket and in no count. It is not money anybody is waiting for, and
+     * counting it would overstate "4 invoices overdue" to somebody deciding
+     * whether to chase.
+     *
+     * Buckets are fixed and ordered: `not_due`, `1_30`, `31_60`, `over_60`,
+     * measured from `due_on` against the start of today — the same date test
+     * `Invoice::isOverdue()` uses.
+     *
+     * @return array{
+     *     buckets: list<array{key: string, label: string, count: int, totals: list<MoneyArray>}>,
+     *     count: int
+     * }
+     */
+    public function agedReceivables(): array;
 }

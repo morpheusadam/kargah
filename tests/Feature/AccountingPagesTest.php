@@ -9,11 +9,14 @@ use Livewire\Livewire;
 use Modules\Accounting\Models\Expense;
 use Modules\Accounting\Models\Invoice;
 use Modules\Accounting\Models\LedgerEntry;
+use Modules\Accounting\Models\RecurringInvoice;
 use Modules\Accounting\Services\ExchangeRates;
 use Modules\Accounting\Services\PaymentRecorder;
 use Modules\Accounting\Support\Currencies;
+use Modules\Accounting\Support\Money;
 use Modules\Core\Models\Company;
 use Modules\Core\Models\Customer;
+use Modules\Project\Models\Card;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
@@ -237,6 +240,128 @@ class AccountingPagesTest extends TestCase
         $this->assertSame(1, Expense::query()->count());
     }
 
+    /* Deleting an expense ------------------------------------------------------- */
+
+    public function test_deleting_an_expense_that_posted_nothing_to_the_ledger_removes_it(): void
+    {
+        $expense = $this->expense('Namecheap', 'Domains', '14.98', days: 2);
+
+        Livewire::test('accounting::expense-edit', ['expense' => (string) $expense->id])
+            ->call('delete')
+            ->assertRedirect(route('accounting.expenses'));
+
+        $this->assertNull(Expense::query()->find($expense->id), 'The expense survived its own deletion.');
+        $this->assertNotNull(
+            Expense::withTrashed()->find($expense->id),
+            'The expense was hard-deleted. `deleted_at` exists so the row stays readable.',
+        );
+    }
+
+    /**
+     * 🔴 The whole point of the reversal.
+     *
+     * Not "an entry was written" — that would pass for a contra entry of the
+     * wrong sign, the wrong amount or against the wrong row. What has to be true
+     * is that `LedgerEntry::standing()`, which is what a balance is summed from,
+     * adds up to exactly what it did before the expense ever existed. Both rows
+     * stay in the table; neither counts.
+     */
+    public function test_deleting_an_expense_reverses_its_ledger_entry_and_the_standing_balance_returns(): void
+    {
+        // An unrelated entry, so "the balance came back" cannot be satisfied by
+        // the ledger simply being empty at both ends.
+        LedgerEntry::query()->create([
+            'entry_type' => LedgerEntry::TYPE_ADJUSTMENT,
+            'currency' => Currencies::USD,
+            'amount' => '250.000000',
+            'description' => 'Opening balance',
+            'occurred_at' => now()->subMonth(),
+        ]);
+
+        $before = $this->standingTotal();
+
+        $expense = $this->expense('Hostinger', 'Hosting', '71.88', days: 3);
+
+        LedgerEntry::query()->create([
+            'entry_type' => LedgerEntry::TYPE_EXPENSE,
+            'reference_type' => $expense->getMorphClass(),
+            'reference_id' => $expense->id,
+            'currency' => Currencies::USD,
+            // Money out is a negative entry, exactly as the seeder writes it.
+            'amount' => '-71.880000',
+            'description' => 'Hostinger — Hosting',
+            'occurred_at' => $expense->spent_on,
+        ]);
+
+        $this->assertNotSame($before, $this->standingTotal(), 'The expense entry never counted, so the test proves nothing.');
+
+        Livewire::test('accounting::expense-edit', ['expense' => (string) $expense->id])->call('delete');
+
+        $this->assertSame($before, $this->standingTotal(), 'The standing balance did not come back after the reversal.');
+
+        // Reversed, not deleted: the original and its contra both remain.
+        $this->assertSame(
+            2,
+            LedgerEntry::query()->where('reference_id', $expense->id)->where('reference_type', $expense->getMorphClass())->count(),
+            'The trail is a gap rather than a correction.',
+        );
+        $this->assertSame(1, LedgerEntry::query()->ofType(LedgerEntry::TYPE_REVERSAL)->count());
+        $this->assertNotNull(Expense::withTrashed()->find($expense->id)->deleted_at);
+    }
+
+    /**
+     * A cost already passed on to a client stays put.
+     *
+     * Asserted on behaviour — the row is still there and the ledger did not move
+     * — rather than on the wording of the refusal, which somebody should be free
+     * to improve.
+     */
+    public function test_an_expense_already_rebilled_onto_an_invoice_is_not_deleted(): void
+    {
+        $customer = $this->customerWithCompany();
+        $invoice = $this->invoice($customer, '500.00', issuedDaysAgo: 20);
+
+        $expense = $this->expense('DigitalOcean', 'Hosting', '120.00', days: 8, attributes: [
+            'is_billable' => true,
+            'rebilled_on_invoice_id' => $invoice->id,
+        ]);
+
+        $entries = LedgerEntry::query()->count();
+
+        Livewire::test('accounting::expense-edit', ['expense' => (string) $expense->id])
+            ->call('delete')
+            ->assertNoRedirect();
+
+        $this->assertNotNull(Expense::query()->find($expense->id), 'A cost on an issued invoice was deleted anyway.');
+        $this->assertNull($expense->fresh()->deleted_at);
+        $this->assertSame($entries, LedgerEntry::query()->count(), 'A refused delete still wrote to the ledger.');
+    }
+
+    /** The list is the only way to the editor, and so the only way to a delete. */
+    public function test_the_expenses_list_links_each_row_to_its_editor(): void
+    {
+        $expense = $this->expense('Figma', 'Software', '45.00', days: 4);
+
+        $this->get('/accounting/expenses')
+            ->assertOk()
+            ->assertSee(route('accounting.expense-edit', ['expense' => $expense->id]), escape: false);
+    }
+
+    /**
+     * What `LedgerEntry::standing()` adds up to, in USD, as a decimal string.
+     *
+     * Added through `Money`, never `SUM()`: a decimal column on SQLite has
+     * NUMERIC affinity, so a SQL sum of money is a sum of doubles and this
+     * assertion would pass or fail on the last bit of a float.
+     */
+    private function standingTotal(): string
+    {
+        return Money::toStorage(Money::sum(
+            LedgerEntry::query()->standing()->get()->map(fn (LedgerEntry $entry): string => (string) $entry->amount),
+            Currencies::USD,
+        ));
+    }
+
     /* Clients ------------------------------------------------------------------ */
 
     /**
@@ -323,6 +448,115 @@ class AccountingPagesTest extends TestCase
         $component->call('archive');
 
         $this->assertNull($customer->fresh()->archived_at, 'Restoring a client changed nothing.');
+    }
+
+    /* Deleting a client ---------------------------------------------------------- */
+
+    /**
+     * The invoice carries no snapshot of who it was for — only `customer_id` —
+     * so a deleted client is an invoice that cannot name its own buyer.
+     */
+    public function test_a_client_with_invoices_is_refused_rather_than_deleted(): void
+    {
+        $customer = $this->customerWithCompany();
+        $this->invoice($customer, '1200.00', issuedDaysAgo: 15);
+
+        $component = Livewire::test('accounting::client-show', ['client' => (string) $customer->id]);
+
+        $this->assertFalse($component->viewData('deletable'), 'The page offered to delete a client it will refuse.');
+
+        $component->call('delete')->assertNoRedirect();
+
+        $this->assertNotNull(Customer::withTrashed()->find($customer->id), 'A client with invoices was deleted.');
+        $this->assertNull($customer->fresh()->archived_at, 'A refused delete archived the client behind their back.');
+    }
+
+    /** A voided or soft-deleted invoice is still a document with their name on it. */
+    public function test_a_client_whose_only_invoice_was_deleted_is_still_refused(): void
+    {
+        $customer = $this->customerWithCompany();
+        $this->invoice($customer, '600.00', issuedDaysAgo: 40)->delete();
+
+        Livewire::test('accounting::client-show', ['client' => (string) $customer->id])
+            ->call('delete')
+            ->assertNoRedirect();
+
+        $this->assertNotNull(Customer::withTrashed()->find($customer->id));
+    }
+
+    public function test_a_client_with_a_recurring_schedule_is_refused(): void
+    {
+        $customer = $this->customerWithCompany();
+
+        RecurringInvoice::query()->create([
+            'company_id' => $customer->company_id,
+            'customer_id' => $customer->id,
+            'title' => 'Monthly retainer',
+            'currency' => Currencies::USD,
+            'cadence' => 'monthly',
+            'next_run_on' => now()->addMonth()->toDateString(),
+            'lines' => [['description' => 'Retainer', 'quantity' => '1', 'unit_price' => '900.00']],
+        ]);
+
+        Livewire::test('accounting::client-show', ['client' => (string) $customer->id])
+            ->call('delete')
+            ->assertNoRedirect();
+
+        $this->assertNotNull(Customer::withTrashed()->find($customer->id));
+    }
+
+    /**
+     * A client is not Accounting's alone. Project holds cards against one, and a
+     * card whose client vanished is the same defect as an invoice's.
+     */
+    public function test_a_client_a_card_still_points_at_is_refused(): void
+    {
+        $customer = $this->customerWithCompany();
+
+        Card::factory()->create(['customer_id' => $customer->id]);
+
+        Livewire::test('accounting::client-show', ['client' => (string) $customer->id])
+            ->call('delete')
+            ->assertNoRedirect();
+
+        $this->assertNotNull(Customer::withTrashed()->find($customer->id));
+    }
+
+    /**
+     * The one case delete exists for: a client typed in by mistake.
+     *
+     * `forceDelete`, not a soft one — `⚡clients` validates the email as
+     * `unique:customers,email`, which counts a soft-deleted row, so a soft
+     * delete would hold the mistyped address hostage while claiming the client
+     * was gone. The assertion is that the address can be used again.
+     */
+    public function test_a_client_nothing_refers_to_is_deleted_and_frees_their_email(): void
+    {
+        $customer = Customer::factory()->create([
+            'name' => 'Hlen Vasquez',
+            'email' => 'helen@northwind.example',
+            'archived_at' => null,
+        ]);
+
+        $component = Livewire::test('accounting::client-show', ['client' => (string) $customer->id]);
+
+        $this->assertTrue($component->viewData('deletable'), 'The page will not offer a delete it would allow.');
+
+        $component->call('delete')->assertRedirect(route('accounting.clients'));
+
+        $this->assertNull(
+            Customer::withTrashed()->find($customer->id),
+            'The client was only soft-deleted, so their email address is still spoken for.',
+        );
+
+        Livewire::test('accounting::clients')
+            ->call('startAdding')
+            ->set('newName', 'Helen Vasquez')
+            ->set('newEmail', 'helen@northwind.example')
+            ->call('addClient')
+            ->assertHasNoErrors('newEmail');
+
+        $this->assertSame('Helen Vasquez', Customer::query()->where('email', 'helen@northwind.example')->firstOrFail()->name);
     }
 
     public function test_adding_a_note_persists_against_the_client(): void

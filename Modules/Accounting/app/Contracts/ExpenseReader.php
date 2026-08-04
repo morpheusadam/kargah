@@ -34,4 +34,30 @@ interface ExpenseReader
      * @return array{items: list<ExpenseArray>, next_cursor: ?string, prev_cursor: ?string, per_page: int}
      */
     public function paginate(string $search = '', ?bool $billable = null, ?string $cursor = null, int $perPage = 20): array;
+
+    /**
+     * What the business cost per month for the trailing `$months` months, in
+     * lira — the other half of `InvoiceReader::revenueByMonth()`, returned in
+     * the same shape and keyed on the same `YYYY-MM` months so the two can be
+     * drawn on one axis.
+     *
+     * The same rule applies and for the same reason: no conversion happens
+     * here. An expense paid in lira contributes its own `amount`; an expense
+     * paid in another currency contributes `reporting_amount` **only when
+     * `reporting_currency` is lira**, because that is the figure whoever
+     * recorded the expense froze against a stated rate. Anything else —
+     * including an expense reported in dollars, which is what the factory
+     * produces by default — is excluded and counted, never re-converted at
+     * today's rate.
+     *
+     * `excluded` has to be shown wherever `months` is: a cost line that
+     * silently omits four expenses reads as a cheap quarter.
+     *
+     * @return array{
+     *     currency: string, symbol: string,
+     *     months: list<array{month: string, label: string, amount: string, formatted: string}>,
+     *     counted: int, excluded: int
+     * }
+     */
+    public function expensesByMonth(int $months = 12): array;
 }

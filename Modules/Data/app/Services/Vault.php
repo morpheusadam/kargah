@@ -99,6 +99,28 @@ class Vault
      * to be the cryptographic one. Look-alike characters are excluded by
      * default because a secret is read aloud down a phone more often than
      * anyone admits, and `l` against `1` costs a support call.
+     *
+     * 🔴 **Each requested class is guaranteed to appear, rather than merely
+     * being in the pool.** This drew all 32 characters uniformly from a combined
+     * pool, so `useDigits: true` meant "digits are possible", not "there is a
+     * digit". With ambiguous characters excluded the digit alphabet is eight
+     * characters out of a pool of seventy-eight, which leaves about a **3%**
+     * chance that a 32-character secret contains no digit at all — and that is
+     * exactly how often `VaultTest::test_the_generator_produces_a_secret_of_the_
+     * requested_shape` failed: roughly one full-suite run in thirty, on a
+     * different assertion each time, looking like a flake rather than a promise
+     * the generator was not keeping. The real cost is not the test: a site that
+     * demands a digit rejects the generated secret one time in thirty, and the
+     * person has no idea why the generator that offered digits produced one
+     * without.
+     *
+     * One character is taken from each requested class first, the rest come from
+     * the combined pool, and the result is shuffled.
+     *
+     * ⚠️ **The shuffle is Fisher-Yates over `random_int`, not `str_shuffle()`.**
+     * `str_shuffle()` uses the same non-cryptographic generator as `rand`, and
+     * running a cryptographically generated secret through it would throw away
+     * the entropy the first half of this method exists to obtain.
      */
     public function generate(
         int $length = 20,
@@ -118,19 +140,40 @@ class Vault
             $digits .= '01';
         }
 
-        $pool = $lower
-            .($useUpper ? $upper : '')
-            .($useDigits ? $digits : '')
-            .($useSymbols ? $symbols : '');
+        // Lower case is always in. The other three are in only if asked for, and
+        // each one that is in gets a guaranteed character below.
+        $classes = array_values(array_filter([
+            $lower,
+            $useUpper ? $upper : '',
+            $useDigits ? $digits : '',
+            $useSymbols ? $symbols : '',
+        ]));
 
+        $pool = implode('', $classes);
+
+        // The floor of 8 is above the four classes, so the guaranteed characters
+        // can never overrun the requested length.
         $length = max(8, min(64, $length));
-        $out = '';
 
-        for ($i = 0; $i < $length; $i++) {
-            $out .= $pool[random_int(0, strlen($pool) - 1)];
+        $chars = [];
+
+        foreach ($classes as $class) {
+            $chars[] = $class[random_int(0, strlen($class) - 1)];
         }
 
-        return $out;
+        for ($i = count($chars); $i < $length; $i++) {
+            $chars[] = $pool[random_int(0, strlen($pool) - 1)];
+        }
+
+        // Fisher-Yates over random_int. Without this the first characters would
+        // be one-per-class in a fixed order — lower, upper, digit, symbol —
+        // which is a pattern an attacker knows and a shape a person notices.
+        for ($i = count($chars) - 1; $i > 0; $i--) {
+            $j = random_int(0, $i);
+            [$chars[$i], $chars[$j]] = [$chars[$j], $chars[$i]];
+        }
+
+        return implode('', $chars);
     }
 
     /**

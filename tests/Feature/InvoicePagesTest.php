@@ -8,9 +8,12 @@ use Livewire\Livewire;
 use Modules\Accounting\Database\Seeders\AccountingDatabaseSeeder;
 use Modules\Accounting\Models\Invoice;
 use Modules\Accounting\Models\InvoiceLine;
+use Modules\Accounting\Models\LedgerEntry;
+use Modules\Accounting\Models\Payment;
 use Modules\Accounting\Models\RecurringInvoice;
 use Modules\Accounting\Services\ExchangeRates;
 use Modules\Accounting\Services\InvoiceIssuer;
+use Modules\Accounting\Services\PaymentRecorder;
 use Modules\Accounting\Support\Currencies;
 use Modules\Accounting\Support\Money;
 use Modules\Core\Database\Seeders\CoreDatabaseSeeder;
@@ -95,6 +98,23 @@ class InvoicePagesTest extends TestCase
         }
 
         return app(InvoiceIssuer::class)->recalculate($invoice->refresh());
+    }
+
+    /**
+     * What every report adds up: the entries that have not been reversed.
+     *
+     * Summed in PHP through `Money`, never `SUM()` in SQL — on SQLite a decimal
+     * column is stored as an IEEE double and a SQL sum of money is approximate.
+     */
+    private function standingTotal(string $currency = Currencies::USD): string
+    {
+        return Money::toStorage(Money::sum(
+            LedgerEntry::standing()
+                ->where('currency', $currency)
+                ->pluck('amount')
+                ->map(fn ($amount): string => (string) $amount),
+            $currency,
+        ));
     }
 
     private function schedule(array $attributes = []): RecurringInvoice
@@ -454,6 +474,253 @@ class InvoicePagesTest extends TestCase
         $this->assertNotNull($voided->voided_at);
         $this->assertSame('void', $voided->status);
         $this->assertSame(1, $voided->lines()->count(), 'Voiding took the lines with it.');
+    }
+
+    /* Reversing a payment ------------------------------------------------------------ */
+
+    /**
+     * 🔴 The whole point of a reversal: the ledger comes back to where it was.
+     *
+     * Asserted through `standing()` because that is the scope every report sums
+     * from — an assertion on row counts alone would pass for an implementation
+     * that reversed the wrong entry, and an assertion on the raw table would
+     * pass for one that reversed nothing.
+     */
+    public function test_reversing_a_payment_puts_the_standing_ledger_back_and_leaves_both_rows(): void
+    {
+        $this->recordRates();
+
+        $invoice = app(InvoiceIssuer::class)->issue($this->draft(['number' => 'INV-9010']));
+
+        $before = $this->standingTotal();
+
+        $payment = app(PaymentRecorder::class)->record($invoice, '1500.00', Currencies::USD, '2026-07-20');
+
+        $this->assertSame('paid', $invoice->fresh()->status);
+        $this->assertNotSame($before, $this->standingTotal(), 'Recording the payment never reached the ledger.');
+
+        Livewire::test('accounting::invoice-show', ['invoice' => (string) $invoice->id])
+            ->call('reversePayment', $payment->id)
+            ->assertDispatched('toast');
+
+        // The figure every report adds up is exactly what it was.
+        $this->assertSame($before, $this->standingTotal());
+
+        // And both rows are still there to be read: the entry that was wrong,
+        // and the entry that says so.
+        $original = LedgerEntry::query()->whereNull('reverses_id')->latest('id')->firstOrFail();
+        $reversal = LedgerEntry::query()->whereNotNull('reverses_id')->latest('id')->firstOrFail();
+
+        $this->assertSame(2, LedgerEntry::query()->count(), 'A ledger row was removed instead of reversed.');
+        $this->assertSame('1500.000000', (string) $original->amount, 'The original entry was edited.');
+        $this->assertSame('-1500.000000', (string) $reversal->amount);
+        $this->assertSame($original->id, $reversal->reverses_id);
+        $this->assertSame(LedgerEntry::TYPE_REVERSAL, $reversal->entry_type);
+
+        // The reason names the payment it undoes, so the trail can be followed
+        // without joining anything back to a row that is no longer live.
+        $this->assertStringContainsString('INV-9010', (string) $reversal->description);
+
+        // The payment is gone from every query the module makes, and readable
+        // to anybody who asks for it by name.
+        $this->assertNull(Payment::query()->find($payment->id));
+        $this->assertNotNull(Payment::withTrashed()->find($payment->id));
+        $this->assertSame(0, Payment::query()->count(), 'A reversed payment is still counted as received.');
+    }
+
+    /**
+     * 🔴 The step a reversal gets wrong.
+     *
+     * A fully paid invoice whose only payment is taken back has to read as
+     * unpaid again *and* lose its `paid_at` — that timestamp is what a cash-flow
+     * report uses to decide which month the money arrived in, and one left
+     * behind is money reported in a month nothing happened.
+     */
+    public function test_reversing_the_only_payment_puts_the_invoice_back_to_unpaid(): void
+    {
+        $this->recordRates();
+
+        $invoice = app(InvoiceIssuer::class)->issue($this->draft(['number' => 'INV-9011']));
+        $payment = app(PaymentRecorder::class)->record($invoice, '1500.00', Currencies::USD, '2026-07-20');
+
+        $this->assertNotNull($invoice->fresh()->paid_at);
+
+        Livewire::test('accounting::invoice-show', ['invoice' => (string) $invoice->id])
+            ->call('reversePayment', $payment->id);
+
+        $after = $invoice->fresh();
+
+        $this->assertSame('sent', $after->status);
+        $this->assertNull($after->paid_at, 'The invoice reads as unpaid but still says when it was paid.');
+        $this->assertSame('1500.000000', app(PaymentRecorder::class)->outstanding($after));
+    }
+
+    /** One of two payments taken back leaves the other one standing. */
+    public function test_reversing_one_of_two_payments_leaves_the_invoice_part_paid(): void
+    {
+        $this->recordRates();
+
+        $invoice = app(InvoiceIssuer::class)->issue($this->draft(['number' => 'INV-9012']));
+
+        app(PaymentRecorder::class)->record($invoice, '500.00', Currencies::USD, '2026-07-20');
+        $second = app(PaymentRecorder::class)->record($invoice, '1000.00', Currencies::USD, '2026-07-21');
+
+        $this->assertSame('paid', $invoice->fresh()->status);
+
+        Livewire::test('accounting::invoice-show', ['invoice' => (string) $invoice->id])
+            ->call('reversePayment', $second->id);
+
+        $after = $invoice->fresh();
+
+        $this->assertSame('part_paid', $after->status);
+        $this->assertNull($after->paid_at);
+        $this->assertSame('1000.000000', app(PaymentRecorder::class)->outstanding($after));
+
+        // 500 standing, 1000 posted and undone.
+        $this->assertSame('500.000000', $this->standingTotal());
+        $this->assertSame(3, LedgerEntry::query()->count());
+    }
+
+    /**
+     * The same payment cannot be taken back twice.
+     *
+     * Reversing a reversal would net back to the original and say nothing —
+     * `LedgerEntry::reverse()` refuses it, and the page has to refuse before
+     * getting there so the payment row is not soft-deleted on its own.
+     */
+    public function test_a_payment_cannot_be_reversed_twice(): void
+    {
+        $this->recordRates();
+
+        $invoice = app(InvoiceIssuer::class)->issue($this->draft(['number' => 'INV-9013']));
+        $payment = app(PaymentRecorder::class)->record($invoice, '1500.00', Currencies::USD, '2026-07-20');
+
+        app(PaymentRecorder::class)->reverse($payment);
+
+        Livewire::test('accounting::invoice-show', ['invoice' => (string) $invoice->id])
+            ->call('reversePayment', $payment->id)
+            ->assertDispatched('toast');
+
+        $this->assertSame(2, LedgerEntry::query()->count(), 'A second reversal was written.');
+        $this->assertSame('0.000000', $this->standingTotal());
+    }
+
+    /**
+     * The chain record survives, and the page still says so.
+     *
+     * What a wallet did on chain happened, whatever it was applied to. The
+     * `crypto_payments` row has no `deleted_at` and is left exactly where it
+     * was; re-recording the same hash re-points it at the new payment.
+     */
+    public function test_reversing_a_crypto_payment_keeps_the_on_chain_record_readable(): void
+    {
+        $this->recordRates();
+
+        $invoice = app(InvoiceIssuer::class)->issue(
+            $this->draft(['currency' => Currencies::USDT, 'number' => 'INV-9014']),
+        );
+
+        $hash = 'c7a2e5f18b3d6094a2c4e6f80b1d3f5a7c9e1b3d5f7092a4c6e8b0d2f4a6c8e0';
+
+        Livewire::test('accounting::invoice-show', ['invoice' => (string) $invoice->id])
+            ->call('openPayment')
+            ->set('paymentAmount', '1500.00')
+            ->set('paymentCurrency', Currencies::USDT)
+            ->set('paymentMethod', 'crypto')
+            ->set('paymentPaidAt', '2026-07-20')
+            ->set('chain', 'tron')
+            ->set('txHash', $hash)
+            ->set('confirmations', '24')
+            ->call('recordPayment')
+            ->assertHasNoErrors();
+
+        $payment = $invoice->fresh()->payments()->firstOrFail();
+
+        Livewire::test('accounting::invoice-show', ['invoice' => (string) $invoice->id])
+            ->call('reversePayment', $payment->id);
+
+        $trashed = Payment::withTrashed()->findOrFail($payment->id);
+
+        $this->assertNotNull($trashed->chainDetail, 'Reversing the payment took the on-chain record with it.');
+        $this->assertSame($hash, $trashed->chainDetail->tx_hash);
+
+        // And the correction is legible on the page, not only in the database —
+        // the confirmation promised the reversal stays, so something has to show it.
+        $this->get('/accounting/invoices/'.$invoice->id)
+            ->assertOk()
+            ->assertSee('no longer counted against this invoice', false)
+            ->assertSee($trashed->chainDetail->shortHash(), false);
+    }
+
+    /* Deleting a draft ---------------------------------------------------------------- */
+
+    public function test_a_draft_invoice_can_be_deleted(): void
+    {
+        $invoice = $this->draft(['number' => 'INV-9020']);
+
+        Livewire::test('accounting::invoice-show', ['invoice' => (string) $invoice->id])
+            ->call('deleteInvoice')
+            ->assertRedirect(route('accounting.invoices'));
+
+        $this->assertNull(Invoice::query()->find($invoice->id), 'The draft is still in the book.');
+
+        $trashed = Invoice::withTrashed()->findOrFail($invoice->id);
+
+        // Soft, so the unique number stays taken: `invoice_lines.invoice_id`
+        // cascades on a *hard* delete only, which is why the lines are still
+        // attached and would come back with the row.
+        $this->assertNotNull($trashed->deleted_at);
+        $this->assertSame(1, $trashed->lines()->count());
+
+        // A draft posts nothing, so nothing had to be reversed.
+        $this->assertSame(0, LedgerEntry::query()->count());
+
+        // And the page it leaves behind explains itself rather than 404ing.
+        $this->get('/accounting/invoices/'.$invoice->id)->assertOk()->assertSee('That invoice is not here');
+    }
+
+    /**
+     * 🔴 An issued invoice refuses, out loud.
+     *
+     * A sequential invoice number is never reused, so an issued invoice is
+     * voided and re-issued under a new number — never deleted. Asserted as a
+     * refusal rather than as a missing button, because a missing button is one
+     * `wire:click` away from being called anyway.
+     */
+    public function test_an_issued_invoice_refuses_to_be_deleted(): void
+    {
+        $this->recordRates();
+
+        $invoice = app(InvoiceIssuer::class)->issue($this->draft(['number' => 'INV-9021']));
+
+        Livewire::test('accounting::invoice-show', ['invoice' => (string) $invoice->id])
+            ->call('deleteInvoice')
+            ->assertNoRedirect()
+            ->assertDispatched('toast');
+
+        $this->assertNotNull(Invoice::query()->find($invoice->id), 'An issued invoice was deleted.');
+        $this->assertNull(Invoice::withTrashed()->find($invoice->id)->deleted_at);
+    }
+
+    /**
+     * A voided invoice refuses too, and that is the decision rather than an
+     * oversight: it was issued, it consumed a number, and the record of it
+     * having been voided is the only thing that accounts for the gap.
+     */
+    public function test_a_voided_invoice_refuses_to_be_deleted(): void
+    {
+        $this->recordRates();
+
+        $invoice = app(InvoiceIssuer::class)->issue($this->draft(['number' => 'INV-9022']));
+
+        Livewire::test('accounting::invoice-show', ['invoice' => (string) $invoice->id])
+            ->call('openVoid')
+            ->call('voidInvoice')
+            ->call('deleteInvoice')
+            ->assertDispatched('toast');
+
+        $this->assertNotNull(Invoice::query()->find($invoice->id), 'A voided invoice was deleted.');
+        $this->assertSame('void', $invoice->fresh()->status);
     }
 
     /* Recurring --------------------------------------------------------------------- */

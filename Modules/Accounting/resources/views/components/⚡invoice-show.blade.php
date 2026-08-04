@@ -5,6 +5,7 @@ use Livewire\Attributes\Title;
 use Livewire\Component;
 use Modules\Accounting\Models\CryptoPayment;
 use Modules\Accounting\Models\Invoice;
+use Modules\Accounting\Models\Payment;
 use Modules\Accounting\Services\PaymentRecorder;
 use Modules\Accounting\Support\Currencies;
 use Modules\Accounting\Support\Money;
@@ -25,6 +26,20 @@ use Modules\Core\Concerns\InteractsWithToasts;
  *
  * Voiding sets `voided_at`. It never deletes: the ledger outlives the document,
  * and an invoice that vanishes is an invoice nobody can explain.
+ *
+ * **Three ways to take something back, and they are not interchangeable.**
+ *
+ * - **Void** an issued invoice. The number was published, and a sequential
+ *   number is never reused or removed — the gap is the thing an accountant asks
+ *   about. Void and re-issue under a new number.
+ * - **Delete** a draft, and only a draft. It was never issued, has no legal
+ *   existence and posts nothing to the ledger, so removing it removes nothing
+ *   anybody has seen.
+ * - **Reverse** a payment. Never a delete: `PaymentRecorder::reverse()` writes a
+ *   contra entry, soft-deletes the payment and re-derives the invoice's status
+ *   from the one place that defines it. The confirmation says out loud that the
+ *   reversal stays in the ledger, because somebody expecting the row to vanish
+ *   should learn that before they click and not after.
  */
 new
 #[Title('Invoice — Kargah')]
@@ -192,6 +207,11 @@ class extends Component
             'invoice' => $invoice,
             'lines' => $invoice->lines,
             'payments' => $invoice->payments,
+            // The other half of a reversal. `payments` excludes these already,
+            // so the figures above are unaffected; they are read back purely so
+            // the correction is visible to the person who made it rather than
+            // only to somebody reading the ledger table directly.
+            'reversedPayments' => $invoice->payments()->onlyTrashed()->with('chainDetail')->get(),
             'reporting' => $this->reportingFigure($invoice),
             'lira' => $this->liraFigure($invoice),
             'revaluation' => $invoice->isVoid() ? null : $this->revaluation($invoice),
@@ -414,6 +434,142 @@ class extends Component
         );
     }
 
+    /* Reversing a payment ---------------------------------------------------------- */
+
+    /**
+     * Undo a payment recorded in error.
+     *
+     * Everything happens in `PaymentRecorder::reverse()` — the contra entry,
+     * the soft delete and the recomputed status are one operation and splitting
+     * any of it out here would make two of the three possible on their own. The
+     * `DomainException` it throws is a sentence someone can act on; it is shown
+     * as written rather than swapped for a code.
+     */
+    public function reversePayment(int $paymentId): void
+    {
+        $invoice = $this->invoice();
+
+        if ($invoice === null) {
+            return;
+        }
+
+        $payment = $invoice->payments()->whereKey($paymentId)->first();
+
+        if ($payment === null) {
+            $this->toastError(
+                'That payment is not here',
+                'It has already been reversed, or this page is showing a state that has since changed. Reload and look again.',
+            );
+
+            return;
+        }
+
+        $recorder = app(PaymentRecorder::class);
+        $reversed = $payment->formattedAmount();
+
+        try {
+            $recorder->reverse($payment);
+        } catch (\DomainException $e) {
+            $this->toastError('That payment was not reversed', $e->getMessage());
+
+            return;
+        }
+
+        $this->resolved = null;
+
+        $fresh = $this->invoice();
+        $outstanding = $recorder->outstanding($fresh);
+
+        $this->paymentAmount = $outstanding;
+
+        $this->toastSuccess(
+            $reversed.' reversed on '.$fresh->number,
+            Money::format($outstanding, $fresh->currency).' is outstanding again. The reversal stays in the ledger '
+            .'beside the entry it undoes — neither row was removed.',
+        );
+    }
+
+    /**
+     * What the invoice will read as once a payment is taken back.
+     *
+     * Asked of `PaymentRecorder`, which is the only thing that decides what
+     * "paid" means. The confirmation dialog is the sole warning anybody gets, so
+     * "goes back to part paid" has to be the state that actually results — a
+     * second copy of the comparison here would eventually promise one thing and
+     * do another.
+     */
+    public function afterReversing(Invoice $invoice, Payment $payment): string
+    {
+        return match (app(PaymentRecorder::class)->statusFor($invoice, $payment->getKey())) {
+            'paid' => $invoice->number.' stays paid — other payments still cover it in full',
+            'part_paid' => $invoice->number.' goes back to part paid',
+            'void' => $invoice->number.' stays void, and stops counting this money as received',
+            default => $invoice->number.' goes back to unpaid, owing the full '.$invoice->formattedTotal(),
+        };
+    }
+
+    /* Deleting a draft -------------------------------------------------------------- */
+
+    /**
+     * Delete the draft, which is the only invoice that can be deleted.
+     *
+     * The line falls exactly where `InvoiceIssuer` puts it. Once `sent_at` is
+     * set the number has been published and a sequential number is never reused
+     * — voiding is the answer, and the void notice on this page is what explains
+     * the gap. A draft has no such history: no rate frozen, no ledger entry, no
+     * number anybody outside this install has ever seen.
+     *
+     * A void invoice is *not* deletable for the same reason. It was issued, it
+     * consumed a number, and the record of it having been voided is the only
+     * thing that accounts for that number's absence from the book.
+     */
+    public function deleteInvoice(): void
+    {
+        $invoice = $this->invoice();
+
+        if ($invoice === null) {
+            return;
+        }
+
+        if ($invoice->isIssued()) {
+            $this->toastError(
+                $invoice->number.' cannot be deleted',
+                'It has been issued, and an issued number is never reused or removed — the gap it would leave is '
+                .'the thing an accountant asks about. Void it instead: the document stays and the amount stops being owed.',
+            );
+
+            return;
+        }
+
+        // Not reachable from this page — the payment panel refuses a draft —
+        // but a draft that somehow carried one would leave that payment behind
+        // in every monthly total with no invoice left to explain it.
+        if ($invoice->payments()->exists()) {
+            $this->toastError(
+                $invoice->number.' cannot be deleted',
+                'A payment has been recorded against it. Reverse the payment first, then the draft can go.',
+            );
+
+            return;
+        }
+
+        $number = $invoice->number;
+
+        // Soft, so the number stays taken. `InvoiceIssuer`'s numbering and the
+        // recurring generator both count trashed rows for exactly this reason:
+        // the unique index still holds the number, and handing it to a second
+        // invoice would be worse than losing it.
+        $invoice->delete();
+
+        $this->flashToast(
+            'success',
+            $number.' deleted',
+            'It was never issued, so nothing left the ledger. The number stays reserved rather than being handed to the next invoice.',
+        );
+
+        $this->redirectRoute('accounting.invoices', navigate: true);
+    }
+
     /** A decimal string, or zero when the box does not hold one. Never a float. */
     private function decimal(mixed $value, string $fallback = '0'): string
     {
@@ -444,9 +600,15 @@ class extends Component
 
     @else
 
-        {{-- Click-away for whichever panel is open, below the panels and above everything else. --}}
+        {{-- Click-away for whichever panel is open, below the panels and above everything else.
+
+             The handler has to be the one belonging to the panel that is actually open. This read
+             `wire:click="closePayment"` unconditionally, so clicking outside the **void** panel
+             called a method that only clears `$paymentOpen` and the panel stayed where it was —
+             the one dismissal gesture everybody tries first did nothing, on the single most
+             destructive action on the page. --}}
         @if ($paymentOpen || $voidOpen)
-            <div class="fixed inset-0 z-10" wire:click="closePayment" aria-hidden="true"></div>
+            <div class="fixed inset-0 z-10" wire:click="{{ $paymentOpen ? 'closePayment' : 'closeVoid' }}" aria-hidden="true"></div>
         @endif
 
         {{-- Heading --}}
@@ -709,8 +871,21 @@ class extends Component
                                             {{ $methods[$payment->method] ?? $payment->method }}
                                         </span>
                                     </div>
-                                    <div class="text-xs text-muted-foreground">
-                                        {{ $payment->paid_at?->format('j F Y') }}
+                                    <div class="flex items-center gap-1.5">
+                                        <span class="text-xs text-muted-foreground">
+                                            {{ $payment->paid_at?->format('j F Y') }}
+                                        </span>
+                                        {{--
+                                            The consequence in the owner's own money, and the one thing
+                                            somebody will not expect: the reversal is a row, not an erasure.
+                                        --}}
+                                        <button wire:click="reversePayment({{ $payment->id }})"
+                                                wire:loading.attr="disabled" wire:target="reversePayment"
+                                                wire:confirm="Reverse the {{ $payment->formattedAmount() }} payment recorded on {{ $payment->paid_at?->format('j F Y') }}?&#10;&#10;{{ $this->afterReversing($invoice, $payment) }}.&#10;&#10;The reversal stays in the ledger as a matching entry beside the original. Neither row is removed — that is what makes the correction readable a year from now."
+                                                class="kt-btn kt-btn-icon kt-btn-ghost size-7 text-destructive print:hidden"
+                                                title="Reverse this payment" aria-label="Reverse this payment">
+                                            <i class="ki-filled ki-arrows-circle text-sm"></i>
+                                        </button>
                                     </div>
                                 </div>
 
@@ -779,6 +954,42 @@ class extends Component
                                 @endif
                             </div>
                         @endforelse
+
+                        {{--
+                            Reversed payments, kept on screen deliberately. The confirmation promised
+                            that the reversal stays in the ledger; a page that then shows nothing at
+                            all leaves that promise unverifiable by the only person who can check it.
+                        --}}
+                        @if ($reversedPayments->isNotEmpty())
+                            <div class="border-t border-border pt-4 flex flex-col gap-3">
+                                <div class="text-xs uppercase tracking-wide text-muted-foreground">
+                                    Reversed — no longer counted against this invoice
+                                </div>
+                                @foreach ($reversedPayments as $reversedPayment)
+                                    <div class="rounded-lg border border-dashed border-border px-4 py-3 opacity-70"
+                                         wire:key="reversed-payment-{{ $reversedPayment->id }}">
+                                        <div class="flex flex-wrap items-baseline justify-between gap-2">
+                                            <div class="text-sm font-medium text-secondary-foreground line-through">
+                                                {{ $reversedPayment->formattedAmount() }}
+                                            </div>
+                                            <div class="text-xs text-muted-foreground">
+                                                recorded {{ $reversedPayment->paid_at?->format('j F Y') }}, reversed
+                                                {{ $reversedPayment->deleted_at?->format('j F Y') }}
+                                            </div>
+                                        </div>
+                                        <p class="text-xs text-secondary-foreground mt-1.5 leading-relaxed">
+                                            Taken back off the invoice. The entry it posted and the entry that undoes it
+                                            are both still in the ledger, so the correction can be read rather than
+                                            inferred from a gap.
+                                            @if ($reversedPayment->chainDetail)
+                                                The on-chain record stays as well — {{ $reversedPayment->chainDetail->shortHash() }}
+                                                happened, whatever it was applied to.
+                                            @endif
+                                        </p>
+                                    </div>
+                                @endforeach
+                            </div>
+                        @endif
                     </div>
                 </div>
 
@@ -834,6 +1045,18 @@ class extends Component
                                 <i class="ki-filled ki-cross-circle"></i> Void this invoice
                             </button>
                         @endif
+                        {{--
+                            Delete belongs to a draft and to nothing else. The confirmation names the
+                            lines that go with it and says the number is not handed on, because both
+                            are things somebody would otherwise find out afterwards.
+                        --}}
+                        @unless ($invoice->isIssued())
+                            <button wire:click="deleteInvoice" wire:loading.attr="disabled" wire:target="deleteInvoice"
+                                    wire:confirm="Delete draft {{ $invoice->number }}?&#10;&#10;{{ $lines->count() === 1 ? 'Its one line goes' : 'Its '.$lines->count().' lines go' }} with it and it stops appearing anywhere in Kargah.&#10;&#10;It was never issued, so nothing leaves the ledger and nobody outside this install has seen the number. {{ $invoice->number }} stays reserved rather than being handed to the next invoice."
+                                    class="kt-btn kt-btn-outline justify-start gap-2 w-full text-destructive">
+                                <i class="ki-filled ki-trash"></i> Delete this draft
+                            </button>
+                        @endunless
                     </div>
                 </div>
 

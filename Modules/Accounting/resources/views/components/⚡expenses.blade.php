@@ -440,7 +440,12 @@ class extends Component
                                 <tr wire:key="expense-{{ $row['id'] }}">
                                     <td class="text-secondary-foreground">{{ $row['date'] }}</td>
                                     <td>
-                                        <div class="font-medium text-mono">{{ $row['vendor'] }}</div>
+                                        {{-- The only way into the editor, and so the only way to a
+                                             delete: `accounting.expense-edit` has existed since the
+                                             routes file was written and nothing linked to it, which
+                                             made a mistyped expense permanent. --}}
+                                        <a href="{{ route('accounting.expense-edit', ['expense' => $row['id']]) }}"
+                                           wire:navigate class="font-medium text-mono hover:text-primary">{{ $row['vendor'] }}</a>
                                         @if ($row['description'])
                                             <div class="text-xs text-muted-foreground line-clamp-1">{{ $row['description'] }}</div>
                                         @elseif ($row['receipt'])

@@ -2,10 +2,12 @@
 
 use Brick\Money\Money as BrickMoney;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Validate;
 use Livewire\Component;
 use Modules\Accounting\Models\Expense;
+use Modules\Accounting\Models\LedgerEntry;
 use Modules\Accounting\Services\ExchangeRates;
 use Modules\Accounting\Support\Currencies;
 use Modules\Accounting\Support\Money;
@@ -28,6 +30,12 @@ use Modules\Core\Models\Company;
  * own. Converting at read time would make last March's cost move every time the
  * lira does. When no rate is available for the date, the figure is left null
  * and the toast says so — an invented rate is worse than a missing one.
+ *
+ * **Deleting an expense lives here and nowhere else.** The list page links each
+ * vendor to this page rather than carrying its own delete: the routine has to
+ * reverse a ledger entry and refuse a rebilled cost, and the same twenty lines
+ * written twice is the shape money bugs arrive in. If a second delete affordance
+ * is ever wanted, extract `delete()` to a service first — do not copy it.
  */
 new
 #[Title('Record expense — Kargah')]
@@ -201,6 +209,12 @@ class extends Component
             ->values()
             ->all();
 
+        // Read once for the removal panel rather than once per sentence. A blank
+        // form has no row behind it and asks the database nothing.
+        $existing = $this->expenseId === null
+            ? null
+            : Expense::query()->with('rebilledOn')->find($this->expenseId);
+
         return [
             'currencies' => Currencies::supported(),
             'symbol' => Currencies::symbol($this->knownCurrency()),
@@ -216,6 +230,14 @@ class extends Component
                 'when' => $expense->spent_on->format('d M Y'),
             ])->all(),
             'editing' => $this->expenseId !== null,
+
+            'saved' => $existing !== null,
+            'deletable' => $existing !== null && ! $existing->isRebilled(),
+            'deleteHeadline' => $existing === null ? '' : $this->removalHeadline($existing),
+            'deleteConsequence' => $existing === null ? '' : $this->removalConsequence($existing),
+            'deleteRefusal' => $existing === null || ! $existing->isRebilled()
+                ? null
+                : $this->rebilledRefusal($existing),
         ];
     }
 
@@ -339,6 +361,136 @@ class extends Component
         }
 
         return $description;
+    }
+
+    /* Removing --------------------------------------------------------------------- */
+
+    /**
+     * Remove an expense, reversing whatever it posted to the ledger.
+     *
+     * 🔴 **This is never a hard delete and never a bare soft delete.** An expense
+     * may carry a `LedgerEntry` of type `expense`, and `LedgerEntry` refuses both
+     * `update()` and `delete()` outright — read its docblock. The only correct
+     * removal is: reverse every standing entry with a reason, then soft-delete
+     * the row, both inside one transaction. A reversal writes a contra entry
+     * rather than a gap, so `LedgerEntry::standing()` stops counting the expense
+     * while both rows stay readable as a trail. Half of that done is worse than
+     * none of it, which is why the transaction is not optional.
+     *
+     * Note on what is actually in the database today: nothing in the application
+     * writes a `TYPE_EXPENSE` entry — only the seeder and the factory do. So on
+     * a fresh install this loop reverses nothing, and on the owner's own seeded
+     * database it reverses one entry per expense. Both are handled here rather
+     * than assumed, because the moment an expense *does* start posting, a
+     * delete written on the assumption that it does not is a silently wrong
+     * balance.
+     *
+     * **A rebilled expense is refused rather than detached.** Once a cost has
+     * gone onto an invoice the client has been charged for it, and the expense
+     * is the only record of what that line was. Detaching and deleting would
+     * leave a charge on an issued invoice with nothing behind it, and would move
+     * money out of "already rebilled" reporting without anyone deciding to. The
+     * refusal names the invoice, which is the one thing the person needs in
+     * order to act.
+     */
+    public function delete(): void
+    {
+        if ($this->expenseId === null) {
+            $this->toastError('There is nothing to delete', 'This expense has not been saved yet.');
+
+            return;
+        }
+
+        $expense = Expense::query()->with('rebilledOn')->find($this->expenseId);
+
+        if ($expense === null) {
+            $this->toastError('That expense is gone', 'It was deleted while the page was open.');
+
+            return;
+        }
+
+        if ($expense->isRebilled()) {
+            $this->toastError('That cost is already on an invoice', $this->rebilledRefusal($expense));
+
+            return;
+        }
+
+        $headline = $this->removalHeadline($expense);
+
+        $reversed = DB::transaction(function () use ($expense): int {
+            // Re-read inside the transaction: the panel's count was rendered
+            // some seconds ago and an entry may have been reversed since.
+            $entries = $this->standingEntries($expense);
+
+            foreach ($entries as $entry) {
+                $entry->reverse('Expense deleted — '.$expense->vendor.' on '
+                    .($expense->spent_on?->format('d M Y') ?? 'an unrecorded date'));
+            }
+
+            $expense->delete();
+
+            return $entries->count();
+        });
+
+        $this->flashToast(
+            'success',
+            'Expense deleted',
+            $reversed === 0
+                ? $headline.' is gone. It had posted nothing to the ledger, so no balance moved.'
+                : $headline.' is gone. Its ledger '.($reversed === 1 ? 'entry was' : 'entries were')
+                    .' reversed rather than removed, so the balance is back where it was and both rows stay in the trail.',
+        );
+
+        $this->redirect(route('accounting.expenses'), navigate: true);
+    }
+
+    /**
+     * The ledger entries this expense still counts towards.
+     *
+     * `standing()` is the scope a balance is summed from — it drops reversals
+     * and anything already reversed — so an expense whose entry was reversed by
+     * hand last month does not get a second contra entry netting back to the
+     * original and saying nothing.
+     *
+     * @return Collection<int, LedgerEntry>
+     */
+    private function standingEntries(Expense $expense): Collection
+    {
+        return LedgerEntry::query()->forReference($expense)->standing()->get();
+    }
+
+    /** What is about to go, in money and in words. */
+    private function removalHeadline(Expense $expense): string
+    {
+        return $expense->formattedAmount().' to '.$expense->vendor
+            .' on '.($expense->spent_on?->format('d F Y') ?? 'an unrecorded date');
+    }
+
+    /**
+     * What deleting it does, said before the click rather than after.
+     *
+     * The ledger sentence appears only when there is an entry to reverse.
+     * Promising a reversal that will not happen reads as reassurance and is a
+     * lie; saying nothing about a ledger that is about to move is worse.
+     */
+    private function removalConsequence(Expense $expense): string
+    {
+        if ($this->standingEntries($expense)->isEmpty()) {
+            return 'It posted nothing to the ledger, so the expense row is all that goes. '
+                .'Nothing in Kargah brings it back.';
+        }
+
+        return 'Its ledger entry is reversed rather than removed: the balance goes back to what it was '
+            .'before the expense existed, and both rows stay in the trail. '
+            .'Nothing in Kargah brings the expense itself back.';
+    }
+
+    /** Why a rebilled cost stays, and what to do about it. */
+    private function rebilledRefusal(Expense $expense): string
+    {
+        return 'This cost was rebilled on '.($expense->rebilledOn?->number ?? 'an invoice')
+            .', so deleting it would leave a charge on that invoice with nothing behind it. '
+            .'Take the line off the invoice first, or correct the expense above instead.';
     }
 
     public function useSuggestion(int $expenseId): void
@@ -511,6 +663,36 @@ class extends Component
                     </p>
                 </div>
             </div>
+
+            {{-- Removal. Only on a row that exists: a blank form has nothing to
+                 remove, and a delete button beside "Save" on a create page is a
+                 misclick waiting to happen. The confirmation names the money and
+                 the consequence, never "Are you sure?" — this is an accounting
+                 record. Where the expense is already on an invoice there is no
+                 `wire:confirm` at all: nothing is going to happen, and a
+                 confirmation for an action that will be refused is a lie. --}}
+            @if ($saved)
+                <div class="kt-card">
+                    <div class="kt-card-header"><h3 class="kt-card-title">Remove this expense</h3></div>
+                    <div class="kt-card-content p-5 flex flex-col gap-3">
+                        <p class="text-sm text-secondary-foreground">
+                            {{ $deleteRefusal ?? $deleteConsequence }}
+                        </p>
+                        <div>
+                            <button wire:click="delete" wire:loading.attr="disabled" wire:target="delete"
+                                    @if ($deletable) wire:confirm="Delete {{ $deleteHeadline }}?&#10;&#10;{{ $deleteConsequence }}" @endif
+                                    class="kt-btn kt-btn-destructive kt-btn-sm gap-2">
+                                <span wire:loading.remove wire:target="delete" class="inline-flex items-center gap-2">
+                                    <i class="ki-filled ki-trash"></i> Delete expense
+                                </span>
+                                <span wire:loading wire:target="delete" class="inline-flex items-center gap-2">
+                                    <i class="ki-filled ki-loading animate-spin"></i> Deleting…
+                                </span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            @endif
 
         </div>
 
