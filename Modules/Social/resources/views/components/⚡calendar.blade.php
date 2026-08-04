@@ -319,7 +319,7 @@ class extends Component
     never reaches the page.
 --}}
 @assets
-<script src="/assets/vendors/fullcalendar/index.global.min.js"></script>
+<script src="{{ asset('assets/vendors/fullcalendar/index.global.min.js') }}"></script>
 @endassets
 @script
 <script>

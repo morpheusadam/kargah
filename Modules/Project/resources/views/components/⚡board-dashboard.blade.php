@@ -430,7 +430,7 @@ class extends Component
     every other page in this module for why.
 --}}
 @assets
-<script src="/assets/vendors/apexcharts/apexcharts.min.js"></script>
+<script src="{{ asset('assets/vendors/apexcharts/apexcharts.min.js') }}"></script>
 @endassets
 @script
 <script>

@@ -20,9 +20,9 @@
     <meta name="robots" content="noindex, nofollow">
     <meta name="color-scheme" content="dark light">
     <title>Unsubscribed — Kargah</title>
-    <link href="/assets/vendors/keenicons/styles.bundle.css" rel="stylesheet">
-    <link href="/assets/css/styles.css" rel="stylesheet">
-    <link href="/assets/css/kargah.css" rel="stylesheet">
+    <link href="{{ asset('assets/vendors/keenicons/styles.bundle.css') }}" rel="stylesheet">
+    <link href="{{ asset('assets/css/styles.css') }}" rel="stylesheet">
+    <link href="{{ asset('assets/css/kargah.css') }}" rel="stylesheet">
 </head>
 <body class="antialiased h-full text-base text-foreground bg-background">
 

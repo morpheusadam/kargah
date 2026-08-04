@@ -966,7 +966,7 @@ class extends Component
     silently dropped. See the class docblock.
 --}}
 @assets
-<script src="/assets/vendors/apexcharts/apexcharts.min.js"></script>
+<script src="{{ asset('assets/vendors/apexcharts/apexcharts.min.js') }}"></script>
 @endassets
 @script
 <script>

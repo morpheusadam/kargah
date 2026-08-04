@@ -309,8 +309,16 @@ class DashboardTest extends TestCase
         //
         // The unescaped path is the difference between `@assets`, which reaches
         // the layout, and `@script`, which does not.
+        //
+        // ⚠️ Matched from the first slash rather than from `src="`, because the
+        // tag is now built with `asset()` and carries the request root in front
+        // of it — `src="http://localhost/assets/…"` in a test, and
+        // `src="https://lavzen.com/panel/assets/…"` on an install served from a
+        // subdirectory. What this still catches is the thing it exists to
+        // catch: escaped JSON renders `\/assets\/…`, which does not match, and
+        // a missing tag does not match either.
         $this->assertStringContainsString(
-            '<script src="/assets/vendors/apexcharts/apexcharts.min.js"></script>',
+            '/assets/vendors/apexcharts/apexcharts.min.js"></script>',
             $html,
             'ApexCharts must be loaded from @assets. Inside @script the src tag is dropped silently and no chart ever renders.',
         );

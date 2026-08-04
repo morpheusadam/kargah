@@ -12,13 +12,13 @@
     <title>{{ $title ?? 'Kargah' }}</title>
     @include('partials.head-icons')
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link href="/assets/vendors/keenicons/styles.bundle.css" rel="stylesheet">
-    <link href="/assets/css/styles.css" rel="stylesheet">
-    <link href="/assets/css/kargah.css" rel="stylesheet">
+    <link href="{{ asset('assets/vendors/keenicons/styles.bundle.css') }}" rel="stylesheet">
+    <link href="{{ asset('assets/css/styles.css') }}" rel="stylesheet">
+    <link href="{{ asset('assets/css/kargah.css') }}" rel="stylesheet">
     {{-- Login staging. A real file because Livewire carries neither a pushed
          stack nor @assets from a component through to its layout. The version
          query is the file's own mtime, so an edit is never served from cache. --}}
-    <link href="/css/login.css?v={{ @filemtime(public_path('css/login.css')) ?: 1 }}" rel="stylesheet">
+    <link href="{{ asset('css/login.css') }}?v={{ @filemtime(public_path('css/login.css')) ?: 1 }}" rel="stylesheet">
 
     @livewireStyles
 </head>

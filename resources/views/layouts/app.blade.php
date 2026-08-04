@@ -8,10 +8,17 @@
     <title>{{ $title ?? 'Kargah' }}</title>
     @include('partials.head-icons')
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link href="/assets/vendors/keenicons/styles.bundle.css" rel="stylesheet">
-    <link href="/assets/css/styles.css" rel="stylesheet">
+    {{-- 🔴 `asset()`, never a bare `/assets/…`. The path is resolved against the
+         request root, which is the only thing that knows whether this install
+         is at a domain root or under a directory. Every one of these was a
+         literal `/assets/…` until 5 August 2026, and on the first deployment to
+         `lavzen.com/panel` the browser asked `lavzen.com` for all of them,
+         collected four 404s dressed as HTML, and drew the login page in Times
+         New Roman. Nothing errored server-side; the page was simply naked. --}}
+    <link href="{{ asset('assets/vendors/keenicons/styles.bundle.css') }}" rel="stylesheet">
+    <link href="{{ asset('assets/css/styles.css') }}" rel="stylesheet">
     {{-- Utilities the prebuilt theme bundle does not contain. See docs/theme.md. --}}
-    <link href="/assets/css/kargah.css" rel="stylesheet">
+    <link href="{{ asset('assets/css/kargah.css') }}" rel="stylesheet">
 
     @livewireStyles
 </head>
@@ -115,11 +122,11 @@
     FullCalendar 277 KB, TinyMCE, DataTables, Dropzone) are loaded by the page that
     uses them via @push('scripts'), not from here — see docs/frontend-conventions.md.
 --}}
-<script src="/assets/js/core.bundle.js"></script>
-<script src="/assets/vendors/ktui/ktui.min.js"></script>
+<script src="{{ asset('assets/js/core.bundle.js') }}"></script>
+<script src="{{ asset('assets/vendors/ktui/ktui.min.js') }}"></script>
 {{-- The theme bundles Sortable as a webpack module with no global, so ship it separately. --}}
-<script src="/vendor/sortablejs/Sortable.min.js"></script>
-<script src="/assets/js/layouts/demo1.js"></script>
+<script src="{{ asset('vendor/sortablejs/Sortable.min.js') }}"></script>
+<script src="{{ asset('assets/js/layouts/demo1.js') }}"></script>
 
 @livewireScripts
 @stack('scripts')
