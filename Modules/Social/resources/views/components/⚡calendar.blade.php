@@ -84,6 +84,12 @@ class extends Component
             ->values();
 
         return [
+            // `all()` and deliberately not `available()`. Everything on this
+            // page is a target that already exists, and a post that went out to
+            // DEV.to last month keeps its dot, its colour and its label after
+            // the Blog module is switched off — history is not an offer, and
+            // filtering it would leave grey unlabelled rows in a month nobody
+            // can change. See the class docblock on Modules\Social\Support\Networks.
             'catalogue' => Networks::all(),
             // Only networks with something on the calendar; a filter that can
             // only ever return nothing is not a filter.

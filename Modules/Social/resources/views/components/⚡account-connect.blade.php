@@ -80,7 +80,12 @@ class extends Component
     public function with(): array
     {
         return [
-            'catalogue' => Networks::all(),
+            // `available()`, not `all()`: every card this draws is an offer to
+            // hand over a credential, and a destination whose module is
+            // switched off has no driver to read one. Drawing it would trade a
+            // sentence on this page for a `post_targets` row an hour later
+            // saying Kargah has no driver for it. See `Networks::available()`.
+            'catalogue' => Networks::available(),
             'chosen' => $this->chosen(),
             'existing' => $this->existing(),
             'connectedNetworks' => SocialAccount::query()->pluck('network')->unique()->all(),
@@ -89,7 +94,21 @@ class extends Component
 
     public function choose(string $network): void
     {
-        $this->network = Networks::has($network) ? $network : '';
+        // Availability rather than mere existence, because `#[Url]` means this
+        // is reachable by a typed address as well as by the picker above — and
+        // the picker no longer offers a destination whose module is off, so a
+        // form for one could only be arrived at that way. Saving a credential
+        // into it would succeed and then never be read by anything.
+        $available = Networks::isAvailable($network);
+
+        if ($network !== '' && ! $available) {
+            $this->toastWarning(
+                Networks::label($network).' cannot be connected on this install',
+                Networks::unavailableReason($network) ?? 'Pick one of the destinations below instead.',
+            );
+        }
+
+        $this->network = $available ? $network : '';
 
         $this->fields = [];
         $this->revealed = [];

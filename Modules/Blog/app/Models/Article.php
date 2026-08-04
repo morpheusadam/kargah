@@ -2,8 +2,10 @@
 
 namespace Modules\Blog\Models;
 
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Modules\Blog\Database\Factories\ArticleFactory;
 use Modules\Social\Models\Post;
 
 /**
@@ -26,6 +28,8 @@ use Modules\Social\Models\Post;
  */
 class Article extends Model
 {
+    use HasFactory;
+
     protected $table = 'blog_articles';
 
     protected $fillable = [
@@ -67,5 +71,20 @@ class Article extends Model
         }
 
         return $this->post?->excerpt($characters) ?? '';
+    }
+
+    /**
+     * 🔴 Without this, `Article::factory()` does not exist.
+     *
+     * `Factory::resolveFactoryName()` asks for
+     * `Database\Factories\Modules\Blog\Models\ArticleFactory`, which is Laravel's
+     * app-layout guess and is not where `nwidart/laravel-modules` keeps a module's
+     * factories. Every model in Kargah that has a factory overrides this for the
+     * same reason — see `Modules\Social\Models\Post` — and the symptom of leaving
+     * it out is a class-not-found naming a file nobody ever wrote.
+     */
+    protected static function newFactory(): ArticleFactory
+    {
+        return ArticleFactory::new();
     }
 }

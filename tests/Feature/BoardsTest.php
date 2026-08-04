@@ -4,13 +4,16 @@ namespace Tests\Feature;
 
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Livewire\Features\SupportTesting\Testable;
 use Livewire\Livewire;
 use Modules\Project\Models\Board;
 use Modules\Project\Models\BoardList;
 use Modules\Project\Models\Card;
 use Modules\Project\Models\CardPlacement;
 use Modules\Project\Models\Label;
+use Modules\Project\Services\BoardCalendar;
 use Modules\Project\Services\CardService;
+use Modules\Project\Services\Watching;
 use Modules\Project\Support\Position;
 use Tests\TestCase;
 
@@ -326,6 +329,145 @@ class BoardsTest extends TestCase
         $component = Livewire::withQueryParams(['board' => 'client-work'])->test('project::boards');
 
         $this->assertSame('outreach', $component->get('activeBoard'));
+    }
+
+    /* Deep-linking to a card ------------------------------------------------ */
+
+    /**
+     * `?card=` is an `#[Url]` property, so it is whatever anybody types.
+     *
+     * The positive case is one line; the four below it are the ones that
+     * matter. Before this existed the router accepted `?card=1234`, the
+     * component ignored it, and the person landed on the board with the card
+     * shut — a link that looks like it works and silently does not. The risk in
+     * fixing it is the opposite one: a card id is an integer somebody can
+     * increment, and `⚡card-detail.blade.php::openCard()` is a bare `find()`
+     * with no check of its own, so anything this lets through is opened.
+     */
+    private function deepLink(int|string $card, string $board = 'client-work'): Testable
+    {
+        return Livewire::withQueryParams(['board' => $board, 'card' => $card])->test('project::boards');
+    }
+
+    /** The refusal is one message for every reason, so it cannot be used to probe for ids. */
+    private function assertRefused(Testable $component): void
+    {
+        $component
+            ->assertNotDispatched('open-card')
+            ->assertDispatched('toast', fn (string $event, array $params): bool => $params[0]['type'] === 'error');
+    }
+
+    public function test_a_card_id_in_the_url_opens_that_card(): void
+    {
+        $card = Card::query()->where('title', 'Fix invoice PDF margins')->firstOrFail();
+
+        $this->deepLink($card->id)
+            ->assertDispatched('open-card', cardId: $card->id)
+            // The drawer reports that it opened; the board has nothing to add.
+            ->assertNotDispatched('toast');
+    }
+
+    public function test_a_card_on_another_board_does_not_open(): void
+    {
+        $leads = BoardList::query()->where('board_id', $this->other->id)->firstOrFail();
+        $foreign = app(CardService::class)->append($leads, 'Chase the Bluepeak referral');
+
+        $this->assertRefused($this->deepLink($foreign->id));
+    }
+
+    /**
+     * An archived card is refused even though `cardOnThisBoard()` alone would
+     * return it — that helper deliberately admits one so `quickArchive()` can
+     * refuse to archive it twice.
+     */
+    public function test_an_archived_card_does_not_open(): void
+    {
+        $card = Card::query()->where('title', 'Fix invoice PDF margins')->firstOrFail();
+        $card->forceFill(['archived_at' => now()])->save();
+
+        $this->assertRefused($this->deepLink($card->id));
+    }
+
+    public function test_a_deleted_card_does_not_open(): void
+    {
+        $card = Card::query()->where('title', 'Fix invoice PDF margins')->firstOrFail();
+        $id = $card->id;
+        $card->delete();
+
+        $this->assertRefused($this->deepLink($id));
+    }
+
+    public function test_a_card_id_that_never_existed_does_not_open(): void
+    {
+        $this->assertRefused($this->deepLink(999999));
+    }
+
+    /**
+     * A cast would turn this into `0` and send a query for it. The board still
+     * has to render — a mistyped link is not a 500.
+     */
+    public function test_a_card_id_that_is_not_a_number_is_refused_without_breaking_the_board(): void
+    {
+        $this->assertRefused($this->deepLink('abc')->assertSee('Client Work'));
+    }
+
+    /**
+     * The deep link fires once, on the request that carried the URL.
+     *
+     * `?card=` stays in the address bar after the drawer opens — that is the
+     * point of a shareable link — so anything that read it outside `mount()`
+     * would drag the drawer back open on every filter keystroke.
+     */
+    public function test_the_card_in_the_url_is_opened_once_and_not_on_every_render(): void
+    {
+        $card = Card::query()->where('title', 'Fix invoice PDF margins')->firstOrFail();
+
+        $this->deepLink($card->id)
+            ->assertDispatched('open-card')
+            ->call('toggleFilterPanel')
+            ->assertNotDispatched('open-card')
+            ->set('search', 'invoice')
+            ->assertNotDispatched('open-card');
+    }
+
+    /**
+     * Switching board drops the card the URL named, for the same reason it
+     * drops the filters: it belongs to the board being left.
+     */
+    public function test_switching_board_forgets_the_card_the_url_named(): void
+    {
+        $card = Card::query()->where('title', 'Fix invoice PDF margins')->firstOrFail();
+
+        $this->deepLink($card->id)
+            ->call('selectBoard', 'outreach')
+            ->assertSet('deepLinkedCard', '');
+    }
+
+    /* The links that lead here ---------------------------------------------- */
+
+    public function test_a_card_notification_links_to_the_card_and_not_only_its_board(): void
+    {
+        $card = Card::query()->where('title', 'Fix invoice PDF margins')->firstOrFail();
+
+        $url = (string) app(Watching::class)->cardUrl($card);
+
+        $this->assertStringContainsString('board=client-work', $url);
+        $this->assertStringContainsString('card='.$card->id, $url);
+    }
+
+    public function test_every_calendar_entry_links_to_its_own_card(): void
+    {
+        $card = Card::query()->where('title', 'Q3 expense reconciliation')->firstOrFail();
+
+        $urls = collect(app(BoardCalendar::class)->events($this->board))
+            ->pluck('url')
+            ->all();
+
+        $this->assertSame(
+            [route('projects.boards', ['board' => 'client-work', 'card' => $card->id])],
+            $urls,
+        );
+        $this->assertStringContainsString('card='.$card->id, $urls[0]);
     }
 
     /* Filtering ------------------------------------------------------------ */

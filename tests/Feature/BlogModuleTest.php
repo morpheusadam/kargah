@@ -626,6 +626,218 @@ class BlogModuleTest extends TestCase
         $this->assertNull($telegramTarget->options);
     }
 
+    /* The edit page ------------------------------------------------------------------------ */
+
+    /**
+     * The factory exists and resolves.
+     *
+     * Worth its own assertion rather than being implied by the tests below,
+     * because the way a module factory fails is silent until something calls it:
+     * `Factory::resolveFactoryName()` looks in `Database\Factories\Modules\…`,
+     * which is not where `nwidart/laravel-modules` keeps one, and only the
+     * `newFactory()` override on the model connects the two.
+     */
+    public function test_the_article_factory_resolves_and_makes_an_article_with_a_post(): void
+    {
+        $article = Article::factory()->create();
+
+        $this->assertNotNull($article->post);
+        $this->assertSame(Post::DRAFT, $article->post->status);
+        $this->assertNotSame('', $article->title);
+
+        $this->assertSame(Post::PUBLISHED, Article::factory()->published()->create()->post->status);
+    }
+
+    public function test_the_edit_page_loads_an_existing_article(): void
+    {
+        $user = User::factory()->create();
+
+        $article = Article::factory()->create([
+            'title' => 'Four board views and what each one cost',
+            'slug' => 'four-board-views',
+            'excerpt' => 'Table, calendar, dashboard, activity.',
+        ]);
+
+        $this->actingAs($user)->get('/blog/'.$article->id.'/edit')->assertOk();
+
+        Livewire::actingAs($user)
+            ->test('blog::article-edit', ['article' => (string) $article->id])
+            ->assertSet('title', 'Four board views and what each one cost')
+            ->assertSet('slug', 'four-board-views')
+            ->assertSet('excerpt', 'Table, calendar, dashboard, activity.')
+            ->assertSet('body', $article->post->body)
+            ->assertSet('missing', false);
+    }
+
+    /**
+     * An article that is gone renders the page rather than a 404.
+     *
+     * The same shape `accounting::invoice-show` uses: a stale link from another
+     * tab should say what happened, and it also means this route can be walked
+     * by `SmokeTest` with a fixed id on an empty database.
+     */
+    public function test_the_edit_page_renders_for_an_article_that_is_not_there(): void
+    {
+        $this->actingAs(User::factory()->create())->get('/blog/9999/edit')->assertOk();
+    }
+
+    /**
+     * A save writes the article, the body, and the bag of a destination that has
+     * not gone out yet.
+     *
+     * That last part is the one worth having a test for. The title lives twice —
+     * on `blog_articles` and in `post_targets.options` — and a save that updated
+     * only the first would leave a queued WordPress target publishing the old
+     * title next Tuesday with the corrected one sitting in the database looking
+     * right.
+     */
+    public function test_a_save_changes_the_stored_article_and_the_queued_destinations_options(): void
+    {
+        $user = User::factory()->create();
+        $site = $this->site();
+
+        $article = Article::factory()->create([
+            'title' => 'Four board views and what each one cost',
+            'slug' => 'four-board-views',
+        ]);
+
+        $target = PostTarget::factory()->create([
+            'post_id' => $article->post_id,
+            'social_account_id' => $site->id,
+            'options' => $this->articleOptions(),
+        ]);
+
+        Livewire::actingAs($user)
+            ->test('blog::article-edit', ['article' => (string) $article->id])
+            ->set('title', 'Four board views, and the one I would cut')
+            // Cleared, so the destination should stop being told to use it.
+            ->set('slug', '')
+            ->set('excerpt', 'Table, calendar, dashboard, activity — and the one that was not worth it.')
+            ->set('body', "We rebuilt the board four times.\n\nHere is what each view cost.")
+            ->call('save')
+            ->assertHasNoErrors();
+
+        $article->refresh();
+
+        $this->assertSame('Four board views, and the one I would cut', $article->title);
+        $this->assertNull($article->slug);
+        $this->assertSame("We rebuilt the board four times.\n\nHere is what each view cost.", $article->post->refresh()->body);
+
+        $options = $target->refresh()->options;
+
+        $this->assertSame('Four board views, and the one I would cut', $options['title']);
+        $this->assertArrayNotHasKey('slug', $options);
+        // Per-destination decisions this page does not ask about are left alone.
+        $this->assertSame('draft', $options['status']);
+        $this->assertTrue($options['create_missing_terms']);
+    }
+
+    public function test_a_save_refuses_an_article_with_no_title(): void
+    {
+        $user = User::factory()->create();
+
+        $article = Article::factory()->create(['title' => 'Four board views and what each one cost']);
+
+        Livewire::actingAs($user)
+            ->test('blog::article-edit', ['article' => (string) $article->id])
+            ->set('title', '   ')
+            ->call('save')
+            ->assertHasErrors('title');
+
+        $this->assertSame('Four board views and what each one cost', $article->refresh()->title);
+    }
+
+    /**
+     * 🔴 The one that matters: saving an already-published article publishes
+     * nothing.
+     *
+     * There is no update path in any of the three article drivers — they have
+     * `publish()`, `publishWithOptions()` and `verify()` and no fourth method —
+     * so a save that republished would not correct the article on the site, it
+     * would post a second copy of it. `FakePublisher` is swapped in rather than
+     * relying on `Http::preventStrayRequests()` alone, because a stray request
+     * proves only that nothing left the process; this proves the publisher was
+     * never asked, which is the property the page's on-screen warning claims.
+     *
+     * The delivered target is asserted untouched for the same reason its bag is
+     * left alone in `carryToOutstanding()`: `options`, `remote_id` and
+     * `published_at` are the record of what was actually sent, and a page that
+     * rewrote them would destroy the only evidence of it.
+     */
+    public function test_a_save_on_an_already_published_article_does_not_publish(): void
+    {
+        $user = User::factory()->create();
+        $site = $this->site();
+
+        $wordpress = new FakePublisher(Networks::WORDPRESS);
+        $this->registry()->swap($wordpress);
+
+        $article = Article::factory()->published()->create([
+            'title' => 'Four board views and what each one cost',
+        ]);
+
+        $target = PostTarget::factory()->published('412')->create([
+            'post_id' => $article->post_id,
+            'social_account_id' => $site->id,
+            'options' => $this->articleOptions(),
+        ]);
+
+        $publishedAt = $target->published_at;
+
+        Livewire::actingAs($user)
+            ->test('blog::article-edit', ['article' => (string) $article->id])
+            ->set('title', 'Four board views, and the one I would cut')
+            ->set('body', 'We rebuilt the board four times.')
+            ->call('save')
+            ->assertHasNoErrors();
+
+        // Nothing was sent anywhere.
+        $this->assertSame(0, $wordpress->sendCount());
+
+        // Kargah's own copy did change — that is what the page is for.
+        $this->assertSame('Four board views, and the one I would cut', $article->refresh()->title);
+
+        // The delivery record did not.
+        $target->refresh();
+
+        $this->assertSame(PostTarget::PUBLISHED, $target->status);
+        $this->assertSame('412', $target->remote_id);
+        $this->assertSame(1, $target->attempts);
+        $this->assertEquals($publishedAt, $target->published_at);
+        $this->assertSame('Four board views and what each one cost', $target->options['title']);
+
+        // The post is still published; nothing here recomputes a status.
+        $this->assertSame(Post::PUBLISHED, $article->post->refresh()->status);
+    }
+
+    /**
+     * A delivered destination is offered the only route to a correction there is.
+     *
+     * Asserted on the link rather than on the sentence beside it: the wording
+     * should be free to improve, and the address of the published copy is the
+     * part somebody actually has to act on.
+     */
+    public function test_the_edit_page_offers_the_published_copys_own_address(): void
+    {
+        $user = User::factory()->create();
+        $site = $this->site();
+
+        $article = Article::factory()->published()->create();
+
+        PostTarget::factory()->published('412')->create([
+            'post_id' => $article->post_id,
+            'social_account_id' => $site->id,
+            'options' => $this->articleOptions(),
+        ]);
+
+        $this->actingAs($user)
+            ->get('/blog/'.$article->id.'/edit')
+            ->assertOk()
+            ->assertSee('https://example.test/posts/412', false);
+    }
+
+    /* ------------------------------------------------------------------------------------ */
+
     public function test_the_composer_refuses_an_article_with_no_title(): void
     {
         $user = User::factory()->create();

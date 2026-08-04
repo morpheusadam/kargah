@@ -135,7 +135,7 @@ class BoardCalendar
             summary: $card->title,
             start: DateTimeImmutable::createFromInterface($card->due_on),
             allDay: true,
-            url: route('projects.boards', ['board' => $board->slug]),
+            url: $this->cardUrl($board, $card->id),
             lastModified: $card->updated_at !== null
                 ? DateTimeImmutable::createFromInterface($card->updated_at)
                 : null,
@@ -152,19 +152,41 @@ class BoardCalendar
      */
     private function toItemEvent(ChecklistItem $item, Board $board): IcsEvent
     {
-        $cardTitle = $item->checklist?->card?->title;
+        $card = $item->checklist?->card;
 
         return new IcsEvent(
             uid: 'checklist-item-'.$item->id.'@'.$this->host(),
             summary: $item->text,
             start: DateTimeImmutable::createFromInterface($item->due_on),
             allDay: true,
-            description: $cardTitle === null ? null : 'Checklist item on '.$cardTitle,
-            url: route('projects.boards', ['board' => $board->slug]),
+            description: $card === null ? null : 'Checklist item on '.$card->title,
+            // The card the item is on, not the item: there is no per-item URL
+            // to have, and the card back is where the item can be ticked.
+            url: $this->cardUrl($board, $card?->id),
             lastModified: $item->updated_at !== null
                 ? DateTimeImmutable::createFromInterface($item->updated_at)
                 : null,
         );
+    }
+
+    /**
+     * Where an entry on this feed links back to.
+     *
+     * Every entry here is a card or something hanging off one, so every entry
+     * names its card: `⚡boards.blade.php` reads `?card=` in `mount()` and
+     * opens that card's drawer. Before this it was the board's own URL, and a
+     * subscriber clicking a reminder in their calendar landed on a board of
+     * forty cards with no indication which one the reminder was about.
+     *
+     * `$cardId` is nullable only because `toItemEvent()`'s chain through
+     * `checklist.card` is: an orphaned item still gets a usable link to the
+     * board rather than a broken one to card `null`.
+     */
+    private function cardUrl(Board $board, ?int $cardId): string
+    {
+        return $cardId === null
+            ? route('projects.boards', ['board' => $board->slug])
+            : route('projects.boards', ['board' => $board->slug, 'card' => $cardId]);
     }
 
     /**

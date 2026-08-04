@@ -86,6 +86,10 @@ class SmokeTest extends TestCase
             'account connect' => ['/social/accounts/connect'],
             'articles' => ['/blog'],
             'article compose' => ['/blog/compose'],
+            // A fixed id on an empty database, exactly as 'social post' above:
+            // the edit page answers 200 with an empty form for an article that
+            // is not there rather than 404ing, so it renders here too.
+            'article edit' => ['/blog/1/edit'],
             'application passwords' => ['/settings/application-passwords'],
             'assistant settings' => ['/settings/assistant'],
             'settings notifications' => ['/settings/notifications'],

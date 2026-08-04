@@ -2,6 +2,8 @@
 
 namespace Modules\Social\Support;
 
+use Nwidart\Modules\Facades\Module;
+
 /**
  * The networks Kargah can publish to, and everything the pages need to draw one.
  *
@@ -66,9 +68,59 @@ namespace Modules\Social\Support;
  * instances disagree — Mastodon most of all, where the size ceiling is an
  * instance setting rather than a protocol constant. Being told 8 MB and finding
  * an instance accepts 16 costs nothing; the reverse costs a failed post.
+ *
+ * ## `module`, and why there are two ways to read this catalogue
+ *
+ * 🔴 **An entry lives here; its driver does not have to.** Fourteen of the
+ * seventeen are registered by `SocialServiceProvider::register()`. The three
+ * article destinations — WordPress, DEV.to and Hashnode — are registered from
+ * `Modules\Blog\Providers\BlogServiceProvider` through `Publishing::extend()`,
+ * because Blog may depend on Social and Social may not depend on Blog. That
+ * arrow is deliberate and argued in `BlogServiceProvider`'s own docblock; it is
+ * not the thing `module` fixes.
+ *
+ * What it fixes is the consequence. With `Blog` disabled in
+ * `modules_statuses.json` its provider never runs, so nothing registers those
+ * three drivers — while this catalogue would go on drawing them on the connect
+ * page and offering them in the composer. Somebody pastes a DEV.to key, and the
+ * only warning the install ever gets arrives an hour later on a `post_targets`
+ * row reading *"Kargah has no driver for DEV.to, so the post was not sent."* So
+ * every entry names the module whose provider registers its driver, and
+ * `NetworkRegistryTest` checks that the name is the truth rather than a comment.
+ *
+ * That gives two readings of the same data, and picking the wrong one is a real
+ * bug in either direction:
+ *
+ * - **`all()` — the complete catalogue.** Use it to *describe* a destination
+ *   that already exists: an account row, a published `post_targets` row, a
+ *   notification, a driver asking what its own credential fields are called.
+ *   Filtering here would blank out the label, icon and colour of history still
+ *   in the database, which is its own confusing failure.
+ * - **`available()` — only what this install can currently send to.** Use it to
+ *   *offer* a destination: the connect page's picker, the "networks you have
+ *   not set up yet" list. Offering one whose module is off invites somebody to
+ *   type a credential into a form that leads nowhere.
+ *
+ * `unavailableReason()` is the third case, and the one neither of those covers:
+ * a destination that already exists *and* cannot be sent to. It answers with
+ * the sentence to put on the page, in the same register and for the same reason
+ * as `HttpPublisher::unavailableReason()`.
  */
 final class Networks
 {
+    /**
+     * The module whose service provider registers an entry's driver.
+     *
+     * Names, not class references: `Modules\Social` must not import anything
+     * from `Modules\Blog`, and a string is what `Module::find()` takes anyway.
+     * These are the studly names used by `modules_statuses.json` and by the
+     * `Modules/` directory, and `NetworkRegistryTest` proves each one against
+     * the file the registration closure was actually written in.
+     */
+    public const MODULE_SOCIAL = 'Social';
+
+    public const MODULE_BLOG = 'Blog';
+
     public const MASTODON = 'mastodon';
 
     public const BLUESKY = 'bluesky';
@@ -147,8 +199,21 @@ final class Networks
     public const HASHNODE = 'hashnode';
 
     /**
+     * The complete catalogue, every entry, whatever this install can send to.
+     *
+     * This is the one to use when something that **already exists** needs
+     * describing — an account row, a `post_targets` row, a notification, a
+     * driver asking what its own credential fields are called. It always
+     * resolves every key, so a DEV.to account connected before the Blog module
+     * was switched off still draws with its own label, icon and colour rather
+     * than falling back to a raw key.
+     *
+     * Use `available()` instead when the answer is going to be *offered* to
+     * somebody as a place to connect or publish to. See the class docblock.
+     *
      * @return array<string, array{
      *     label: string,
+     *     module: string,
      *     icon: string,
      *     tone: string,
      *     dot: string,
@@ -178,6 +243,7 @@ final class Networks
         return [
             self::MASTODON => [
                 'label' => 'Mastodon',
+                'module' => self::MODULE_SOCIAL,
                 'icon' => 'ki-abstract-26',
                 'tone' => 'text-info',
                 'dot' => 'bg-info',
@@ -229,6 +295,7 @@ final class Networks
             ],
             self::BLUESKY => [
                 'label' => 'Bluesky',
+                'module' => self::MODULE_SOCIAL,
                 'icon' => 'ki-abstract-25',
                 'tone' => 'text-primary',
                 'dot' => 'bg-primary',
@@ -276,6 +343,7 @@ final class Networks
             ],
             self::LINKEDIN => [
                 'label' => 'LinkedIn',
+                'module' => self::MODULE_SOCIAL,
                 'icon' => 'ki-abstract-41',
                 'tone' => 'text-info',
                 'dot' => 'bg-info',
@@ -327,6 +395,7 @@ final class Networks
             ],
             self::TELEGRAM => [
                 'label' => 'Telegram',
+                'module' => self::MODULE_SOCIAL,
                 'icon' => 'ki-paper-plane',
                 'tone' => 'text-info',
                 'dot' => 'bg-info',
@@ -384,6 +453,7 @@ final class Networks
             ],
             self::DISCORD => [
                 'label' => 'Discord',
+                'module' => self::MODULE_SOCIAL,
                 'icon' => 'ki-message-programming',
                 'tone' => 'text-primary',
                 'dot' => 'bg-primary',
@@ -432,6 +502,7 @@ final class Networks
             ],
             self::X => [
                 'label' => 'X',
+                'module' => self::MODULE_SOCIAL,
                 'icon' => 'ki-twitter',
                 'tone' => 'text-mono',
                 'dot' => 'bg-mono',
@@ -502,6 +573,7 @@ final class Networks
             ],
             self::FACEBOOK_PAGE => [
                 'label' => 'Facebook Page',
+                'module' => self::MODULE_SOCIAL,
                 'icon' => 'ki-facebook',
                 'tone' => 'text-info',
                 'dot' => 'bg-info',
@@ -561,6 +633,7 @@ final class Networks
             ],
             self::INSTAGRAM => [
                 'label' => 'Instagram',
+                'module' => self::MODULE_SOCIAL,
                 'icon' => 'ki-instagram',
                 'tone' => 'text-primary',
                 'dot' => 'bg-primary',
@@ -611,6 +684,7 @@ final class Networks
             ],
             self::THREADS => [
                 'label' => 'Threads',
+                'module' => self::MODULE_SOCIAL,
                 'icon' => 'ki-abstract-33',
                 'tone' => 'text-mono',
                 'dot' => 'bg-mono',
@@ -653,6 +727,7 @@ final class Networks
             ],
             self::WORDPRESS => [
                 'label' => 'WordPress',
+                'module' => self::MODULE_BLOG,
                 'icon' => 'ki-notepad',
                 'tone' => 'text-info',
                 'dot' => 'bg-info',
@@ -712,6 +787,7 @@ final class Networks
             ],
             self::SLACK => [
                 'label' => 'Slack',
+                'module' => self::MODULE_SOCIAL,
                 'icon' => 'ki-slack',
                 // Not `destructive`, which was the first thing written here and
                 // was wrong for a reason worth recording: `destructive` is the
@@ -768,6 +844,7 @@ final class Networks
             ],
             self::TUMBLR => [
                 'label' => 'Tumblr',
+                'module' => self::MODULE_SOCIAL,
                 'icon' => 'ki-abstract-19',
                 'tone' => 'text-info',
                 'dot' => 'bg-info',
@@ -834,6 +911,7 @@ final class Networks
             ],
             self::VK => [
                 'label' => 'VK',
+                'module' => self::MODULE_SOCIAL,
                 'icon' => 'ki-abstract-14',
                 'tone' => 'text-info',
                 'dot' => 'bg-info',
@@ -881,6 +959,7 @@ final class Networks
             ],
             self::REDDIT => [
                 'label' => 'Reddit',
+                'module' => self::MODULE_SOCIAL,
                 'icon' => 'ki-abstract-39',
                 'tone' => 'text-warning',
                 'dot' => 'bg-warning',
@@ -957,6 +1036,7 @@ final class Networks
             ],
             self::LEMMY => [
                 'label' => 'Lemmy',
+                'module' => self::MODULE_SOCIAL,
                 'icon' => 'ki-abstract-31',
                 'tone' => 'text-success',
                 'dot' => 'bg-success',
@@ -1012,6 +1092,7 @@ final class Networks
             ],
             self::DEVTO => [
                 'label' => 'DEV.to',
+                'module' => self::MODULE_BLOG,
                 'icon' => 'ki-code',
                 'tone' => 'text-mono',
                 'dot' => 'bg-mono',
@@ -1052,6 +1133,7 @@ final class Networks
             ],
             self::HASHNODE => [
                 'label' => 'Hashnode',
+                'module' => self::MODULE_BLOG,
                 'icon' => 'ki-abstract-45',
                 'tone' => 'text-primary',
                 'dot' => 'bg-primary',
@@ -1095,15 +1177,122 @@ final class Networks
         ];
     }
 
-    /** @return list<string> */
+    /** @return list<string> Every key in the catalogue, offerable or not. */
     public static function keys(): array
     {
         return array_keys(self::all());
     }
 
+    /**
+     * The catalogue with every destination this install cannot send to removed.
+     *
+     * Same shape as `all()`, fewer entries: an entry survives only if the
+     * module named in it is enabled, because that module's service provider is
+     * the thing that registers the driver. Use it wherever a destination is
+     * being **offered** — the connect page's picker, the list of networks not
+     * set up yet — so that nobody is invited to paste a credential for
+     * something with nothing behind it.
+     *
+     * Never use it to look an existing row's metadata up; that is `all()`, and
+     * the class docblock says why.
+     *
+     * The enabled check is memoised for the length of one call rather than kept
+     * in a static: two distinct modules across seventeen entries means two
+     * lookups, and static state in a page-heavy application is how a long-lived
+     * worker starts answering with yesterday's configuration.
+     *
+     * @return array<string, array<string, mixed>>
+     */
+    public static function available(): array
+    {
+        $enabled = [];
+
+        return array_filter(
+            self::all(),
+            function (array $entry) use (&$enabled): bool {
+                $module = $entry['module'];
+
+                return $enabled[$module] ??= self::moduleIsEnabled($module);
+            },
+        );
+    }
+
+    /** @return list<string> The keys of `available()`, for a caller that wants a diff rather than the entries. */
+    public static function availableKeys(): array
+    {
+        return array_keys(self::available());
+    }
+
     public static function has(string $network): bool
     {
         return array_key_exists($network, self::all());
+    }
+
+    /**
+     * Is this a destination Kargah can send to on this install right now?
+     *
+     * False for a key the catalogue does not describe at all, which is the same
+     * answer for the same reason: nothing can be sent to it.
+     */
+    public static function isAvailable(string $network): bool
+    {
+        $module = self::all()[$network]['module'] ?? null;
+
+        return $module !== null && self::moduleIsEnabled($module);
+    }
+
+    /** The module whose service provider registers this network's driver. */
+    public static function module(string $network): string
+    {
+        return self::all()[$network]['module'] ?? self::MODULE_SOCIAL;
+    }
+
+    /**
+     * Why this destination cannot be sent to, or null when it can.
+     *
+     * The catalogue's half of `HttpPublisher::unavailableReason()`, and it
+     * exists for the case neither `all()` nor `available()` can serve: an
+     * account row that is already connected, with every credential in place, to
+     * a network whose module is switched off. Filtering it off the accounts
+     * page would show a person nothing at all where a destination used to be,
+     * which is a worse failure than showing it — so it stays on the page and
+     * this is the sentence that goes under it.
+     *
+     * A full sentence rather than a flag, for the same reason every other
+     * failure string in this application is one: the reader has to be able to
+     * act on it, and "unavailable" on its own reads as a bug in Kargah.
+     */
+    public static function unavailableReason(string $network): ?string
+    {
+        if (! self::has($network)) {
+            return 'Kargah does not know a network called “'.$network.'”, so nothing can be sent to it. '
+                .'That is usually a row left behind by an older version of Kargah.';
+        }
+
+        if (self::isAvailable($network)) {
+            return null;
+        }
+
+        $module = self::module($network);
+
+        return self::label($network).' is provided by Kargah’s '.$module.' module, which is not enabled on this '
+            .'install, so nothing can be sent to it. Its posts and its stored credential are left alone; '
+            .'switching '.$module.' back on in modules_statuses.json brings it back.';
+    }
+
+    /**
+     * Ask the module repository, rather than reading `modules_statuses.json`.
+     *
+     * `Module::find()` and not `Module::isEnabled()`: the latter throws
+     * `ModuleNotFoundException` for a module that is not merely disabled but
+     * gone from disk, and a deleted module directory would then turn every page
+     * that draws this catalogue into a 500. A module nobody can find and a
+     * module switched off are the same answer here — nothing registers its
+     * drivers either way.
+     */
+    private static function moduleIsEnabled(string $module): bool
+    {
+        return Module::find($module)?->isEnabled() === true;
     }
 
     /** @return array<string, mixed>|null */

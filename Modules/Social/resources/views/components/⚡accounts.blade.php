@@ -18,6 +18,30 @@ use Modules\Social\Support\Networks;
  *
  * The credential itself is never read here and never rendered. `hasCredentials()`
  * answers a yes-or-no question; nothing on this page can ask for the value.
+ *
+ * ## A connected account whose module has been switched off
+ *
+ * 🔴 This page reads the **whole** catalogue, `Networks::all()`, and filters
+ * nothing out of the list of rows — and that is the deliberate half of the
+ * decision rather than an oversight. Three destinations (WordPress, DEV.to,
+ * Hashnode) have their drivers registered by `BlogServiceProvider`, so
+ * disabling `Blog` leaves any account already connected to one of them sitting
+ * in `social_accounts` with a valid, encrypted credential and nothing able to
+ * send to it.
+ *
+ * Filtering those rows away is the obvious move and the wrong one: the person
+ * opens the page they last saw their DEV.to connection on and finds an empty
+ * space, with nothing anywhere saying where it went or how to get it back.
+ * There is also a credential still stored that they can no longer see, let
+ * alone withdraw. So the row stays, wearing an Unavailable badge and
+ * `Networks::unavailableReason()`'s sentence, which names the module and says
+ * how to bring it back — the same bargain `HttpPublisher::unavailableReason()`
+ * strikes for an account with no credentials, and for the same reason: a
+ * destination that exists and cannot be used has to say so in words.
+ *
+ * The one list on this page that *is* filtered is "Networks Kargah supports",
+ * because that one is an invitation to connect something new rather than a
+ * report on what is already here. See `Networks::available()`.
  */
 new
 #[Title('Social accounts — Kargah')]
@@ -50,11 +74,29 @@ class extends Component
 
         return [
             'accounts' => $accounts,
+            // The complete catalogue, not `available()`: every row below is a
+            // destination that already exists, and a row whose module has been
+            // switched off still needs its own label, icon and colour. Hiding
+            // it would show a blank where a connection used to be, which is a
+            // worse confusion than showing it with the reason underneath.
             'catalogue' => Networks::all(),
-            'connected' => $accounts->filter(fn (SocialAccount $a): bool => $a->isConnected())->count(),
+            'connected' => $accounts
+                ->filter(fn (SocialAccount $a): bool => $a->isConnected() && Networks::isAvailable($a->network))
+                ->count(),
+            // The other half of that, and the reason the row stays: a sentence
+            // per account that cannot be sent to whatever its credentials say,
+            // keyed by id. Empty on every install with all eight modules on.
+            'unavailable' => $accounts
+                ->mapWithKeys(fn (SocialAccount $a): array => [$a->id => Networks::unavailableReason($a->network)])
+                ->filter()
+                ->all(),
             // The networks with no row at all, so the page offers them rather
             // than looking like Kargah supports only what happens to be seeded.
-            'missing' => array_diff(Networks::keys(), $accounts->pluck('network')->all()),
+            // `availableKeys()` here and not `keys()`, because this list is an
+            // invitation: every entry is a button that opens the connect form,
+            // and offering a destination whose module is off would ask somebody
+            // to paste a credential nothing will ever read.
+            'missing' => array_diff(Networks::availableKeys(), $accounts->pluck('network')->all()),
         ];
     }
 
@@ -189,7 +231,10 @@ class extends Component
         @forelse ($accounts as $account)
             @php
                 $meta = $catalogue[$account->network] ?? null;
-                $ready = $account->isConnected();
+                // Why this destination cannot be sent to no matter what its
+                // credentials say, or null when it can be. Almost always null.
+                $blocked = $unavailable[$account->id] ?? null;
+                $ready = $account->isConnected() && $blocked === null;
             @endphp
             <div class="kt-card" wire:key="account-{{ $account->id }}">
                 <div class="kt-card-content p-5 flex flex-col gap-4">
@@ -210,7 +255,12 @@ class extends Component
                         </div>
 
                         <div class="flex flex-col items-end gap-2 shrink-0">
-                            @if ($ready && $account->tokenExpired())
+                            @if ($blocked)
+                                {{-- First in the chain on purpose: nothing below it can be true in a
+                                     way that matters, because a destination with no driver behind it
+                                     cannot publish however good its credentials are. --}}
+                                <span class="kt-badge kt-badge-sm kt-badge-warning">Unavailable</span>
+                            @elseif ($ready && $account->tokenExpired())
                                 <span class="kt-badge kt-badge-sm kt-badge-destructive">Token expired</span>
                             @elseif ($ready && $account->tokenExpiringSoon())
                                 <span class="kt-badge kt-badge-sm kt-badge-warning">Token expiring soon</span>
@@ -228,7 +278,11 @@ class extends Component
                         </div>
                     </div>
 
-                    @unless ($ready)
+                    @if ($blocked)
+                        <p class="text-xs text-secondary-foreground rounded-lg border border-warning/30 bg-warning/10 px-3 py-2">
+                            {{ $blocked }}
+                        </p>
+                    @elseif (! $ready)
                         <p class="text-xs text-secondary-foreground rounded-lg bg-muted px-3 py-2">
                             @if (! $account->is_active)
                                 This account is switched off, so nothing is sent to it.
@@ -236,7 +290,7 @@ class extends Component
                                 Credentials are not configured, so a post aimed here records the reason instead of going out.
                             @endif
                         </p>
-                    @endunless
+                    @endif
 
                     @if ($ready && $account->tokenExpired())
                         <p class="text-xs text-secondary-foreground rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
@@ -261,10 +315,16 @@ class extends Component
                     @endif
 
                     <div class="flex flex-wrap items-center gap-2 border-t border-border pt-4">
-                        <a href="{{ route('social.account-connect') }}?network={{ $account->network }}" wire:navigate
-                           class="kt-btn kt-btn-sm {{ $ready ? 'kt-btn-outline' : 'kt-btn-primary' }}">
-                            {{ $ready ? 'Replace credentials' : 'Connect' }}
-                        </a>
+                        {{-- No connect link while the destination is unavailable: the connect page
+                             does not offer it either, and a button that lands on the picker instead
+                             of the form it promised is worse than no button. Disconnect stays, so
+                             the credential can still be withdrawn. --}}
+                        @unless ($blocked)
+                            <a href="{{ route('social.account-connect') }}?network={{ $account->network }}" wire:navigate
+                               class="kt-btn kt-btn-sm {{ $ready ? 'kt-btn-outline' : 'kt-btn-primary' }}">
+                                {{ $ready ? 'Replace credentials' : 'Connect' }}
+                            </a>
+                        @endunless
 
                         @if (! $account->is_active)
                             <button wire:click="reactivate({{ $account->id }})" wire:loading.attr="disabled"

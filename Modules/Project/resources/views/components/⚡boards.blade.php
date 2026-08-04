@@ -75,6 +75,24 @@ class extends Component
     #[Url(as: 'due')]
     public string $filterDue = '';
 
+    /**
+     * The card a deep link asked for — `/projects?board=client-work&card=1234`.
+     *
+     * A `string` and not an `int`, for the same reason `$activeBoard` is a slug
+     * and not a `Board`: this is whatever the address bar says. `?card=abc`
+     * assigned to a typed `int` property is a `TypeError` that Livewire catches
+     * and swallows, leaving the property at its default with nothing said —
+     * a string keeps the bad value visible to `deepLinkTarget()`, which is what
+     * refuses it out loud.
+     *
+     * `except: ''` so clearing it takes `card=` out of the address bar rather
+     * than leaving `?card=` behind: the parameter *is* in the URL on the
+     * request that carries it, and Livewire only drops a parameter that started
+     * in the URL once it reaches the `except` value.
+     */
+    #[Url(as: 'card', except: '')]
+    public string $deepLinkedCard = '';
+
     public bool $filterOpen = false;
 
     public bool $boardPickerOpen = false;
@@ -148,6 +166,97 @@ class extends Component
     {
         $this->activeBoard = $this->resolveBoard($this->activeBoard);
         $this->recordView();
+        $this->openDeepLinkedCard();
+    }
+
+    /**
+     * Open the card a `?card=` deep link named, or say why it could not be.
+     *
+     * Called from `mount()` and nowhere else, which is the same rule
+     * `recordView()` sits under one method down: a deep link arrives exactly
+     * once, on the request that carries the URL. Putting it anywhere a
+     * re-render reaches would drag the drawer back open on every filter
+     * keystroke, over a board somebody had already moved on from.
+     *
+     * 🔴 **A `card` id is untrusted in a way `openCard()`'s argument is not.**
+     * Every other caller reads the id off an element this very render drew, so
+     * the board had already decided the card was on screen. This one reads it
+     * off the address bar, where it is an integer anybody can increment — and
+     * the drawer does no checking of its own: `⚡card-detail.blade.php`'s
+     * `openCard()` is a bare `find()`, correctly, because until now no caller
+     * could hand it a card the board was not already showing. Without
+     * `deepLinkTarget()` in front of it, `?card=1`, `?card=2`, `?card=3` walks
+     * the whole `cards` table through that drawer.
+     *
+     * **The refusal is spoken, not swallowed.** A silent refusal lands the
+     * person on a board with nothing highlighted, which is precisely the
+     * confusion `project-guaid/HANDOVER-2026-08-05.md` files this defect
+     * under — "a notification lands on the board, not the card". Replacing one
+     * silent failure with another is not a fix. The alternative considered was
+     * to say nothing and let them hunt; the one thing they cannot work out for
+     * themselves is *why* the card they were sent to is not there.
+     *
+     * **One sentence for all of the refusals.** Another board, archived,
+     * deleted, a non-numeric id, no board open at all — deliberately the same
+     * message. A message that told them apart would answer "does card 4,102
+     * exist?" for anybody willing to type, which is the object-reference leak
+     * this guard exists to close, only slower.
+     */
+    private function openDeepLinkedCard(): void
+    {
+        if ($this->deepLinkedCard === '') {
+            return;
+        }
+
+        $card = $this->deepLinkTarget();
+
+        if ($card === null) {
+            $this->toastError(
+                'That card is not on this board',
+                'It has been archived, deleted, or it lives on another board. Everything that was not deleted is in the archive.',
+            );
+
+            return;
+        }
+
+        $this->openCard($card->id);
+    }
+
+    /**
+     * The card `?card=` names — but only if this board actually draws it.
+     *
+     * `cardOnThisBoard()` guarantees exactly one thing: the card has a
+     * placement on a list of the **open** board, and that list is not archived.
+     * It says nothing about the card itself, on purpose — `quickArchive()` has
+     * to be able to see an archived card in order to refuse to archive it
+     * twice — so the `isArchived()` test here is not redundant with it. The two
+     * together are `CardPlacement::scopeOnCanvas()`'s rule spelled out:
+     * `find()` drops a soft-deleted card, `active()` drops an archived list,
+     * and `isArchived()` drops the card that has left its origin list.
+     *
+     * **An archived card is refused even where the canvas would still draw
+     * one** — a mirror keeps showing an archived card, greyed and undraggable.
+     * A click is on a card somebody is already looking at; a link is asked to
+     * *find* one. Sliding a drawer open over a card that has left the board is
+     * the answer nobody can act on, so the message points at the archive.
+     *
+     * Being strict is the whole point, and there is nothing else to be strict
+     * with: Kargah has no board-membership model — no policy, no gate, every
+     * signed-in person reaches every active board — so "on the board named in
+     * this same URL" is the only boundary there is, and it has to hold here or
+     * it does not exist.
+     */
+    private function deepLinkTarget(): ?Card
+    {
+        // `ctype_digit` rather than a cast: `(int) 'abc'` is 0, and 0 is an id
+        // this would then go to the database for on every mistyped link.
+        if (! ctype_digit($this->deepLinkedCard)) {
+            return null;
+        }
+
+        $card = $this->cardOnThisBoard((int) $this->deepLinkedCard);
+
+        return $card === null || $card->isArchived() ? null : $card;
     }
 
     /**
@@ -526,6 +635,11 @@ class extends Component
         $this->filterLabels = [];
         $this->filterAssignees = [];
         $this->filterDue = '';
+
+        // The same reasoning one step further: `?card=` names a card on the
+        // board being left. Leaving it in the address bar turns the next
+        // refresh into a refusal about a card nobody asked about twice.
+        $this->deepLinkedCard = '';
 
         $this->closeOverlays();
         $this->refreshBoard();

@@ -168,14 +168,26 @@ class extends Component
                                     <span class="kt-badge kt-badge-sm {{ $postStates[$post?->status]['badge'] ?? 'kt-badge-outline' }}">
                                         {{ $postStates[$post?->status]['label'] ?? '—' }}
                                     </span>
-                                    @if ($post !== null)
-                                        <a href="{{ route('social.post-show', ['post' => $post->id]) }}" wire:navigate
+                                    <div class="flex items-center gap-1">
+                                        {{-- Offered whatever the status. An article that has already gone out can
+                                             still be corrected here — the edit page is the thing that explains what
+                                             that does and does not reach, and hiding the link would leave somebody
+                                             with no way to fix a typo at all. --}}
+                                        <a href="{{ route('blog.article-edit', ['article' => $article->id]) }}" wire:navigate
                                            class="kt-btn kt-btn-icon kt-btn-sm kt-btn-ghost"
-                                           title="Open the delivery record"
-                                           aria-label="Open the delivery record for {{ $article->title }}">
-                                            <i class="ki-filled ki-arrow-up-right"></i>
+                                           title="Edit this article"
+                                           aria-label="Edit {{ $article->title }}">
+                                            <i class="ki-filled ki-pencil"></i>
                                         </a>
-                                    @endif
+                                        @if ($post !== null)
+                                            <a href="{{ route('social.post-show', ['post' => $post->id]) }}" wire:navigate
+                                               class="kt-btn kt-btn-icon kt-btn-sm kt-btn-ghost"
+                                               title="Open the delivery record"
+                                               aria-label="Open the delivery record for {{ $article->title }}">
+                                                <i class="ki-filled ki-arrow-up-right"></i>
+                                            </a>
+                                        @endif
+                                    </div>
                                 </div>
                             </td>
                         </tr>

@@ -110,11 +110,18 @@ class extends Component
      * An unconnected account is left unticked rather than hidden: it is still
      * something you can aim at, and doing so records that its credentials are
      * missing, which is more useful than the account quietly not being there.
+     *
+     * An account whose module has been switched off gets the same treatment for
+     * the same reason — shown, listed with the reason, but not ticked for you.
+     * `isConnected()` cannot answer that on its own: a DEV.to account keeps
+     * every credential it ever had when `Blog` is disabled, so it reads as
+     * perfectly connected right up until the target row says nothing can send
+     * to it. `Networks::isAvailable()` is the half `isConnected()` does not see.
      */
     public function mount(): void
     {
         $this->targets = $this->accounts()
-            ->filter(fn (SocialAccount $a): bool => $a->isConnected())
+            ->filter(fn (SocialAccount $a): bool => $a->isConnected() && Networks::isAvailable($a->network))
             ->pluck('id')
             ->all();
     }
@@ -147,7 +154,17 @@ class extends Component
             'accounts' => $this->accounts(),
             'selected' => $selected,
             'catalogue' => Networks::all(),
-            'connectedCount' => $selected->filter(fn (SocialAccount $a): bool => $a->isConnected())->count(),
+            // Why an account on the list cannot be published to whatever its
+            // credentials say, keyed by id — empty on an install with every
+            // module on. Not a filter: an account that exists stays on the list
+            // and says why, exactly as an unconnected one does.
+            'unavailable' => $this->accounts()
+                ->mapWithKeys(fn (SocialAccount $a): array => [$a->id => Networks::unavailableReason($a->network)])
+                ->filter()
+                ->all(),
+            'connectedCount' => $selected
+                ->filter(fn (SocialAccount $a): bool => $a->isConnected() && Networks::isAvailable($a->network))
+                ->count(),
             'mediaProblems' => $this->mediaProblems(),
             'hasMedia' => $this->uploads !== [],
         ];
@@ -408,6 +425,17 @@ class extends Component
 
         // Selecting is visible in the list and in the previews; the only thing
         // worth saying is what the tick does not show.
+        //
+        // Unavailability is said first because it is the one a person cannot
+        // work out from the screen: an account with its module switched off has
+        // every credential it ever had, so "credentials are not configured"
+        // would be both wrong and useless.
+        if (($reason = Networks::unavailableReason($account->network)) !== null) {
+            $this->toastWarning($account->label().' cannot be published to', $reason);
+
+            return;
+        }
+
         if (! $account->isConnected()) {
             $this->toastWarning(
                 $account->label().' credentials are not configured',
@@ -855,6 +883,7 @@ class extends Component
                             $length = mb_strlen($this->textFor($account->id));
                             $accountLimit = $account->characterLimitWith($hasMedia);
                             $over = $length > $accountLimit;
+                            $blocked = $unavailable[$account->id] ?? null;
                         @endphp
                         <button wire:click="toggleTarget({{ $account->id }})" wire:key="target-{{ $account->id }}"
                                 class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-start transition-colors
@@ -863,11 +892,21 @@ class extends Component
                             <span class="min-w-0 grow">
                                 <span class="block text-sm font-medium text-mono">{{ $account->label() }}</span>
                                 <span class="block text-xs text-muted-foreground truncate">{{ $account->handle }}</span>
-                                <span class="block text-xs {{ $over ? 'text-destructive' : 'text-muted-foreground' }}">
-                                    {{ $account->isConnected()
-                                        ? $length . ' / ' . number_format($accountLimit)
-                                        : 'Credentials not configured' }}
+                                {{-- A character count is beside the point for a destination nothing
+                                     can send to, and "credentials not configured" would be a lie
+                                     about one whose credentials are all present. --}}
+                                <span class="block text-xs {{ $blocked ? 'text-warning' : ($over ? 'text-destructive' : 'text-muted-foreground') }}">
+                                    @if ($blocked)
+                                        Unavailable on this install
+                                    @elseif ($account->isConnected())
+                                        {{ $length }} / {{ number_format($accountLimit) }}
+                                    @else
+                                        Credentials not configured
+                                    @endif
                                 </span>
+                                @if ($blocked)
+                                    <span class="block text-[11px] text-muted-foreground mt-0.5">{{ $blocked }}</span>
+                                @endif
                             </span>
                             @if ($active)
                                 <i class="ki-filled ki-check-circle text-primary text-base shrink-0"></i>

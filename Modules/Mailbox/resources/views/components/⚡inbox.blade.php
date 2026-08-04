@@ -565,12 +565,26 @@ class extends Component
             : mb_substr($name, 0, 2));
     }
 
-    /** Where a converted card can be opened, which is its own board. */
+    /**
+     * Where a converted card can be opened — the card itself, not just its board.
+     *
+     * The `card` parameter used to be absent here, which meant somebody following
+     * "this email became a card" landed on a board of forty cards with nothing
+     * indicating which one. `⚡boards` now reads `?card=` in `mount()` and opens
+     * that card, refusing an id that is archived, deleted, or on another board —
+     * so a stale link degrades to the board it already showed rather than to an
+     * error. `Watching::cardUrl()` and `BoardCalendar` build the same shape.
+     *
+     * The board is still required: the card is resolved against the board named
+     * in the same URL, so a `card` without a `board` opens nothing.
+     */
     public function cardUrl(Card $card): string
     {
         $slug = $card->list?->board?->slug;
 
-        return $slug === null ? route('projects.boards') : route('projects.boards', ['board' => $slug]);
+        return $slug === null
+            ? route('projects.boards')
+            : route('projects.boards', ['board' => $slug, 'card' => $card->getKey()]);
     }
 
     /**

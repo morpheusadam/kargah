@@ -6,6 +6,7 @@ use App\Models\User;
 use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
 use Modules\Accounting\Database\Seeders\AccountingDatabaseSeeder;
+use Modules\Blog\Database\Seeders\BlogDatabaseSeeder;
 use Modules\Core\Database\Seeders\CoreDatabaseSeeder;
 use Modules\Data\Database\Seeders\DataDatabaseSeeder;
 use Modules\Mailbox\Database\Seeders\MailboxDatabaseSeeder;
@@ -40,6 +41,10 @@ class DatabaseSeeder extends Seeder
             MailboxSendingSeeder::class,
             DataDatabaseSeeder::class,
             SocialDatabaseSeeder::class,
+            // After Social's, not beside it: this one hangs a teaser target on
+            // whichever short-form account already exists and creates none of
+            // its own, so run before it the teaser is simply absent.
+            BlogDatabaseSeeder::class,
         ]);
     }
 }

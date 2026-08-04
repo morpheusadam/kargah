@@ -88,6 +88,16 @@ class extends Component
             ->values();
 
         return [
+            // `all()` and deliberately not `available()`: every network this
+            // draws is one an account or a stored notification already names,
+            // and a feed row whose module has since been switched off still
+            // needs its icon and its label rather than a blank. Nothing on this
+            // page offers a destination, so there is nothing here to filter.
+            //
+            // In practice the two would return the same thing anyway — only
+            // Mastodon and Bluesky ingest, and both are Social's own — but the
+            // next network that learns to read notifications may not be, and
+            // the reason should not have to be rediscovered then.
             'catalogue' => Networks::all(),
             'filters' => $present,
             'items' => $visible,

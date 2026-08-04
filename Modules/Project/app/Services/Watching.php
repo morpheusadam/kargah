@@ -116,7 +116,7 @@ class Watching
      * it is currently placed in, and of every board those lists belong to.
      *
      * @return list<int> deduplicated, with `$excludeUserId` removed — the
-     *                    actor never notifies themselves
+     *                   actor never notifies themselves
      */
     public function recipientsForCard(Card $card, ?int $excludeUserId = null): array
     {
@@ -242,8 +242,8 @@ class Watching
      * meantime; nothing currently calls it.
      *
      * @return array the notification written, or the skipped shape if the
-     *                member has turned `card.assigned` off — see
-     *                `Notifier::notify()`
+     *               member has turned `card.assigned` off — see
+     *               `Notifier::notify()`
      */
     public function notifyMemberAdded(Card $card, int $memberId, ?int $actorId): array
     {
@@ -260,18 +260,38 @@ class Watching
     }
 
     /**
-     * Where clicking a card notification goes.
+     * Where clicking a card notification goes: the card, open.
      *
-     * There is no per-card deep link yet — `⚡boards.blade.php` opens a card
-     * through a dispatched browser event, not a URL — so this lands on the
-     * board the card lives on (its origin), which is the closest thing to a
-     * card URL the front end currently has. Reported back as a gap rather
-     * than worked around here.
+     * This used to name the board alone, because the board had no per-card
+     * URL — a notification saying "you were mentioned on a card" then opened a
+     * board with nothing highlighted, which is the defect
+     * `project-guaid/HANDOVER-2026-08-05.md` files under "no per-card deep
+     * link". `⚡boards.blade.php` now carries a `card` URL property and opens
+     * that card from `mount()`, so the id belongs in the link.
+     *
+     * **Still the card's origin board, not the board that produced the
+     * notification.** A watcher of a board a card is only *mirrored* onto is
+     * sent to where the card lives rather than to their own board. That is
+     * unchanged from before and stays deliberate: the origin is the one board
+     * every recipient of this notification can be told about without a query
+     * per recipient, and the card is drawn there for all of them. The cost is
+     * that a mirror-board watcher arrives somewhere they did not expect; the
+     * alternative is a per-recipient URL, which this method has no recipient
+     * to build one for.
+     *
+     * 🔴 The board component refuses a `card` id that is not on the named
+     * board, archived, or deleted — so a link built here for a card that is
+     * later archived degrades to the board with a sentence saying why, not to
+     * a drawer full of somebody else's card. Do not "fix" that refusal by
+     * loosening it; it is what stops an incrementing integer in this URL from
+     * walking the `cards` table.
      */
     public function cardUrl(Card $card): ?string
     {
         $board = $card->list?->board;
 
-        return $board === null ? null : route('projects.boards', ['board' => $board->slug]);
+        return $board === null
+            ? null
+            : route('projects.boards', ['board' => $board->slug, 'card' => $card->getKey()]);
     }
 }
