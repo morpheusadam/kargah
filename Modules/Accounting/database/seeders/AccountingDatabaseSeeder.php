@@ -126,7 +126,7 @@ class AccountingDatabaseSeeder extends Seeder
      * looks for the pair and its inverse and then gives up, so a USDT invoice
      * reporting in lira has no figure at all unless the pair itself is on file.
      * This is not an invention for the fixture's benefit — `accounting:fetch-rates`
-     * was run against the live sources on 5 August 2026 and CoinGecko answered
+     * was run against the live sources on 4 August 2026 and CoinGecko answered
      * `USDT/USD` **and** `USDT/TRY`, so the series exists in a real book too.
      * (TCMB was skipped that run: `EVDS_API_KEY` is not set on this machine.)
      *

@@ -8,7 +8,7 @@ They exist because every assertion in this project is against server-rendered ma
 4 August 2026 the markup was correct while the dashboard destroyed itself on load, four pages had
 never once loaded their JavaScript bundle, and two routes returned 500. **A passing test is not
 evidence that a person can use the page.** These were written that day, lost to a scratchpad, and
-rewritten on 5 August — hence living in the repository now.
+rewritten later the same day — hence living in the repository now.
 
 | File | What it answers |
 |---|---|

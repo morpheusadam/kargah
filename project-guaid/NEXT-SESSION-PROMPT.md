@@ -36,7 +36,13 @@ server-rendered markup and the server-rendered markup was correct throughout.
 🔴 **So: open the app in a browser before you believe anything about it, and do it first rather than
 last.** A passing test is not evidence that a person can use the page.
 
-`project-guaid/HANDOVER-BROWSER-2026-08-04.md` is the full account and the first thing to read.
+The harnesses are no longer something to recreate: they are in the repository at **`tools/audit/`**,
+with `playwright-core` in `devDependencies`. `tools/audit/README.md` is the procedure. Running them
+again on the afternoon of 4 August found **nothing** across 59 routes and 92 inbox click targets —
+which is what a clean answer from this tooling looks like, and worth knowing before you go hunting.
+
+`project-guaid/HANDOVER-BROWSER-2026-08-04-PM.md` is the latest account; the file it is named after
+is the morning session that found all of the above.
 
 ## 🔴 Never point a clicking harness at the dev database
 
@@ -249,43 +255,40 @@ template, named `⚡<name>.blade.php` under `Modules/<X>/resources/views/compone
 
 ## Open, in the order I would take them
 
-1. **The 39 unclicked `wire:click` targets on `/mail/inbox`** — the interactive harness capped at 45
-   of 84. Everything else clicked clean: ~430 targets across 48 routes, zero errors, and both form
-   passes (every form submitted empty, then filled) were clean too.
-2. **`⚡link-create`'s `$kinds[$kind]`** — an unknown `kind` passes validation's refusal and then
-   kills the page with `Undefined array key`. Reachable, because `kind` is driven by
-   `$set('kind', …)` rather than `wire:model`.
-3. **`⚡clients.blade.php`'s tab strip** — the same unwrapped shape that made `⚡client-show` scroll
-   sideways, not yet long enough to overflow.
-4. **`⚡invoice-show::voidInvoice()` has no guard against voiding an invoice with standing payments.**
-   Harmless today; a real defect the moment anything derives a balance from the ledger.
-5. **`Email::markRead()` throws a `TypeError` on every call** — `save()` returned against a `static`
-   return type. `⚡inbox` works around it with `forceFill` and says so.
-6. **`payments` has no frozen reporting figure**, so a collection is valued at its *invoice's*
+⚠️ **Items 1–5, 7 and 9 of the list this section used to carry were closed on the afternoon of
+4 August** — see `HANDOVER-BROWSER-2026-08-04-PM.md`. What is left, renumbered:
+
+1. 🔴 **The first real post on each network.** Now blocked on credentials only: PHP could not reach
+   the internet at all until this machine got a CA bundle, and it can now. See the PM handover §3.
+2. **`EVDS_API_KEY` is not set**, so no invoice to a domestic Turkish company can show the lira
+   equivalent the law requires. Free, from `evds2.tcmb.gov.tr` → Profil → API Anahtarı.
+3. **`payments` has no frozen reporting figure**, so a collection is valued at its *invoice's*
    issue-date rate. This is why cash-in/cash-out per month does not exist.
-7. **`AccountingDatabaseSeeder` mirrors `InvoiceIssuer`'s freezing logic** rather than calling it, so
-   a freshly seeded demo does not demonstrate the shipped default.
-8. **Time tracking → billable hours → invoice** — the biggest must-have that does not exist, and the
+4. **Time tracking → billable hours → invoice** — the biggest must-have that does not exist, and the
    missing link between doing the work and billing it.
-9. **A one-line invoice currently runs to two pages.** Correct footer behaviour, questionable break.
-10. **`⚡card-detail:479`'s `openCard()`** is a public `#[On('open-card')]` listener doing a bare
+5. **`⚡card-detail:479`'s `openCard()`** is a public `#[On('open-card')]` listener doing a bare
     `Card::find()`, and `⚡calendar` and `⚡table` expose the same shape. It leaks nothing today
     because Kargah has **no per-user visibility model at all** — but it is where the first policy has
     to land, and writing that policy is an architecture decision, not a bug fix.
-11. Older debts still standing: `CustomerReader` returning Eloquent models where every sibling
+6. Older debts still standing: `CustomerReader` returning Eloquent models where every sibling
     returns arrays · `has:stickers` · Butler's missing calendar and branching · uncursored
-    `/api/v1/customers` · card writes and mail sending absent from `/api/v1` · `v23.0` a choice
-    rather than a verified version · no permalink for Instagram, Threads or Slack · Reddit takes no
-    pictures · `MEDIA_NOT_READY` written and unproven · Tumblr on the legacy endpoint.
-12. 🔴 **Not one publishing driver has ever been called for real.** There is no CA bundle in this
-    machine's `php.ini`, so outbound HTTPS from PHP fails with cURL error 60. Every request shape is
-    proved with `Http::fake()` and nothing else. **The first real post on each network is still the
-    highest-value work available.** Credential steps per network are in `HANDOVER-2026-08-05.md` §3.
+    `/api/v1/customers` · card writes and mail sending absent from `/api/v1` · no permalink for
+    Instagram, Threads or Slack · Reddit takes no pictures · `MEDIA_NOT_READY` written and unproven ·
+    Tumblr on the legacy endpoint.
+7. **The double-entry build**, when the owner asks for it. §4(d) of the plan — void refusing a
+    standing payment — is already done, so the plan is one stage shorter than it reads.
+
+⚠️ **Two claims in this file are now out of date and are corrected in the PM handover:** there is a
+CA bundle in this machine's `php.ini` (outbound HTTPS from PHP works, and `accounting:fetch-rates`
+has been run for real), and `v23.0` has been verified against the live Graph host. Credential steps
+per network are still in `HANDOVER-2026-08-05.md` §3.
 
 ## What to read, in order
 
 ```
-project-guaid/HANDOVER-BROWSER-2026-08-04.md      today's session — start here
+project-guaid/HANDOVER-BROWSER-2026-08-04-PM.md   the most recent session — start here
+project-guaid/HANDOVER-BROWSER-2026-08-04.md      the morning before it: why you open a browser
+tools/audit/README.md                             before running anything that clicks
 project-guaid/HANDOVER-ACCOUNTING-2026-08-06.md   the money rules
 project-guaid/HANDOVER-2026-08-06.md              publishing, credential leaks, module ownership
 project-guaid/HANDOVER-2026-08-05.md              the seventeen publishing destinations

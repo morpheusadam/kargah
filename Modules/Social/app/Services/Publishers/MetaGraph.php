@@ -87,7 +87,7 @@ trait MetaGraph
      * the fix is this constant and nothing else, which is why it is a constant
      * and not nine string literals.
      *
-     * **Measured against the live host on 5 August 2026**, because it had been
+     * **Measured against the live host on 4 August 2026**, because it had been
      * written down as a choice nobody had checked. Graph answers an unknown
      * version by reading it as a node name — `/v99.0/me` and `/vXYZ/me` both
      * come back *"Unknown path components: /me"*, while a real version comes

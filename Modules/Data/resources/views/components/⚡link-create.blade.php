@@ -59,7 +59,7 @@ class extends Component
      * `wire:model`, and `$set` sets whatever the client sends. The preview used
      * to index `$kinds[$kind]` directly, so an unknown value killed the whole
      * page with `Undefined array key` **during render** — before `save()` and
-     * its allow-list ever ran. Measured in Chrome on 5 August 2026:
+     * its allow-list ever ran. Measured in Chrome on 4 August 2026:
      * `$wire.$set('kind', 'not-a-kind')` answered `HTTP 500` from
      * `/livewire/update`.
      *

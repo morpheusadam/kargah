@@ -50,7 +50,7 @@
 
         /* 🔴 The two gaps below used to be 12mm and 14mm, and together they were
            what tipped an ordinary one-line invoice onto a second page: measured
-           on 5 August 2026, `INV-0042` — one line, a three-line address and a
+           on 4 August 2026, `INV-0042` — one line, a three-line address and a
            tax number — ran to two pages while `INV-0041` with a shorter address
            ran to one. 26mm of fixed whitespace on a 253mm content area is the
            difference between those two, not the content. Reduced to 8mm and
