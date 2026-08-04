@@ -49,13 +49,24 @@ class InvoiceDocument
                 $line->id => Money::format((string) $line->unit_price, $invoice->currency),
             ]),
 
-            // Shown only alongside the real figure, never instead of it.
-            'reporting' => $invoice->reporting_amount === null ? null : [
-                'amount' => Money::format((string) $invoice->reporting_amount, $invoice->reporting_currency),
-                'currency' => $invoice->reporting_currency,
-                'rate' => (string) $invoice->reporting_rate,
-                'on' => $invoice->issued_on?->format('j F Y'),
-            ],
+            // Shown only alongside the real figure, never instead of it — and
+            // 🔴 not at all when the two currencies are the same. An invoice
+            // raised in lira and reported in lira used to print
+            // "₺20,000.00 converted" under the amount due and
+            // "Converted for reporting: ₺20,000.00 (TRY) at 1.000000" in the
+            // provenance box. Nothing was converted; the rate is one by
+            // definition, not by measurement. 03-accounting.md's rule is that a
+            // *converted* figure must carry the rate that produced it, which
+            // says nothing about a figure that was never converted — and this
+            // is the one page in Kargah a client reads, so a line claiming a
+            // conversion that did not happen is worse than a line missing.
+            'reporting' => $invoice->reporting_amount === null
+                || $invoice->reporting_currency === $invoice->currency ? null : [
+                    'amount' => Money::format((string) $invoice->reporting_amount, $invoice->reporting_currency),
+                    'currency' => $invoice->reporting_currency,
+                    'rate' => (string) $invoice->reporting_rate,
+                    'on' => $invoice->issued_on?->format('j F Y'),
+                ],
 
             // Filled only for a domestic Turkish buyer. The rate type is stated
             // because which one applies is a legal question, not a preference.

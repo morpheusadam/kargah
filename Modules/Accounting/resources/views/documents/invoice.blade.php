@@ -220,6 +220,23 @@
     </tr>
 </table>
 
+{{--
+    The provenance box exists to explain a figure the reader cannot check for
+    themselves: a conversion, a lira equivalent, a payment that arrived on a
+    chain, a zero-rating somebody claimed. 🔴 When an invoice has none of those
+    — raised in the reporting currency, to a buyer outside Türkiye, settled
+    normally — the box was still printed carrying one row reading
+    "Invoice currency: TRY", which the ₺ against every figure above has already
+    said. A box titled "How these figures were arrived at" that then explains
+    nothing spends a client's attention and, on a full invoice, a page.
+
+    So it is rendered only when it has something to say. The currency row stays
+    inside it, because whenever any of the other four is present the reader
+    needs to know which currency the conversion started from.
+--}}
+@php($hasProvenance = $exemptionCode || $reporting || $lira || count($chainPayments) > 0)
+
+@if ($hasProvenance)
 <div class="provenance">
     <h3>How these figures were arrived at</h3>
     <dl>
@@ -274,6 +291,7 @@
         @endforeach
     </dl>
 </div>
+@endif
 
 @if ($invoice->notes)
     <p class="small muted" style="margin-top: 8mm; white-space: pre-line">{{ $invoice->notes }}</p>
