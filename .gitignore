@@ -44,3 +44,8 @@ Thumbs.db
 # To install it on a machine: put the PNG at the path the config names.
 /public/img/signature.png
 
+
+# What the browser audits wrote on the last run. The harnesses are worth keeping;
+# a snapshot of one machine's findings is not.
+/tools/audit/*.json
+/storage/app/audit-copy*.sqlite

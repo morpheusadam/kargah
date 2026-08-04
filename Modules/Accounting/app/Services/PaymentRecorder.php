@@ -355,15 +355,7 @@ class PaymentRecorder
             return 'void';
         }
 
-        // `payments()` is a fresh query and Payment is soft-deleting, so a
-        // reversed payment is already out of this sum without being asked for.
-        $paid = Money::sum(
-            $invoice->payments()
-                ->when($ignoringPaymentId !== null, fn ($query) => $query->whereKeyNot($ignoringPaymentId))
-                ->pluck('applied_amount')
-                ->map(fn ($a): string => (string) $a),
-            $invoice->currency,
-        );
+        $paid = $this->paid($invoice, $ignoringPaymentId);
 
         $total = Money::fromStorage((string) $invoice->total, $invoice->currency);
 
@@ -396,15 +388,38 @@ class PaymentRecorder
         ])->save();
     }
 
+    /**
+     * What has landed against an invoice, in the invoice's own currency.
+     *
+     * `payments()` is a fresh query and `Payment` soft-deletes, so a reversed
+     * payment is already out of this sum without being asked for. 🔴 Summed
+     * through `Money`, never `SUM()` — SQLite stores a decimal as an IEEE
+     * double.
+     *
+     * This is the one place the figure is computed. `statusFor()`,
+     * `outstanding()` and the void guard on `⚡invoice-show` all read it here
+     * rather than each writing the same `pluck`, because three copies of a
+     * money sum do not fail a test when they drift — they show up as a report
+     * that disagrees with the page it was opened from.
+     *
+     * @param  ?int  $ignoringPaymentId  Answer as though this payment were gone.
+     */
+    public function paid(Invoice $invoice, ?int $ignoringPaymentId = null): \Brick\Money\Money
+    {
+        return Money::sum(
+            $invoice->payments()
+                ->when($ignoringPaymentId !== null, fn ($query) => $query->whereKeyNot($ignoringPaymentId))
+                ->pluck('applied_amount')
+                ->map(fn ($a): string => (string) $a),
+            $invoice->currency,
+        );
+    }
+
     /** What is still owed on an invoice, in its own currency. */
     public function outstanding(Invoice $invoice): string
     {
-        $paid = Money::sum(
-            $invoice->payments()->pluck('applied_amount')->map(fn ($a): string => (string) $a),
-            $invoice->currency,
-        );
-
-        $owed = Money::fromStorage((string) $invoice->total, $invoice->currency)->minus($paid, Money::ROUNDING);
+        $owed = Money::fromStorage((string) $invoice->total, $invoice->currency)
+            ->minus($this->paid($invoice), Money::ROUNDING);
 
         return Money::toStorage($owed->isNegative() ? Money::zero($invoice->currency) : $owed);
     }

@@ -52,10 +52,37 @@ class extends Component
         ];
     }
 
+    /**
+     * The descriptor the preview draws, for whatever `kind` currently holds.
+     *
+     * 🔴 `kind` is driven by `$set('kind', …)` from `wire:click` rather than by
+     * `wire:model`, and `$set` sets whatever the client sends. The preview used
+     * to index `$kinds[$kind]` directly, so an unknown value killed the whole
+     * page with `Undefined array key` **during render** — before `save()` and
+     * its allow-list ever ran. Measured in Chrome on 5 August 2026:
+     * `$wire.$set('kind', 'not-a-kind')` answered `HTTP 500` from
+     * `/livewire/update`.
+     *
+     * The fallback names the problem rather than hiding it behind the default
+     * kind: none of the four cards is highlighted, the preview says the value
+     * is not a kind, and `save()` still refuses it with the same message.
+     *
+     * @return array{label: string, icon: string, hint: string}
+     */
+    public function currentKind(): array
+    {
+        return $this->kinds()[$this->kind] ?? [
+            'label' => 'Not a known kind',
+            'icon' => 'ki-question',
+            'hint' => 'Pick one of the four above.',
+        ];
+    }
+
     public function with(): array
     {
         return [
             'kinds' => $this->kinds(),
+            'current' => $this->currentKind(),
             'host' => $this->url === '' ? null : (parse_url($this->url, PHP_URL_HOST) ?: null),
             'suggestedTags' => ['laravel', 'hosting', 'client', 'telegram', 'tool', 'docs'],
         ];
@@ -264,11 +291,11 @@ class extends Component
                 <div class="kt-card-content p-5 flex flex-col gap-3">
                     <div class="flex items-center gap-3 min-w-0">
                         <span class="inline-flex items-center justify-center size-10 rounded-lg bg-primary/10 text-primary shrink-0">
-                            <i class="ki-filled {{ $kinds[$kind]['icon'] }} text-lg"></i>
+                            <i class="ki-filled {{ $current['icon'] }} text-lg"></i>
                         </span>
                         <div class="min-w-0">
                             <div class="font-semibold text-mono truncate">{{ $title !== '' ? $title : 'Untitled link' }}</div>
-                            <div class="text-xs text-muted-foreground">{{ $kinds[$kind]['label'] }}</div>
+                            <div class="text-xs text-muted-foreground">{{ $current['label'] }}</div>
                         </div>
                     </div>
                     <div class="text-sm text-primary truncate">{{ $url !== '' ? $url : '—' }}</div>

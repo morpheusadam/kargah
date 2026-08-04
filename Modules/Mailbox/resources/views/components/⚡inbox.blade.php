@@ -725,14 +725,16 @@ class extends Component
     /**
      * Write the read flag.
      *
-     * `forceFill` rather than the model's own `markRead()`: that helper
-     * currently returns the result of `save()` against a `static` return type
-     * and throws a TypeError on every call. The bug is in
-     * `Modules\Mailbox\app\Models\Email`, which this page does not own.
+     * Through the model's own helper. This used to be a local `forceFill` with
+     * a note saying `markRead()` threw a `TypeError` on every call — it did,
+     * and it no longer does: `Email::markRead()` now taps rather than chaining
+     * off `tap()`. Checked before the workaround was removed, against a real
+     * row inside a rolled-back transaction — it returns the `Email` with
+     * `is_read` set, and so does `markStarred()`.
      */
     private function setRead(Email $email, bool $read): void
     {
-        $email->forceFill(['is_read' => $read])->save();
+        $email->markRead($read);
     }
 
     /* Message actions ---------------------------------------------------------- */
@@ -748,7 +750,7 @@ class extends Component
             return;
         }
 
-        $email->forceFill(['is_starred' => ! $email->is_starred])->save();
+        $email->markStarred(! $email->is_starred);
 
         $this->refreshList();
 

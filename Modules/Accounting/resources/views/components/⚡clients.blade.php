@@ -262,13 +262,21 @@ class extends Component
         </div>
     </div>
 
-    <div class="kt-tabs kt-tabs-line">
-        @foreach ($filters as $key => $label)
-            <button wire:click="setFilter('{{ $key }}')"
-                    class="kt-tab-toggle {{ $filter === $key ? '!text-primary !border-primary' : '' }}">
-                {{ $label }}
-            </button>
-        @endforeach
+    {{-- The strip scrolls rather than pushing the page sideways. `.kt-tab-toggle`
+         inherits the theme's `white-space: nowrap`, so a strip that does not fit
+         cannot shrink to fit — it widens the body instead. `⚡client-show`'s
+         identical strip was measured ending at 414px inside a 375px viewport on
+         4 August 2026; this one is only three tabs long and does not overflow
+         yet, which is why it gets the wrapper before a fourth filter arrives. --}}
+    <div class="kt-scrollable-x-auto">
+        <div class="kt-tabs kt-tabs-line">
+            @foreach ($filters as $key => $label)
+                <button wire:click="setFilter('{{ $key }}')"
+                        class="kt-tab-toggle {{ $filter === $key ? '!text-primary !border-primary' : '' }}">
+                    {{ $label }}
+                </button>
+            @endforeach
+        </div>
     </div>
 
     {{-- Inline creation. Driven from component state rather than KTUI, because

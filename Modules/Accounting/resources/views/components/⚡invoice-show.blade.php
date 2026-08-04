@@ -231,8 +231,15 @@ class extends Component
 
         $recorder = app(PaymentRecorder::class);
         $outstanding = $recorder->outstanding($invoice);
+        $paid = $recorder->paid($invoice);
 
         return [
+            // What the void dialog has to know before it promises anything —
+            // `voidInvoice()` refuses while this is positive, and the dialog is
+            // the only warning anybody gets. Read from the same `paid()` the
+            // guard reads, so the two cannot drift apart.
+            'paidToDate' => $paid,
+            'paidToDateFormatted' => Money::format(Money::toStorage($paid), $invoice->currency),
             'invoice' => $invoice,
             'lines' => $invoice->lines,
             'payments' => $invoice->payments,
@@ -436,6 +443,19 @@ class extends Component
      *
      * The row stays, its payments stay, and the ledger entries were never the
      * invoice's to remove. What changes is that the amount stops being owed.
+     *
+     * 🔴 **Standing payments refuse the void**, which is the rule
+     * `DOUBLE-ENTRY-PLAN.md` §4(d) writes down. Voiding an invoice that money
+     * has landed against leaves the cash standing against no receivable: the
+     * payment still counts as received and there is no longer a document
+     * saying what it was for. Nothing derives a balance from the ledger today,
+     * so this was harmless until now — the guard lands ahead of the ledger
+     * work rather than after it, because it is a behaviour change and doing it
+     * separately keeps the two reviewable apart.
+     *
+     * Refusing rather than doing two of three is the module's established
+     * answer — `PaymentRecorder::reverse()` and `⚡expense-edit::delete()` both
+     * take it. The way out is on screen: reverse the payments, then void.
      */
     public function voidInvoice(): void
     {
@@ -449,6 +469,21 @@ class extends Component
             $this->voidOpen = false;
 
             $this->toastError('Already void', $invoice->number.' was voided on '.$invoice->voided_at->format('j F Y').'.');
+
+            return;
+        }
+
+        $paid = app(PaymentRecorder::class)->paid($invoice);
+
+        if ($paid->isPositive()) {
+            $this->voidOpen = false;
+
+            $this->toastError(
+                $invoice->number.' was not voided',
+                $invoice->number.' has '.Money::format(Money::toStorage($paid), $invoice->currency).' of payments '
+                .'recorded against it. Reverse them '
+                .'first; voiding now would leave the cash standing against no receivable.',
+            );
 
             return;
         }
@@ -1333,22 +1368,38 @@ class extends Component
                     </button>
                 </div>
                 <div class="kt-modal-body">
-                    <p class="text-sm text-secondary-foreground leading-relaxed">
-                        Voiding keeps the invoice, its lines and every payment recorded against it. Nothing is deleted —
-                        the amount simply stops being owed, and the ledger entries stay where they are.
-                    </p>
+                    {{-- The dialog is the only warning anybody gets, so it says what will
+                         actually happen. While a payment stands, voiding is refused rather
+                         than confirmed, and the way out is named here instead of in a toast
+                         after a click that was never going to work. --}}
+                    @if ($paidToDate->isPositive())
+                        <p class="text-sm text-secondary-foreground leading-relaxed">
+                            <strong class="text-mono">{{ $invoice->number }} cannot be voided yet.</strong>
+                            {{ $paidToDateFormatted }} has been recorded against it. Voiding now would leave that cash
+                            standing against no receivable — reverse the payments below first, then void.
+                        </p>
+                    @else
+                        <p class="text-sm text-secondary-foreground leading-relaxed">
+                            Voiding keeps the invoice and its lines. Nothing is deleted — the amount simply stops being
+                            owed, and the ledger entries stay where they are.
+                        </p>
+                    @endif
                 </div>
                 <div class="kt-modal-footer">
-                    <button wire:click="closeVoid" class="kt-btn kt-btn-ghost">Keep it</button>
-                    <button wire:click="voidInvoice" wire:loading.attr="disabled" wire:target="voidInvoice"
-                            class="kt-btn kt-btn-destructive gap-2">
-                        <span wire:loading.remove wire:target="voidInvoice" class="inline-flex items-center gap-2">
-                            <i class="ki-filled ki-cross-circle"></i> Void it
-                        </span>
-                        <span wire:loading wire:target="voidInvoice" class="inline-flex items-center gap-2">
-                            <i class="ki-filled ki-loading animate-spin"></i> Voiding…
-                        </span>
+                    <button wire:click="closeVoid" class="kt-btn kt-btn-ghost">
+                        {{ $paidToDate->isPositive() ? 'Close' : 'Keep it' }}
                     </button>
+                    @if (! $paidToDate->isPositive())
+                        <button wire:click="voidInvoice" wire:loading.attr="disabled" wire:target="voidInvoice"
+                                class="kt-btn kt-btn-destructive gap-2">
+                            <span wire:loading.remove wire:target="voidInvoice" class="inline-flex items-center gap-2">
+                                <i class="ki-filled ki-cross-circle"></i> Void it
+                            </span>
+                            <span wire:loading wire:target="voidInvoice" class="inline-flex items-center gap-2">
+                                <i class="ki-filled ki-loading animate-spin"></i> Voiding…
+                            </span>
+                        </button>
+                    @endif
                 </div>
             </div>
         </div>

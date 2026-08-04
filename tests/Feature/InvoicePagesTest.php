@@ -482,6 +482,53 @@ class InvoicePagesTest extends TestCase
         $this->assertSame(1, $voided->lines()->count(), 'Voiding took the lines with it.');
     }
 
+    /**
+     * 🔴 Money that has landed refuses the void.
+     *
+     * Asserted on the invoice's own state rather than on the toast's prose: a
+     * refusal that flashed the right sentence and voided anyway would pass an
+     * assertion on the message. What matters is that `status` did not move and
+     * `voided_at` stayed null, because after the ledger work an invoice voided
+     * under a standing payment leaves that cash against no receivable.
+     *
+     * The way back out is asserted too — reverse the payment, and the same
+     * component voids the same invoice. A guard that could not be satisfied
+     * would be a dead end rather than a rule.
+     */
+    public function test_an_invoice_with_a_standing_payment_refuses_to_be_voided(): void
+    {
+        $this->recordRates();
+
+        $invoice = app(InvoiceIssuer::class)->issue($this->draft(['number' => 'INV-9007']));
+
+        Livewire::test('accounting::invoice-show', ['invoice' => (string) $invoice->id])
+            ->call('openPayment')
+            ->set('paymentAmount', '500.00')
+            ->set('paymentPaidAt', '2026-07-20')
+            ->call('recordPayment')
+            ->assertHasNoErrors();
+
+        Livewire::test('accounting::invoice-show', ['invoice' => (string) $invoice->id])
+            ->call('openVoid')
+            ->call('voidInvoice')
+            ->assertDispatched('toast');
+
+        $refused = Invoice::query()->find($invoice->id);
+
+        $this->assertNull($refused->voided_at, 'A paid invoice was voided.');
+        $this->assertSame('part_paid', $refused->status);
+
+        // And the way out: take the payment back, then the void goes through.
+        $payment = $refused->payments()->first();
+
+        Livewire::test('accounting::invoice-show', ['invoice' => (string) $invoice->id])
+            ->call('reversePayment', $payment->id)
+            ->call('openVoid')
+            ->call('voidInvoice');
+
+        $this->assertSame('void', Invoice::query()->find($invoice->id)->status);
+    }
+
     /* Reversing a payment ------------------------------------------------------------ */
 
     /**
