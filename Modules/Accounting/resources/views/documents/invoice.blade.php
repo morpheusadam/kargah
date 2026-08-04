@@ -13,6 +13,13 @@
     <title>{{ $invoice->number }}</title>
     <style>
         @page { margin: 22mm 18mm; }
+        /* White, stated rather than inherited. dompdf defaults to white and so
+           does every viewer, so this changes nothing today — but the signature
+           is a transparent PNG of black ink, and a transparent image is only
+           legible against a background somebody has actually decided on. The
+           day a tinted paper or a letterhead is added, this line is what stops
+           the signature disappearing into it. */
+        html, body { background: #ffffff; }
         body { font-family: DejaVu Sans, sans-serif; font-size: 10pt; color: #1a1a1a; line-height: 1.45; }
         h1 { font-size: 20pt; margin: 0 0 2mm; }
         .muted { color: #6b7280; }

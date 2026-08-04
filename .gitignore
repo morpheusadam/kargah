@@ -29,3 +29,18 @@ Thumbs.db
 # Third-party admin theme assets - licensed separately, never committed
 /public/assets
 
+# 🔴 The owner's handwritten signature, never committed.
+#
+# `github.com/morpheusadam/kargah` is public. A signature image in a public
+# repository is a signature anybody can lift and paste onto a document the
+# owner never saw — and git keeps it in the history even after a later delete,
+# so this is not a decision that can be taken back by removing the file.
+#
+# The invoice reads it from `config('accounting.document.signature_image')`,
+# and `InvoiceDocument` treats a missing file as "no image" rather than as an
+# error, so a clone without it still renders a valid signature block: the rule,
+# the name and the issue date. Nothing breaks; the drawing is simply absent.
+#
+# To install it on a machine: put the PNG at the path the config names.
+/public/img/signature.png
+
