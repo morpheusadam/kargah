@@ -198,6 +198,29 @@ class extends Component
         ];
     }
 
+    /**
+     * The period the work covers, as a sentence, or null when it has none.
+     *
+     * Null and not an em dash. Most invoices in the book predate the columns and
+     * were raised for work with no agreed period at all, so an empty "Work
+     * period" line on every one of them would be a regression dressed as
+     * completeness. One end without the other is legitimate — an open-ended
+     * retainer starts and does not finish — and reads as such rather than as
+     * half a range.
+     */
+    private function workPeriod(Invoice $invoice): ?string
+    {
+        $starts = $invoice->starts_on?->format('j F Y');
+        $ends = $invoice->ends_on?->format('j F Y');
+
+        return match (true) {
+            $starts !== null && $ends !== null => $starts.' to '.$ends,
+            $starts !== null => 'From '.$starts,
+            $ends !== null => 'Until '.$ends,
+            default => null,
+        };
+    }
+
     public function with(): array
     {
         $invoice = $this->invoice();
@@ -218,6 +241,7 @@ class extends Component
             // the correction is visible to the person who made it rather than
             // only to somebody reading the ledger table directly.
             'reversedPayments' => $invoice->payments()->onlyTrashed()->with('chainDetail')->get(),
+            'period' => $this->workPeriod($invoice),
             'reporting' => $this->reportingFigure($invoice),
             'lira' => $this->liraFigure($invoice),
             'revaluation' => $invoice->isVoid() ? null : $this->revaluation($invoice),
@@ -475,7 +499,7 @@ class extends Component
 
         try {
             $recorder->reverse($payment);
-        } catch (\DomainException $e) {
+        } catch (DomainException $e) {
             $this->toastError('That payment was not reversed', $e->getMessage());
 
             return;
@@ -724,6 +748,18 @@ class extends Component
                             </div>
                         </div>
 
+                        {{-- The period the work covers. Absent entirely when the invoice has none. --}}
+                        @if ($period !== null)
+                            <div class="rounded-lg border border-border px-4 py-3">
+                                <div class="flex flex-wrap items-baseline justify-between gap-2">
+                                    <span class="text-xs uppercase tracking-wide text-muted-foreground">
+                                        Work period
+                                    </span>
+                                    <span class="text-sm font-medium text-mono">{{ $period }}</span>
+                                </div>
+                            </div>
+                        @endif
+
                         {{--
                             The reporting figure, and the rate that produced it.
                             Never the converted number on its own.
@@ -815,8 +851,34 @@ class extends Component
                                 </thead>
                                 <tbody>
                                     @forelse ($lines as $line)
+                                        @php($tasks = $line->taskList())
                                         <tr wire:key="line-{{ $line->id }}">
-                                            <td class="text-mono">{{ $line->description }}</td>
+                                            <td class="text-mono">
+                                                {{ $line->description }}
+                                                {{--
+                                                    The scope, under the line it belongs to and
+                                                    only when there is one. A line with no tasks
+                                                    renders exactly what it rendered before this
+                                                    existed — no heading, no empty list, nothing.
+                                                --}}
+                                                @if ($tasks !== [])
+                                                    <div class="mt-2">
+                                                        <div class="text-xs uppercase tracking-wide text-muted-foreground mb-1.5">
+                                                            What this covers
+                                                        </div>
+                                                        <ul class="flex flex-col gap-1">
+                                                            @foreach ($tasks as $task)
+                                                                <li class="flex items-start gap-2 text-xs text-secondary-foreground leading-relaxed">
+                                                                    {{-- `text-xs` and not an arbitrary size: `text-[10px]`
+                                                                         is not in either stylesheet, so it would do nothing. --}}
+                                                                    <i class="ki-filled ki-check text-xs text-muted-foreground mt-1 shrink-0"></i>
+                                                                    <span>{{ $task }}</span>
+                                                                </li>
+                                                            @endforeach
+                                                        </ul>
+                                                    </div>
+                                                @endif
+                                            </td>
                                             <td class="text-end text-secondary-foreground">{{ $line->quantity }}</td>
                                             <td class="text-end text-secondary-foreground whitespace-nowrap">
                                                 {{ \Modules\Accounting\Support\Money::format((string) $line->unit_price, $invoice->currency) }}

@@ -1,5 +1,6 @@
 <?php
 
+use Illuminate\Support\Collection;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
@@ -289,9 +290,9 @@ class extends Component
      *
      * A generator, so a 50,000-row file never exists in memory as an array.
      *
-     * @return \Generator<int, list<string>>
+     * @return Generator<int, list<string>>
      */
-    private function readRows(?int $limit = null): \Generator
+    private function readRows(?int $limit = null): Generator
     {
         $skip = $this->hasHeaderRow ? 1 : 0;
         $i = 0;
@@ -313,9 +314,9 @@ class extends Component
     /**
      * Every line of the file as it stands, header included.
      *
-     * @return \Generator<int, list<string>>
+     * @return Generator<int, list<string>>
      */
-    private function readRaw(?int $limit = null): \Generator
+    private function readRaw(?int $limit = null): Generator
     {
         $path = $this->file?->getRealPath();
 
@@ -442,7 +443,7 @@ class extends Component
     /**
      * The suppressed addresses this file contains, with why.
      *
-     * @return \Illuminate\Support\Collection<int, Suppression>
+     * @return Collection<int, Suppression>
      */
     private function blockedRows()
     {
@@ -666,6 +667,7 @@ class extends Component
                     </div>
                 </div>
 
+                @php $mappedCount = collect($mapping)->reject(fn ($m) => $m === 'skip')->count(); @endphp
                 <div class="kt-card">
                     <div class="kt-card-header">
                         <h3 class="kt-card-title">Preview</h3>
@@ -685,13 +687,13 @@ class extends Component
                                             @continue(($mapping[$i] ?? 'skip') === 'skip')
                                             <th class="min-w-[150px]">{{ $fields[$mapping[$i]] ?? $header }}</th>
                                         @endforeach
-                                        @if (collect($mapping)->reject(fn ($m) => $m === 'skip')->isEmpty())
+                                        @if ($mappedCount === 0)
                                             <th>Nothing mapped</th>
                                         @endif
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    @foreach ($rows as $r => $row)
+                                    @forelse ($rows as $r => $row)
                                         <tr wire:key="preview-{{ $r }}">
                                             @foreach ($headers as $i => $header)
                                                 @continue(($mapping[$i] ?? 'skip') === 'skip')
@@ -699,11 +701,20 @@ class extends Component
                                                     {{ $row[$i] ?? '—' }}
                                                 </td>
                                             @endforeach
-                                            @if (collect($mapping)->reject(fn ($m) => $m === 'skip')->isEmpty())
+                                            @if ($mappedCount === 0)
                                                 <td class="text-muted-foreground">—</td>
                                             @endif
                                         </tr>
-                                    @endforeach
+                                    @empty
+                                        <tr>
+                                            <td colspan="{{ max($mappedCount, 1) }}">
+                                                <div class="flex flex-col items-center justify-center text-center py-10">
+                                                    <i class="ki-filled ki-document text-3xl text-muted-foreground mb-2"></i>
+                                                    <p class="text-sm text-secondary-foreground">This file has no data rows to preview.</p>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    @endforelse
                                 </tbody>
                             </table>
                         </div>

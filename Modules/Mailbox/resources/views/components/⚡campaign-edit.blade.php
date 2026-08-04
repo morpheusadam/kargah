@@ -648,7 +648,7 @@ class extends Component
             <h1 class="text-xl font-semibold text-mono">{{ $record ? 'Edit campaign' : 'New campaign' }}</h1>
             <p class="text-sm text-secondary-foreground mt-1">Set the audience, write it, then check it clears the deliverability gates.</p>
         </div>
-        <div class="flex items-center gap-2">
+        <div class="flex flex-wrap items-center gap-2">
             <a href="{{ route('mail.campaigns') }}" class="kt-btn kt-btn-ghost gap-2">
                 <i class="ki-filled ki-arrow-left"></i> Campaigns
             </a>
@@ -1125,7 +1125,7 @@ class extends Component
                         <div class="kt-card-content p-5 flex flex-col gap-3 text-sm">
                             <div class="flex items-start justify-between gap-3">
                                 <span class="text-secondary-foreground shrink-0">List</span>
-                                <span class="text-mono text-end truncate">{{ $list === '' ? 'Everyone' : $list }}</span>
+                                <span class="text-mono text-end truncate min-w-0">{{ $list === '' ? 'Everyone' : $list }}</span>
                             </div>
                             <div class="flex items-start justify-between gap-3">
                                 <span class="text-secondary-foreground shrink-0">Recipients</span>
@@ -1133,11 +1133,11 @@ class extends Component
                             </div>
                             <div class="flex items-start justify-between gap-3">
                                 <span class="text-secondary-foreground shrink-0">Subject</span>
-                                <span class="text-mono text-end truncate">{{ $subject ?: '—' }}</span>
+                                <span class="text-mono text-end truncate min-w-0">{{ $subject ?: '—' }}</span>
                             </div>
                             <div class="flex items-start justify-between gap-3">
                                 <span class="text-secondary-foreground shrink-0">From</span>
-                                <span class="text-mono text-end truncate">
+                                <span class="text-mono text-end truncate min-w-0">
                                     {{ $providers->firstWhere('id', $providerId)?->from_email ?? '—' }}
                                 </span>
                             </div>

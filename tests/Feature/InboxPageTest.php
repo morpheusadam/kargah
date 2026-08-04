@@ -103,7 +103,14 @@ class InboxPageTest extends TestCase
             ->assertSee($newest->senderLabel());
     }
 
-    /** And against nothing at all, which is what a fresh install sees first. */
+    /**
+     * And against nothing at all, which is what a fresh install sees first.
+     *
+     * This used to assert "No message open" — the sentence inside a 700px card
+     * that took half the screen while the inbox sat idle. The card is gone; the
+     * empty state that remains belongs to the list, and it carries the primary
+     * action the reading pane used to carry.
+     */
     public function test_the_inbox_renders_against_an_empty_database(): void
     {
         $this->account->forceDelete();
@@ -112,7 +119,8 @@ class InboxPageTest extends TestCase
             ->assertOk()
             ->assertSee('This folder is empty')
             ->assertSee('No mailbox is connected yet', false)
-            ->assertSee('No message open');
+            ->assertDontSee('No message open')
+            ->assertSee('Compose');
     }
 
     public function test_the_heading_counts_what_is_actually_unread(): void
@@ -488,24 +496,111 @@ class InboxPageTest extends TestCase
     }
 
     /**
-     * Opening a message you have already read is the case islands exist for:
-     * the pane changes, the list does not, and only the pane travels.
+     * The case the split genuinely earns: the pane changes and the list does not.
+     *
+     * This test used to say "opening a message you have already read" sends
+     * only the pane, and that was wrong — the open row carries `bg-accent/60`
+     * and a 3px primary bar, both driven by `$selected` from inside the list
+     * island, so moving the selection has to send the list too or the tint
+     * stays on the row you left. `selectEmail()` now names the list whenever
+     * the selection moves, and its docblock records the correction.
+     *
+     * What is still free is re-opening the message that is already open, which
+     * is exactly what the Conversation strip inside the pane does.
      */
-    public function test_opening_a_message_that_was_already_read_sends_the_pane_and_not_the_list(): void
+    public function test_reopening_the_message_that_is_already_open_sends_the_pane_and_not_the_list(): void
     {
         $read = $this->email(['is_read' => true]);
-        $unread = $this->email(['is_read' => false]);
+        $other = $this->email(['is_read' => true]);
 
         $fragments = fn ($component): array => $component->effects['islandFragments'] ?? [];
 
-        $onlyPane = Livewire::test('mailbox::inbox')->call('selectEmail', $read->id);
-        $this->assertCount(1, $fragments($onlyPane));
-        $this->assertStringContainsString('name=pane', $fragments($onlyPane)[0]);
+        $component = Livewire::test('mailbox::inbox')->call('selectEmail', $read->id);
 
-        // An unread one does change a row, so it names the list as well.
-        $both = Livewire::test('mailbox::inbox')->call('selectEmail', $unread->id);
-        $this->assertCount(2, $fragments($both));
-        $this->assertStringContainsString('name=list', implode('', $fragments($both)));
+        // Moving the selection sends both: the pane, and the rows that have to
+        // move the tint onto the one now open.
+        $this->assertCount(2, $fragments($component));
+
+        $component->call('selectEmail', $read->id);
+
+        $this->assertCount(1, $fragments($component), 'Re-opening the open message re-sent twenty-five rows for nothing.');
+        $this->assertStringContainsString('name=pane', $fragments($component)[0]);
+
+        $component->call('selectEmail', $other->id);
+
+        $this->assertCount(2, $fragments($component));
+        $this->assertStringContainsString('name=list', implode('', $fragments($component)));
+    }
+
+    /**
+     * The empty reading pane is gone, and the pane's own width arrives **inside
+     * the island fragment**.
+     *
+     * 🔴 Read this before changing the assertion, because the obvious version of
+     * this test is worthless and was already written once.
+     *
+     * `Livewire::test(...)->html()` renders the component in full, whatever the
+     * update actually sends. The first attempt at this page put a conditional
+     * `col-span` on a `<section>` **outside** the pane island and asserted on
+     * `html()`, which passed — while a real browser received
+     *
+     *     effect keys: returns, islandFragments
+     *     html effect present: false
+     *
+     * and the pane therefore never appeared at all. Clicking a message tinted
+     * the row and nothing else happened, with this suite green and no error
+     * anywhere. Measured in Chrome on 4 August 2026, both before and after.
+     *
+     * So the pane's `<section>` now lives *inside* `@island(name: 'pane')`, and
+     * this test reads the island fragment — the only markup the browser is
+     * given. The list carries no conditional class at all: under flex it grows
+     * into whatever the pane is not using, which is what makes one island
+     * enough.
+     */
+    public function test_the_pane_reaches_the_browser_inside_its_island_and_not_only_on_a_page_load(): void
+    {
+        $email = $this->email(['is_read' => true, 'subject' => 'Retainer renewal']);
+
+        $paneFragment = function ($component): string {
+            foreach ($component->effects['islandFragments'] ?? [] as $fragment) {
+                if (str_contains($fragment, 'name=pane')) {
+                    return $fragment;
+                }
+            }
+
+            return '';
+        };
+
+        $component = Livewire::test('mailbox::inbox');
+
+        // Idle: the pane is hidden and there is no empty card in its place.
+        $this->assertStringContainsString('<section class="hidden">', $component->html());
+        $this->assertStringNotContainsString('No message open', $component->html());
+
+        $component->call('selectEmail', $email->id);
+
+        $fragment = $paneFragment($component);
+
+        $this->assertNotSame('', $fragment, 'Opening a message sent no pane island at all.');
+        $this->assertStringContainsString(
+            '<section class="w-full min-w-0 grow">',
+            $fragment,
+            'The pane island did not carry its own width, so the browser is told to draw the pane but not to give it room.',
+        );
+        $this->assertStringNotContainsString(
+            '<section class="hidden">',
+            $fragment,
+            'Opening a message left the pane hidden inside the very fragment meant to reveal it.',
+        );
+
+        $component->call('closeMessage');
+
+        $this->assertNull($component->get('selected'));
+        $this->assertStringContainsString(
+            '<section class="hidden">',
+            $paneFragment($component),
+            'Closing a message left the pane on screen.',
+        );
     }
 
     /* Cursor pagination ------------------------------------------------------------------ */

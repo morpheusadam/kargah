@@ -72,7 +72,7 @@ class extends Component
             <h1 class="text-xl font-semibold text-mono">Contacts</h1>
             <p class="text-sm text-secondary-foreground mt-1">Lists, subscribers and the suppression file.</p>
         </div>
-        <div class="flex items-center gap-2">
+        <div class="flex flex-wrap items-center gap-2">
             <a href="{{ route('mail.contact-import') }}" class="kt-btn kt-btn-primary gap-2">
                 <i class="ki-filled ki-file-up"></i> Import CSV
             </a>

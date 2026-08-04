@@ -176,4 +176,42 @@ return [
          */
         'stopaj_percent' => env('ACCOUNTING_STOPAJ_PERCENT', '20'),
     ],
+
+    /*
+     * The printed invoice — the one artefact in Kargah a stranger reads.
+     *
+     * These are the practice's own marks rather than tax data, so nothing here
+     * affects a figure. They live in config and not in the template because the
+     * template is shared code and a business's own name is not.
+     */
+    'document' => [
+        /*
+         * Printed under the signature. The owner's site, and the only branding
+         * on the page: an invoice that shouts is an invoice that reads as
+         * marketing.
+         */
+        'footer' => env('ACCOUNTING_DOCUMENT_FOOTER', 'lavzen.com'),
+
+        /*
+         * The name under the signature line. Printed whether or not an image
+         * exists, because a typed name beside a date is still a signature block
+         * and an empty rule with nothing under it is not.
+         */
+        'signature_name' => env('ACCOUNTING_SIGNATURE_NAME', 'Hesam Ahmadpour'),
+
+        /*
+         * 🔴 A path relative to `public/`, or null.
+         *
+         * Read and inlined as a base64 `data:` URI rather than passed to dompdf
+         * as a path. dompdf runs with `isRemoteEnabled => false` and its own
+         * chroot, so a path that resolves in PHP does not necessarily resolve
+         * inside the renderer — and a missing image there fails by drawing
+         * nothing, with no error anywhere. A data URI cannot miss.
+         *
+         * **A missing file is not an error.** The signature block falls back to
+         * the typed name and the date. An invoice that refuses to render because
+         * a decoration is absent would be a worse failure than an unsigned one.
+         */
+        'signature_image' => env('ACCOUNTING_SIGNATURE_IMAGE', 'img/signature.png'),
+    ],
 ];

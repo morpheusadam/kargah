@@ -20,11 +20,40 @@
         table { width: 100%; border-collapse: collapse; }
         .head td { vertical-align: top; padding-bottom: 8mm; }
         .lines th { text-align: left; border-bottom: 1px solid #d1d5db; padding: 2mm 1mm; font-size: 8.5pt; text-transform: uppercase; letter-spacing: .04em; color: #6b7280; }
-        .lines td { padding: 2.5mm 1mm; border-bottom: 1px solid #f0f0f0; }
+        /* Top, so that a line carrying a scope keeps its quantity and its
+           amount level with the description's first line instead of drifting
+           to the middle of the block. A row with no scope is one line tall and
+           renders identically either way. */
+        .lines td { padding: 2.5mm 1mm; border-bottom: 1px solid #f0f0f0; vertical-align: top; }
         .num { text-align: right; }
+        .label { color: #6b7280; font-size: 8.5pt; text-transform: uppercase; letter-spacing: .04em; }
+        .meta .meta-value { margin-bottom: 2.4mm; }
+
+        /* The work under a priced line. A nested table rather than a hanging
+           indent: dompdf's most reliable box is a table cell, and this is the
+           one construction that is certain to keep a wrapped task aligned
+           under the first word rather than under the bullet. */
+        .tasks { margin: 1.8mm 0 0.4mm; }
+        .lines .tasks td { border-bottom: none; padding: 0.5mm 0; vertical-align: top; color: #374151; font-size: 9pt; }
+        .lines .tasks .dot { width: 4mm; color: #9ca3af; }
+
         .totals { margin-top: 4mm; width: 62mm; float: right; }
         .totals td { padding: 1.5mm 1mm; }
         .totals .grand td { border-top: 1.5px solid #1a1a1a; font-weight: bold; font-size: 12pt; padding-top: 2.5mm; }
+
+        .sign { clear: both; margin-top: 12mm; }
+        .sign td { vertical-align: bottom; }
+        .sign-block { width: 62mm; }
+        .sign-img { height: 15mm; margin-bottom: 1mm; }
+        .sign-name { border-top: 1px solid #1a1a1a; padding-top: 1.6mm; }
+
+        /* Fixed, so it sits at the foot of every page a long invoice runs to.
+           `bottom: 0` is the one value that reads sensibly under either of
+           dompdf's interpretations of the property — the foot of the content
+           area, or the foot of the sheet. Nothing else on the page depends on
+           where it lands. */
+        .footer { position: fixed; bottom: 0; left: 0; right: 0; text-align: center; color: #9ca3af; font-size: 8pt; letter-spacing: .06em; }
+
         .provenance { clear: both; margin-top: 14mm; border: 1px solid #e5e7eb; padding: 4mm; font-size: 8.5pt; }
         .provenance h3 { margin: 0 0 2mm; font-size: 9pt; text-transform: uppercase; letter-spacing: .04em; color: #6b7280; }
         .provenance dt { float: left; width: 42mm; color: #6b7280; }
@@ -56,9 +85,25 @@
             <h1>Invoice</h1>
             <div class="muted">{{ $invoice->number }}</div>
         </td>
-        <td class="num">
-            <div><strong>Issued</strong> {{ $invoice->issued_on?->format('j F Y') ?? '—' }}</div>
-            <div><strong>Due</strong> {{ $invoice->due_on?->format('j F Y') ?? '—' }}</div>
+        {{-- Label above value rather than beside it. Measured, not preferred:
+             "Work period" and a full date range on one line overflow this cell
+             and dompdf wraps it mid-range, leaving "30" on one line and
+             "September 2026" on the next. --}}
+        <td class="num meta">
+            <div class="label">Issued</div>
+            <div class="meta-value">{{ $invoice->issued_on?->format('j F Y') ?? '—' }}</div>
+
+            <div class="label">Due</div>
+            <div class="meta-value">{{ $invoice->due_on?->format('j F Y') ?? '—' }}</div>
+
+            @if ($period)
+                {{-- Only when a period was actually agreed. `$period` is null
+                     unless at least one of the two dates is set, and every
+                     invoice raised before those columns existed has neither —
+                     so nothing prints rather than a label with a dash after it. --}}
+                <div class="label">Work period</div>
+                <div class="meta-value">{{ $period }}</div>
+            @endif
         </td>
     </tr>
     <tr>
@@ -98,8 +143,28 @@
     </thead>
     <tbody>
         @forelse ($lines as $line)
+            @php($tasks = $line->taskList())
             <tr>
-                <td>{{ $line->description }}</td>
+                <td>
+                    {{ $line->description }}
+                    @if ($tasks !== [])
+                        {{-- 🔴 The work the line covers, and no figure against
+                             any of it. The price is the line's own, once: that
+                             is how the owner bills and a column of amounts
+                             beside these bullets would be a different document.
+                             Nothing is emitted at all when the list is empty,
+                             so a line without a scope reads exactly as it did
+                             before the column existed. --}}
+                        <table class="tasks">
+                            @foreach ($tasks as $task)
+                                <tr>
+                                    <td class="dot">·</td>
+                                    <td>{{ $task }}</td>
+                                </tr>
+                            @endforeach
+                        </table>
+                    @endif
+                </td>
                 <td class="num">{{ rtrim(rtrim((string) $line->quantity, '0'), '.') }}</td>
                 <td class="num">{{ $lineUnitPrices[$line->id] }}</td>
                 <td class="num">{{ $lineAmounts[$line->id] }}</td>
@@ -196,6 +261,35 @@
 
 @if ($invoice->terms)
     <p class="small muted" style="white-space: pre-line">{{ $invoice->terms }}</p>
+@endif
+
+{{--
+    The signature block.
+
+    The image arrives already base64-encoded from `InvoiceDocument` and is null
+    whenever there is no readable file — which is the state of a fresh install,
+    since `public/img/signature.png` ships with nothing in it. That is not an
+    error: what remains is a rule, the name and the date, which is a signature
+    block a person can sign in ink. An empty rule with nothing under it would
+    not be.
+--}}
+<table class="sign">
+    <tr>
+        <td></td>
+        <td class="sign-block">
+            @if ($signature['image'])
+                <div><img src="{{ $signature['image'] }}" class="sign-img" alt=""></div>
+            @endif
+            <div class="sign-name"><strong>{{ $signature['name'] }}</strong></div>
+            @if ($signature['date'])
+                <div class="muted small">{{ $signature['date'] }}</div>
+            @endif
+        </td>
+    </tr>
+</table>
+
+@if ($footer !== '')
+    <div class="footer">{{ $footer }}</div>
 @endif
 
 </body>

@@ -5,12 +5,14 @@ use Illuminate\Support\Str;
 use Livewire\Attributes\On;
 use Livewire\Attributes\Validate;
 use Livewire\Component;
+use Livewire\Features\SupportFileUploads\TemporaryUploadedFile;
 use Livewire\WithFileUploads;
 use Modules\Core\Concerns\InteractsWithToasts;
 use Modules\Mailbox\Jobs\SendDirectMessage;
 use Modules\Mailbox\Models\DeliveryProvider;
 use Modules\Mailbox\Models\Suppression;
 use Modules\Mailbox\Services\Delivery\Delivery;
+use Modules\Mailbox\Services\Delivery\Mailer;
 use Modules\Mailbox\Services\Delivery\OutboundMessage;
 use Modules\Mailbox\Services\Delivery\Router;
 use Modules\Mailbox\Services\Delivery\SendFailed;
@@ -33,8 +35,7 @@ use Modules\Mailbox\Services\Delivery\SendFailed;
  * one wherever both exist: mixing the two lets a campaign's reputation drag down
  * mail a client is actually waiting for.
  */
-new
-class extends Component
+new class extends Component
 {
     use InteractsWithToasts;
     use WithFileUploads;
@@ -69,7 +70,7 @@ class extends Component
     #[Validate('required|string')]
     public string $body = '';
 
-    /** @var list<\Livewire\Features\SupportFileUploads\TemporaryUploadedFile> */
+    /** @var list<TemporaryUploadedFile> */
     public array $files = [];
 
     public bool $showSchedule = false;
@@ -293,7 +294,7 @@ class extends Component
             return;
         }
 
-        [$provider, ] = $this->resolveProvider();
+        [$provider] = $this->resolveProvider();
 
         if ($provider === null) {
             return;
@@ -347,7 +348,7 @@ class extends Component
     /**
      * The provider and its driver, or a toast saying why there is neither.
      *
-     * @return array{0: DeliveryProvider|null, 1: \Modules\Mailbox\Services\Delivery\Mailer|null}
+     * @return array{0: DeliveryProvider|null, 1: Mailer|null}
      */
     private function resolveProvider(): array
     {
@@ -649,7 +650,7 @@ class extends Component
         </div>
 
         <div class="kt-modal-footer flex-wrap gap-3">
-            <div class="flex items-center gap-2">
+            <div class="flex flex-wrap items-center gap-2">
                 <button class="kt-btn kt-btn-primary gap-2" wire:click="send" wire:loading.attr="disabled" wire:target="send">
                     <span wire:loading.remove wire:target="send" class="inline-flex items-center gap-2">
                         <i class="ki-filled ki-paper-plane"></i> Send
@@ -669,7 +670,7 @@ class extends Component
                 </button>
             </div>
 
-            <div class="flex items-center gap-3">
+            <div class="flex flex-wrap items-center gap-3">
                 <span class="hidden sm:inline text-xs text-muted-foreground">
                     Suppressed addresses are skipped, whoever is typing
                 </span>

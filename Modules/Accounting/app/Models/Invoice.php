@@ -50,7 +50,7 @@ class Invoice extends Model
         'subtotal', 'tax_percent', 'tax_amount', 'total',
         'reporting_currency', 'reporting_rate', 'reporting_amount',
         'issue_rate_to_try', 'issue_rate_source', 'issue_rate_date', 'try_equivalent', 'rate_note',
-        'issued_on', 'due_on', 'sent_at', 'paid_at', 'voided_at',
+        'issued_on', 'starts_on', 'ends_on', 'due_on', 'sent_at', 'paid_at', 'voided_at',
         'notes', 'terms', 'created_by',
     ];
 
@@ -67,6 +67,11 @@ class Invoice extends Model
             'issue_rate_to_try' => 'decimal:6',
             'try_equivalent' => 'decimal:6',
             'issued_on' => 'date',
+            // When the work runs, which is not when the invoice was raised and
+            // not when it falls due. See the migration for why both sit here
+            // rather than on a line.
+            'starts_on' => 'date',
+            'ends_on' => 'date',
             'due_on' => 'date',
             'issue_rate_date' => 'date',
             'sent_at' => 'datetime',

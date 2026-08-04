@@ -29,7 +29,7 @@ class InvoiceLine extends Model
     use Linkable;
 
     protected $fillable = [
-        'invoice_id', 'description', 'quantity', 'unit_price', 'amount', 'position',
+        'invoice_id', 'description', 'tasks', 'quantity', 'unit_price', 'amount', 'position',
     ];
 
     protected function casts(): array
@@ -40,7 +40,28 @@ class InvoiceLine extends Model
             'unit_price' => 'decimal:6',
             'amount' => 'decimal:6',
             'position' => 'decimal:10',
+            // The work this line covers, one item per entry, and never a price
+            // among them — the figure is the line's own. See the migration.
+            'tasks' => 'array',
         ];
+    }
+
+    /**
+     * The work this line covers, cleaned for display.
+     *
+     * Blank entries are dropped here rather than at the point of writing,
+     * because the builder binds a textarea and a person who leaves a trailing
+     * newline has not asked for an empty bullet. Nothing is reordered: the order
+     * is the order the person typed, and it is the order the client reads.
+     *
+     * @return list<string>
+     */
+    public function taskList(): array
+    {
+        return array_values(array_filter(
+            array_map(trim(...), $this->tasks ?? []),
+            static fn (string $task): bool => $task !== '',
+        ));
     }
 
     public function invoice(): BelongsTo

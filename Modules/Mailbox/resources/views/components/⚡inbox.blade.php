@@ -3,6 +3,7 @@
 use Illuminate\Contracts\Pagination\CursorPaginator;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Pagination\Cursor;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 use Livewire\Attributes\Title;
@@ -28,8 +29,11 @@ use Modules\Project\Services\CardService;
  * Five things here are worth knowing before changing anything.
  *
  * **Two islands: the message list and the reading pane.** This is the shape
- * islands were built for — selecting a message sends back the pane and leaves
- * the twenty-five rows beside it alone. There are exactly two `@island`
+ * islands were built for — reading down a conversation, or replying, sends back
+ * the pane and leaves the twenty-five rows beside it alone. Moving the
+ * selection does have to send both, because the row carries the tint that says
+ * which message is open; see `selectEmail()`, which used to get that wrong.
+ * There are exactly two `@island`
  * directives in this file and neither is inside a loop: a directive in a
  * `@foreach` shares one compile-time token with every iteration, and the client
  * finds the fragment to morph by token alone, so asking for the seventh row
@@ -410,7 +414,7 @@ class extends Component
 
         return [
             'total' => $total,
-            'last_synced_at' => $last === null ? null : \Illuminate\Support\Carbon::parse($last),
+            'last_synced_at' => $last === null ? null : Carbon::parse($last),
             'failing' => $total === 0 ? 0 : MailAccount::query()->active()->whereNotNull('last_error')->count(),
         ];
     }
@@ -631,11 +635,19 @@ class extends Component
     /**
      * Open a message.
      *
-     * The pane always changes, so the pane is always named. The list only
-     * changes when the message was unread — the bold row and the blue dot are
-     * the only thing selecting alters over there — so it is named only then.
-     * That is the whole point of the split: reading a message you have already
-     * read re-sends the pane and nothing else.
+     * The pane always changes, so the pane is always named. The list is named
+     * whenever the selection actually moves — and that last part is a
+     * correction. This comment used to say the bold row and the blue dot were
+     * the only thing selecting altered over there, and named the list only when
+     * the message had been unread. It is not true: the open row also carries
+     * `bg-accent/60` and a 3px primary bar, both driven by
+     * `$selected === $email->id` from inside the list island. Opening a message
+     * you had already read therefore left the tint and the bar sitting on the
+     * row you had just left, for as long as you stayed on the page.
+     *
+     * What survives of the saving is the case that is genuinely free: clicking
+     * the message that is already open — which the Conversation strip inside
+     * the pane does on every render — re-sends the pane and nothing else.
      */
     public function selectEmail(int $id): void
     {
@@ -648,17 +660,54 @@ class extends Component
             return;
         }
 
+        $selectionMoved = $this->selected !== $email->id;
+
         $this->selected = $email->id;
         $this->convertOpen = false;
         $this->cancelReply(silent: true);
 
-        $listChanged = $this->markAsRead($email);
+        $listChanged = $this->markAsRead($email) || $selectionMoved;
 
+        // The pane island now contains its own `<section>`, so naming it also
+        // carries the class that makes the pane appear. Nothing outside an
+        // island has to change — see the note at the flex container.
         $this->refreshPane();
 
         if ($listChanged) {
             $this->refreshList();
         }
+    }
+
+    /**
+     * Close the reading pane and give its width back to the list.
+     *
+     * The only path in this component that sets `$selected` back to null after
+     * `mount()`. Everything else that moves a message out from under the open
+     * one — `archive()`, `moveToTrash()`, the bulk actions, `setFolder()`, a
+     * search — deliberately leaves the selection alone, so the pane keeps
+     * showing what you were reading even once the list has stopped listing it.
+     * That is consistent rather than broken: the pane is open, the list is
+     * narrow, and the two agree about which state the page is in. Closing is
+     * the one gesture that disagrees with the current markup, so it names both
+     * islands — the pane empties, and the row it was tinting has to stop being
+     * tinted.
+     */
+    public function closeMessage(): void
+    {
+        if ($this->selected === null) {
+            return;
+        }
+
+        $this->selected = null;
+        $this->convertOpen = false;
+        $this->cancelReply(silent: true);
+
+        // Closing is the same transition in reverse, and the same two calls
+        // cover it: the pane island redraws its own `<section>` back to
+        // `hidden`, and the list simply grows into the space without being
+        // told to.
+        $this->refreshPane();
+        $this->refreshList();
     }
 
     /** Returns true when the row actually changed, so callers know what to redraw. */
@@ -1120,10 +1169,64 @@ class extends Component
         </div>
     </div>
 
-    <div class="grid grid-cols-12 gap-5 items-start">
+    {{--
+        The two-pane grid, and where its widths are decided.
+
+        With nothing open there is no reading pane: the list takes the whole
+        region beside the folder rail. Opening a message brings the pane back at
+        the width it always had and narrows the list to 5/12 of that region.
+
+        ── Why a conditional `col-span` out here actually works ──
+
+        Both `<section>` elements sit outside both islands, which looks like it
+        cannot update: naming an island is supposed to restrict the response to
+        that island. It is not what Livewire 4 does. `renderIsland()` — see
+        vendor/livewire/livewire/src/Features/SupportIslands/HandlesIslands.php —
+        only *appends* to an `islandFragments` effect. The component still
+        renders in full and `HandleComponents::render()` still adds the `html`
+        effect. What the islands change is their own bodies: a directive whose
+        island nobody named returns an empty `mode=skip` fragment and the client
+        morph walks that range without touching the DOM inside it.
+
+        Measured on 4 August 2026, not assumed. After `selectEmail()`, which
+        names only the pane, the `html` effect was 18,883 bytes and contained
+        both `<section>` class lists, the page header and the folder rail, and
+        none of the twenty-five rows — four `mode=skip` markers and one island
+        fragment. The page already leaned on this before today: the Unread and
+        Starred filter buttons and the whole bulk-action toolbar live outside
+        both islands and change appearance on actions that name the list alone.
+
+        So this needs no special-cased full render on the selection transition,
+        and no restructuring of which element carries the columns.
+
+        🔴 What that does NOT buy, and what a future writer has to keep doing.
+        The width follows `$open` on every render, so an action that changes the
+        selection cannot get the *width* wrong. It can very easily get the
+        *contents* wrong, because those are inside the islands: change
+        `$selected` without calling `refreshPane()` and the previous message
+        keeps showing inside a correctly-sized section, and without calling
+        `refreshList()` the tint and the 3px bar stay on the row you left. Those
+        are the two rules `refreshList()` and `refreshPane()` already state —
+        the widths do not add a third.
+
+        🔴 The pane's `<section>` is always emitted, `hidden` rather than
+        absent. `renderIslandDirective()` calls `storeIsland()` only while
+        `islandIsMounting()`, so an `@island` wrapped in an `@if` that was false
+        on first paint is never registered at all, and `renderIsland('pane')`
+        then finds no token and sends nothing for the rest of the page's life.
+        Keeping the directive on every render costs one `display:none` element.
+
+        The columns are a 220px rail plus a nested twelve, rather than one
+        twelve-column grid, because `lg:col-span-10` is not in either compiled
+        stylesheet — kargah.css carries `lg:col-span-2` through `-9` and nothing
+        wider, and a class that is not in the sheet does nothing at all. 5 + 7
+        of a nested twelve lands within 20px of the old 4 + 6, and the rail
+        stops growing to 300px on a wide screen.
+    --}}
+    <div class="grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-5 items-start">
 
         {{-- ────────────────────────────── Folders ────────────────────────────── --}}
-        <aside class="col-span-12 lg:col-span-2">
+        <aside class="min-w-0">
             <div class="kt-card">
                 <div class="kt-card-content p-2 flex flex-col gap-0.5">
                     @foreach ($folders as $f)
@@ -1166,8 +1269,40 @@ class extends Component
             </div>
         </aside>
 
+        {{--
+            The list and the pane share the rail's neighbouring track. Their own
+            indentation is left alone deliberately: re-indenting four hundred
+            unchanged lines to show one level of nesting is a worse diff than
+            this comment.
+        --}}
+        {{--
+            🔴 Flex, not a twelve-column grid, and the reason is mechanical.
+
+            With a grid, "the list is wide when nothing is open" has to be a
+            conditional `col-span` on the list's own element — and that element
+            sits outside both islands. **Naming an island suppresses the
+            full-component `html` effect**, so a class outside one never reaches
+            the browser on an island update. Measured in Chrome rather than read
+            out of Livewire's source, which suggests the opposite:
+
+                effect keys: returns, islandFragments
+                html effect present: false
+
+            The first attempt at this page put a conditional `col-span` on both
+            sections. It rendered correctly on a page load and then never moved
+            again: clicking a message tinted the row and the pane stayed hidden,
+            with the whole suite green and no error anywhere.
+
+            Under flex the list needs no conditional at all — it simply grows
+            into whatever the pane is not using. That leaves exactly one
+            conditional class, on the pane, and the pane's `<section>` is inside
+            the pane island, so `refreshPane()` carries it. Nothing outside an
+            island has to change for the layout to move.
+        --}}
+        <div class="flex flex-col lg:flex-row gap-5 items-start min-w-0 w-full">
+
         {{-- ──────────────────────────── Message list ─────────────────────────── --}}
-        <section class="col-span-12 lg:col-span-4">
+        <section class="w-full min-w-0 grow">
             <div class="kt-card">
 
                 {{--
@@ -1319,8 +1454,18 @@ class extends Component
                                         This folder is empty.
                                     @endif
                                 </p>
+                                {{--
+                                    The primary action an empty state owes the
+                                    reader. It used to sit in the reading pane,
+                                    which no longer exists when nothing is open;
+                                    the header keeps its own Compose either way.
+                                --}}
                                 @if ($search !== '')
                                     <button wire:click="clearSearch" class="kt-btn kt-btn-sm kt-btn-ghost mt-3">Clear search</button>
+                                @elseif (! $unreadOnly && ! $starredOnly)
+                                    <button class="kt-btn kt-btn-sm kt-btn-primary gap-2 mt-3" wire:click="$dispatch('open-compose')">
+                                        <i class="ki-filled ki-pencil"></i> Compose
+                                    </button>
                                 @endif
                             </div>
                         @endforelse
@@ -1352,13 +1497,35 @@ class extends Component
             </div>
         </section>
 
-        {{-- ──────────────────────────── Reading pane ─────────────────────────── --}}
-        <section class="col-span-12 lg:col-span-6">
-            {{-- Island two: everything about the open message. --}}
-            @island(name: 'pane')
-            <div class="kt-card min-h-[700px] flex flex-col">
+        {{--
+            Reading pane. The island opens **before** the `<section>` on
+            purpose: the section carries the only class that changes with the
+            selection, so it has to be inside the island that redraws it. See
+            the note on the flex container above for what happens when it is
+            not.
 
-                @if ($open)
+            The section is `hidden` rather than absent, and that is also
+            deliberate. `renderIslandDirective()` registers an island only while
+            the component is mounting, so an `@island` behind an `@if` that is
+            false on first paint is never registered at all — and
+            `renderIsland('pane')` would then find no token and send nothing,
+            for the rest of the page's life.
+        --}}
+        @island(name: 'pane')
+        <section class="{{ $open ? 'w-full min-w-0 grow' : 'hidden' }}">
+            @if ($open)
+                {{--
+                    `min-h-[700px]` outlives the empty state it was added for.
+                    It used to stop the page jumping between "no message open"
+                    and a message; that state is gone. What it stops now is the
+                    card resizing every time you move between a two-line reply
+                    and a long thread, beside a list that is 640px tall either
+                    way. It is unconditional because there is no `lg:min-h-*` in
+                    either compiled stylesheet, so below `lg` a short message is
+                    a 700px card — worth a look on a phone, but it was already
+                    that before today and narrowing it is not this change.
+                --}}
+                <div class="kt-card min-h-[700px] flex flex-col">
                     {{-- Message header --}}
                     <div class="border-b border-border px-6 py-4">
                         <div class="flex items-start justify-between gap-3">
@@ -1402,6 +1569,16 @@ class extends Component
                                 <button wire:click="moveToTrash({{ $open->id }})" class="kt-btn kt-btn-icon kt-btn-ghost size-8 text-destructive"
                                         title="Move to trash" aria-label="Move to trash">
                                     <i class="ki-filled ki-trash text-base"></i>
+                                </button>
+                                {{--
+                                    Closing is the only way back to the wide list.
+                                    Nothing else on the page ever sets `$selected`
+                                    to null, so without this the list can only be
+                                    full width on the first paint.
+                                --}}
+                                <button wire:click="closeMessage" class="kt-btn kt-btn-icon kt-btn-ghost size-8"
+                                        title="Close this message" aria-label="Close this message">
+                                    <i class="ki-filled ki-cross text-base"></i>
                                 </button>
                             </div>
                         </div>
@@ -1587,22 +1764,12 @@ class extends Component
                             </div>
                         @endif
                     </div>
-                @else
-                    <div class="flex flex-col items-center justify-center grow text-center px-6 py-20">
-                        <i class="ki-filled ki-sms text-5xl text-muted-foreground mb-4"></i>
-                        <p class="text-base font-medium text-mono">No message open</p>
-                        <p class="text-sm text-secondary-foreground mt-1 max-w-[280px]">
-                            Pick something from the list, or start a new message.
-                        </p>
-                        <button class="kt-btn kt-btn-primary gap-2 mt-5" wire:click="$dispatch('open-compose')">
-                            <i class="ki-filled ki-pencil"></i> Compose
-                        </button>
-                    </div>
-                @endif
-            </div>
-            @endisland
+                </div>
+            @endif
         </section>
+        @endisland
 
+        </div>
     </div>
 
     {{--

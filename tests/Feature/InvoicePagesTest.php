@@ -12,6 +12,7 @@ use Modules\Accounting\Models\LedgerEntry;
 use Modules\Accounting\Models\Payment;
 use Modules\Accounting\Models\RecurringInvoice;
 use Modules\Accounting\Services\ExchangeRates;
+use Modules\Accounting\Services\InvoiceDocument;
 use Modules\Accounting\Services\InvoiceIssuer;
 use Modules\Accounting\Services\PaymentRecorder;
 use Modules\Accounting\Support\Currencies;
@@ -828,6 +829,149 @@ class InvoicePagesTest extends TestCase
             today()->addMonthsNoOverflow(3)->toDateString(),
             $schedule->fresh()->next_run_on->toDateString(),
         );
+    }
+
+    /* The printed document ------------------------------------------------------------ */
+
+    /** The invoice as the client receives it, rendered from the same data the PDF uses. */
+    private function document(Invoice $invoice): string
+    {
+        return view('accounting::documents.invoice', app(InvoiceDocument::class)->data($invoice))->render();
+    }
+
+    /**
+     * 🔴 The work under a line is unpriced, and stays unpriced.
+     *
+     * Asserted by counting the currency symbols on the page rather than by
+     * reading the markup: the owner's instruction was that the figure is the
+     * line's own and the work under it carries none, so adding a scope to a line
+     * must not add a single figure to the document. A column of amounts beside
+     * the bullets would be caught here and nowhere else.
+     */
+    public function test_a_work_scope_adds_the_work_to_the_document_and_not_one_figure(): void
+    {
+        $invoice = $this->draft(['number' => 'INV-9200'], [['Full website SEO', '1', '25000.00']]);
+
+        $figuresBefore = substr_count($this->document($invoice), '$');
+
+        $invoice->lines()->first()->update(['tasks' => [
+            'Keyword research and a mapped target list',
+            '   ',
+            'On-page fixes across every template',
+            '',
+        ]]);
+
+        $html = $this->document($invoice->fresh());
+
+        $this->assertStringContainsString('Keyword research and a mapped target list', $html);
+        $this->assertStringContainsString('On-page fixes across every template', $html);
+
+        // Blank entries were typed and are not bullets. Two items, two bullets.
+        $this->assertSame(2, substr_count($html, '<td class="dot">'));
+
+        $this->assertSame(
+            $figuresBefore,
+            substr_count($html, '$'),
+            'The scope under the line brought a price with it. The line carries the only figure.',
+        );
+    }
+
+    /**
+     * 🔴 The case almost every invoice in the book is in.
+     *
+     * `tasks` is null on every line raised before the column existed, and
+     * `starts_on` / `ends_on` are null on every invoice raised before then. None
+     * of them may grow an empty bullet, an empty list or a dangling label.
+     */
+    public function test_a_line_with_no_scope_and_no_period_prints_neither(): void
+    {
+        $invoice = $this->draft(['number' => 'INV-9201']);
+
+        $this->assertNull($invoice->starts_on);
+        $this->assertNull($invoice->ends_on);
+        $this->assertSame([], $invoice->lines()->first()->taskList());
+
+        $html = $this->document($invoice);
+
+        $this->assertStringNotContainsString('class="tasks"', $html, 'A line with no scope printed an empty list.');
+        $this->assertStringNotContainsString('<td class="dot">', $html, 'A line with no scope printed a bullet.');
+        $this->assertStringNotContainsString('Work period', $html, 'An invoice with no period printed the label anyway.');
+    }
+
+    /** Each of the three periods a person can actually type is worded, not dashed. */
+    public function test_a_half_open_work_period_reads_as_one(): void
+    {
+        $invoice = $this->draft(['number' => 'INV-9202']);
+        $document = app(InvoiceDocument::class);
+
+        $invoice->forceFill(['starts_on' => '2026-08-10', 'ends_on' => '2026-09-30'])->save();
+        $this->assertSame('10 August 2026 – 30 September 2026', $document->data($invoice->fresh())['period']);
+
+        $invoice->forceFill(['starts_on' => '2026-08-10', 'ends_on' => null])->save();
+        $this->assertSame('From 10 August 2026', $document->data($invoice->fresh())['period']);
+
+        $invoice->forceFill(['starts_on' => null, 'ends_on' => '2026-09-30'])->save();
+        $this->assertSame('Until 30 September 2026', $document->data($invoice->fresh())['period']);
+
+        $invoice->forceFill(['starts_on' => null, 'ends_on' => null])->save();
+        $this->assertNull($document->data($invoice->fresh())['period']);
+    }
+
+    /**
+     * 🔴 The state every fresh install is in: there is no signature file.
+     *
+     * `public/img/signature.png` is the shipped default and does not exist, so
+     * this is not an edge case — it is the only path anyone has run. A missing
+     * decoration must never stop an invoice being produced, and the block still
+     * has to be a signature block: a rule, the name, the date.
+     */
+    public function test_a_missing_signature_image_leaves_the_document_signable(): void
+    {
+        config()->set('accounting.document.signature_image', 'img/there-is-no-file-here.png');
+
+        $invoice = $this->draft(['number' => 'INV-9203']);
+        $data = app(InvoiceDocument::class)->data($invoice);
+
+        $this->assertNull($data['signature']['image']);
+        $this->assertSame(config('accounting.document.signature_name'), $data['signature']['name']);
+
+        $html = $this->document($invoice);
+
+        $this->assertStringContainsString('class="sign-name"', $html, 'The signature rule went missing with the image.');
+        $this->assertStringContainsString((string) config('accounting.document.signature_name'), $html);
+        $this->assertStringContainsString((string) config('accounting.document.footer'), $html);
+
+        // And the real thing still comes out of dompdf.
+        $this->assertStringStartsWith('%PDF', app(InvoiceDocument::class)->render($invoice)->output());
+    }
+
+    /**
+     * 🔴 The image is inlined, and its type is read from the file.
+     *
+     * dompdf runs with `isRemoteEnabled => false` and its own chroot, so a path
+     * that resolves in PHP does not necessarily resolve inside the renderer —
+     * and there it fails by drawing nothing and saying nothing. The fixture is a
+     * GIF deliberately named `.png`: a `data:` URI that announced `image/png`
+     * here would be one that guessed from the extension.
+     */
+    public function test_a_signature_image_is_inlined_as_a_data_uri_of_its_own_type(): void
+    {
+        $path = public_path('img/signature-fixture-'.uniqid().'.png');
+
+        // A 1×1 transparent GIF, so the fixture depends on no file in the repo.
+        file_put_contents($path, base64_decode('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'));
+
+        try {
+            config()->set('accounting.document.signature_image', 'img/'.basename($path));
+
+            $invoice = $this->draft(['number' => 'INV-9204']);
+            $image = app(InvoiceDocument::class)->data($invoice)['signature']['image'];
+
+            $this->assertStringStartsWith('data:image/gif;base64,', (string) $image);
+            $this->assertStringContainsString('src="data:image/gif;base64,', $this->document($invoice));
+        } finally {
+            @unlink($path);
+        }
     }
 
     /* Honesty ------------------------------------------------------------------------ */

@@ -414,7 +414,23 @@ class InvoicingTest extends TestCase
         $html = view('accounting::documents.invoice', app(InvoiceDocument::class)->data($invoice->fresh()))->render();
 
         $this->assertStringNotContainsString('KDV exemption', $html);
-        $this->assertStringNotContainsString('302', $html);
+
+        // 🔴 The sentence, not the bare digits.
+        //
+        // This assertion used to read `assertStringNotContainsString('302',
+        // $html)` and was **flaky**: measured on 4 August 2026 it failed once in
+        // six consecutive runs, because the customer's address comes from faker
+        // and any postcode, apartment number or tax number containing `302`
+        // failed it. The run that caught it printed
+        // `South Judgeshire, AZ 30241-1232`.
+        //
+        // A test that passes five times in six is worse than no test — it
+        // trains the next person to re-run instead of to look. `302` is three
+        // digits and this document is full of numbers the test does not
+        // control; the exemption is the only thing that ever prints the
+        // *phrase*, so the phrase is what can be asserted on.
+        $this->assertStringNotContainsString('exemption code 302', $html);
+        $this->assertStringNotContainsString('Zero-rated', $html);
     }
 
     /* The headline criterion ------------------------------------------------- */

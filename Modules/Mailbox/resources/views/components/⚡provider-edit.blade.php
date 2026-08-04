@@ -483,7 +483,7 @@ class extends Component
             </div>
             <p class="text-sm text-secondary-foreground mt-1">Credentials, caps and the DNS this provider needs on your domain.</p>
         </div>
-        <div class="flex items-center gap-2">
+        <div class="flex flex-wrap items-center gap-2">
             <a href="{{ route('mail.providers') }}" class="kt-btn kt-btn-ghost gap-2">
                 <i class="ki-filled ki-arrow-left"></i> Providers
             </a>
@@ -497,8 +497,13 @@ class extends Component
                     </span>
                 </button>
             @else
-                <button class="kt-btn kt-btn-primary gap-2" wire:click="create">
-                    <i class="ki-filled ki-plus"></i> Add {{ $meta['label'] }}
+                <button class="kt-btn kt-btn-primary gap-2" wire:click="create" wire:loading.attr="disabled" wire:target="create">
+                    <span wire:loading.remove wire:target="create" class="inline-flex items-center gap-2">
+                        <i class="ki-filled ki-plus"></i> Add {{ $meta['label'] }}
+                    </span>
+                    <span wire:loading wire:target="create" class="inline-flex items-center gap-2">
+                        <i class="ki-filled ki-loading animate-spin"></i> Adding…
+                    </span>
                 </button>
             @endif
         </div>

@@ -80,6 +80,21 @@ class extends Component
 
     public string $dueOn = '';
 
+    /**
+     * The period the work itself covers, which is not the period the invoice
+     * covers.
+     *
+     * Both optional and both blank on a new draft. An invoice for a fixed piece
+     * of work — "full website SEO", start to finish — has a start and an end;
+     * one for an hour of consultancy has neither, and the overwhelming majority
+     * of the rows already in the book have neither. Blank means blank: nothing
+     * is inferred from the issue date, because a period Kargah invented is a
+     * period the client did not agree to.
+     */
+    public string $startsOn = '';
+
+    public string $endsOn = '';
+
     /** A percentage, as a decimal string: '20' is twenty per cent. */
     public string $taxPercent = '0';
 
@@ -110,7 +125,13 @@ class extends Component
      * a card billed as a line is joined to it through Core's `links` table, and
      * deleting the line to recreate it would quietly drop that link.
      *
-     * @var array<int, array{id: ?int, description: string, quantity: string, unit_price: string}>
+     * `tasks` is the scope of the line, held here as the text of a textarea —
+     * one item per line — and turned into the `list<string>` the column stores
+     * at the moment of the write, by `taskLines()`. It carries no price and no
+     * quantity: the figure on an invoice is the line's own, and a price beside a
+     * task would be a second, contradictory total.
+     *
+     * @var array<int, array{id: ?int, description: string, tasks: string, quantity: string, unit_price: string}>
      */
     public array $items = [];
 
@@ -159,6 +180,13 @@ class extends Component
         $this->currency = $invoice->currency;
         $this->issuedOn = $invoice->issued_on?->toDateString() ?? today()->toDateString();
         $this->dueOn = $invoice->due_on?->toDateString() ?? today()->addDays(self::PAYMENT_DAYS)->toDateString();
+
+        // No fallback for these two, unlike the pair above. A missing issue date
+        // has an obvious answer; a missing work period does not, and filling one
+        // in would make every invoice in the book claim a period nobody set.
+        $this->startsOn = $invoice->starts_on?->toDateString() ?? '';
+        $this->endsOn = $invoice->ends_on?->toDateString() ?? '';
+
         $this->taxPercent = $this->trimZeros((string) $invoice->tax_percent);
         $this->notes = (string) $invoice->notes;
         $this->terms = (string) $invoice->terms;
@@ -179,6 +207,10 @@ class extends Component
         $this->items = $invoice->lines->map(fn (InvoiceLine $line): array => [
             'id' => (int) $line->id,
             'description' => (string) $line->description,
+            // `taskList()` and not the raw cast: reopening a draft shows the
+            // list as it will be read, so a stray blank line somebody typed
+            // last week does not come back as an empty row in the textarea.
+            'tasks' => implode("\n", $line->taskList()),
             'quantity' => $this->trimZeros((string) $line->quantity),
             'unit_price' => $this->trimZeros((string) $line->unit_price),
         ])->all();
@@ -211,7 +243,35 @@ class extends Component
 
     private function blankLine(): array
     {
-        return ['id' => null, 'description' => '', 'quantity' => '1', 'unit_price' => '0'];
+        return ['id' => null, 'description' => '', 'tasks' => '', 'quantity' => '1', 'unit_price' => '0'];
+    }
+
+    /**
+     * The textarea's text as the column's `list<string>`, or null for nothing.
+     *
+     * 🔴 Null and not `[]`, and never `['']`. The column is nullable precisely
+     * so "this line has no scope" and "this line has a scope that happens to be
+     * empty" are different rows, and an array holding one empty string would
+     * render an empty bullet on the document. Blanks are dropped here as well as
+     * in `InvoiceLine::taskList()` — the model cleans on the way out because it
+     * has to cope with whatever is already stored; this cleans on the way in so
+     * nothing new needs cleaning.
+     *
+     * `\R` rather than `\n`, because a browser submits a textarea with CRLF and
+     * splitting on `\n` alone leaves a carriage return on the end of every item.
+     *
+     * @return list<string>|null
+     */
+    private function taskLines(mixed $value): ?array
+    {
+        $lines = preg_split('/\R/', (string) $value);
+
+        $lines = array_values(array_filter(
+            array_map(trim(...), $lines === false ? [] : $lines),
+            static fn (string $task): bool => $task !== '',
+        ));
+
+        return $lines === [] ? null : $lines;
     }
 
     /* Reading the invoice ---------------------------------------------------- */
@@ -498,6 +558,24 @@ class extends Component
         ];
     }
 
+    /**
+     * Every rule this page enforces, in one place.
+     *
+     * The work period and the line scope are here rather than on `#[Validate]`
+     * attributes, and deliberately. `endsOn`'s rule is conditional — it exists
+     * only while a start date does — and an attribute is a constant, so half the
+     * pair would have had to live here anyway and the other half three hundred
+     * lines away. `Livewire\...\HandlesValidation::getRules()` merges the two
+     * sources rather than choosing between them, so an attribute *would* have
+     * fired: `save()` calls `validate()` with no argument, and it is passing an
+     * explicit rules array that replaces everything. This does not.
+     *
+     * 🔴 `after_or_equal:startsOn` is applied only when a start date was given.
+     * Laravel resolves the referenced field through `date_create()`, and
+     * `date_create('')` is *now* rather than a failure — so an unconditional
+     * rule would have quietly rejected any work that finished before today on an
+     * invoice with no start date at all.
+     */
     protected function rules(): array
     {
         return [
@@ -505,11 +583,16 @@ class extends Component
             'currency' => ['required', Rule::in(Currencies::supported())],
             'issuedOn' => ['required', 'date'],
             'dueOn' => ['required', 'date', 'after_or_equal:issuedOn'],
+            'startsOn' => ['nullable', 'date'],
+            'endsOn' => ['nullable', 'date', Rule::when($this->startsOn !== '', ['after_or_equal:startsOn'])],
             'taxPercent' => ['required', 'numeric', 'min:0', 'max:100'],
             'customerId' => ['nullable', 'exists:customers,id'],
             'companyId' => ['nullable', 'exists:companies,id'],
             'items' => ['required', 'array', 'min:1'],
             'items.*.description' => ['required', 'string', 'max:255'],
+            // The scope of a line, as typed: optional, and long enough for a
+            // realistic list without being long enough to be a second invoice.
+            'items.*.tasks' => ['nullable', 'string', 'max:2000'],
             'items.*.quantity' => ['required', 'numeric', 'min:0'],
             'items.*.unit_price' => ['required', 'numeric', 'min:0'],
         ];
@@ -521,6 +604,8 @@ class extends Component
             'number' => 'invoice number',
             'issuedOn' => 'issue date',
             'dueOn' => 'due date',
+            'startsOn' => 'work start date',
+            'endsOn' => 'work end date',
             'taxPercent' => 'tax rate',
             'customerId' => 'client',
             'companyId' => 'company',
@@ -644,6 +729,11 @@ class extends Component
                 'tax_percent' => $this->effectiveTaxPercent(),
                 'issued_on' => $this->issuedOn,
                 'due_on' => $this->dueOn,
+                // Blank stays null. An empty string in a date column is not a
+                // date, and it would read back as 1970 on a page that has to be
+                // defensible to an accountant.
+                'starts_on' => $this->startsOn === '' ? null : $this->startsOn,
+                'ends_on' => $this->endsOn === '' ? null : $this->endsOn,
                 'notes' => $this->notes === '' ? null : $this->notes,
                 'terms' => $this->terms === '' ? null : $this->terms,
                 'created_by' => $invoice->exists ? $invoice->created_by : auth()->id(),
@@ -681,6 +771,10 @@ class extends Component
         foreach (array_values($this->items) as $index => $item) {
             $attributes = [
                 'description' => trim((string) $item['description']),
+                // `?? ''` because a caller — a test, or an older payload from a
+                // tab opened before this shipped — can hand over a line with no
+                // `tasks` key at all, and that is a line with no scope.
+                'tasks' => $this->taskLines($item['tasks'] ?? ''),
                 'quantity' => $this->decimal($item['quantity'] ?? '0'),
                 'unit_price' => $this->decimal($item['unit_price'] ?? '0'),
                 'amount' => Money::toStorage($this->lineMoney($item)),
@@ -736,7 +830,7 @@ class extends Component
             // issued froze a dollar figure whatever the owner actually declares
             // in — and the lira reports were near-empty as a result.
             $issued = app(InvoiceIssuer::class)->issue($invoice);
-        } catch (\DomainException $e) {
+        } catch (DomainException $e) {
             $this->resolved = null;
 
             $this->toastError('This invoice was not issued', $e->getMessage());
@@ -995,6 +1089,29 @@ class extends Component
                         @error('dueOn')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
                     </div>
 
+                    {{--
+                        The period the work covers, which is not the period the
+                        invoice covers. Both optional, both blank unless somebody
+                        fills them in, and left out of the document entirely when
+                        they are — an invoice for an hour of consultancy has no
+                        period, and a blank one printed as a dash is noise.
+                    --}}
+                    <div class="flex flex-col gap-1.5">
+                        <label class="kt-form-label" for="invoice_starts">Work starts</label>
+                        <input id="invoice_starts" type="date" wire:model.blur="startsOn"
+                               class="kt-input @error('startsOn') border-destructive @enderror">
+                        <p class="kt-form-description mt-1">Optional. The day the work itself begins.</p>
+                        @error('startsOn')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
+                    </div>
+
+                    <div class="flex flex-col gap-1.5">
+                        <label class="kt-form-label" for="invoice_ends">Work ends</label>
+                        <input id="invoice_ends" type="date" wire:model.blur="endsOn"
+                               class="kt-input @error('endsOn') border-destructive @enderror">
+                        <p class="kt-form-description mt-1">Optional, and never before the start.</p>
+                        @error('endsOn')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
+                    </div>
+
                 </div>
             </div>
         </div>
@@ -1039,10 +1156,33 @@ class extends Component
                                         </div>
                                     </td>
                                     <td>
-                                        <input type="text" wire:model.blur="items.{{ $i }}.description"
-                                               placeholder="What are you billing for?"
-                                               aria-label="Line {{ $i + 1 }} description"
-                                               class="kt-input kt-input-sm w-full @error('items.'.$i.'.description') border-destructive @enderror">
+                                        {{--
+                                            The description carries the price; the
+                                            list under it carries the work. Deliberately
+                                            one cell and not two rows — the scope belongs
+                                            to this line and nothing else, and a separate
+                                            row would sit between two priced lines looking
+                                            like a third.
+                                        --}}
+                                        <div class="flex flex-col gap-1.5">
+                                            <input type="text" wire:model.blur="items.{{ $i }}.description"
+                                                   placeholder="What are you billing for?"
+                                                   aria-label="Line {{ $i + 1 }} description"
+                                                   class="kt-input kt-input-sm w-full @error('items.'.$i.'.description') border-destructive @enderror">
+
+                                            <label class="kt-form-label text-xs" for="line_{{ $i }}_tasks">
+                                                What this covers
+                                            </label>
+                                            <textarea id="line_{{ $i }}_tasks" rows="3"
+                                                      wire:model.blur="items.{{ $i }}.tasks"
+                                                      aria-label="What line {{ $i + 1 }} covers"
+                                                      placeholder="Keyword research and a mapped target list&#10;On-page fixes across every template&#10;Technical audit: speed, crawl, structured data"
+                                                      class="kt-textarea kt-textarea-sm w-full @error('items.'.$i.'.tasks') border-destructive @enderror"></textarea>
+                                            <p class="kt-form-description">
+                                                Optional. One item per line, and no prices among them — the figure
+                                                beside this line is the price for all of it.
+                                            </p>
+                                        </div>
                                     </td>
                                     <td>
                                         <input type="text" inputmode="decimal"

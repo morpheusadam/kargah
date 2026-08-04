@@ -1,5 +1,6 @@
 <?php
 
+use Illuminate\Database\Eloquent\Builder;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Attributes\Validate;
@@ -91,7 +92,7 @@ class extends Component
         ];
     }
 
-    /** @return \Illuminate\Database\Eloquent\Builder<Suppression> */
+    /** @return Builder<Suppression> */
     private function query()
     {
         return Suppression::query()
@@ -276,7 +277,7 @@ class extends Component
         </div>
     </div>
 
-    <div class="grid grid-cols-2 xl:grid-cols-4 gap-5">
+    <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5">
         @foreach ($counts as $c)
             <div class="kt-card">
                 <div class="kt-card-content p-5">
