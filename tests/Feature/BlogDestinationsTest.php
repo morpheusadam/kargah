@@ -324,7 +324,17 @@ class BlogDestinationsTest extends TestCase
         });
     }
 
-    /** The other half of the same decision: given a public address, the cover is sent. */
+    /**
+     * The other half of the same decision: given a public address, the cover is sent.
+     *
+     * The lifetime is asserted alongside the id on purpose. `DevToPublisher`
+     * hands over a link that is meant to outlive `AttachmentService::publicUrl()`'s
+     * own thirty-minute default — see `DevToPublisher::COVER_URL_MINUTES` and
+     * the class docblock's cover-image section for why a link that expires
+     * before a reader ever loads the article is the failure this guards
+     * against. A regression back to the default would not be caught by
+     * anything else here.
+     */
     public function test_devto_sends_a_main_image_url_when_the_install_is_reachable(): void
     {
         Http::fake(['dev.to/api/articles' => Http::response(['id' => 22, 'url' => 'https://dev.to/nima/b'], 201)]);
@@ -333,7 +343,8 @@ class BlogDestinationsTest extends TestCase
 
         $attachments = Mockery::mock(AttachmentService::class);
         $attachments->shouldReceive('publicUrl')
-            ->with(12)
+            // A year, not the thirty-minute default: see the class docblock.
+            ->with(12, 60 * 24 * 365)
             ->andReturn('https://kargah.example.com/files/12/share?signature=abc');
         $this->app->instance(AttachmentService::class, $attachments);
 
@@ -595,6 +606,44 @@ class BlogDestinationsTest extends TestCase
         );
 
         Http::assertSent(fn ($request): bool => ! isset($request['variables']['input']['coverImageOptions']));
+    }
+
+    /**
+     * The other half of the same decision: given a public address, the cover is sent.
+     *
+     * Not previously covered at all: nothing here proved `coverImageOptions`
+     * ever reached Hashnode, only that it was withheld when the install is
+     * unreachable. The lifetime is asserted alongside the id on purpose, for
+     * the same reason `DevToPublisher`'s equivalent test does — see
+     * `HashnodePublisher::COVER_URL_MINUTES` and the class docblock's
+     * cover-image section.
+     */
+    public function test_hashnode_sends_a_cover_image_url_when_the_install_is_reachable(): void
+    {
+        Http::fake([
+            'gql.hashnode.com/*' => Http::response([
+                'data' => ['publishPost' => ['post' => ['id' => 'cover2', 'slug' => 'y', 'url' => 'https://notes.kargah.dev/y']]],
+            ]),
+        ]);
+
+        URL::forceRootUrl('https://kargah.example.com');
+
+        $attachments = Mockery::mock(AttachmentService::class);
+        $attachments->shouldReceive('publicUrl')
+            // A year, not the thirty-minute default: see the class docblock.
+            ->with(12, 60 * 24 * 365)
+            ->andReturn('https://kargah.example.com/files/12/share?signature=abc');
+        $this->app->instance(AttachmentService::class, $attachments);
+
+        (new HashnodePublisher)->publishWithOptions(
+            $this->hashnodeAccount(),
+            self::BODY,
+            [new MediaItem(id: 12, name: 'board-views.jpg', mime: 'image/jpeg', sizeBytes: 240_000)],
+            $this->articleOptions(),
+        );
+
+        Http::assertSent(fn ($request): bool => $request['variables']['input']['coverImageOptions']['coverImageURL']
+            === 'https://kargah.example.com/files/12/share?signature=abc');
     }
 
     /* The routing — the load-bearing test -------------------------------------------- */

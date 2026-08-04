@@ -190,6 +190,31 @@ class XPublisherTest extends TestCase
             ]);
     }
 
+    /**
+     * A 503 is hit once, not three times.
+     *
+     * `HttpPublisher::request()` retries the same `PendingRequest`, so a
+     * default three-attempt policy would resend the identical `Authorization`
+     * header — the same nonce — on every retry. A nonce is single use by
+     * definition, so `XPublisher::TRIES` overrides the default to 1 for
+     * exactly this reason; asserting the call count is what would catch a
+     * regression back to the default.
+     */
+    public function test_a_transient_failure_is_not_retried_because_the_signature_would_be_replayed(): void
+    {
+        Http::fake([self::TWEETS => Http::response('Service Unavailable', 503)]);
+
+        try {
+            (new XPublisher)->publish($this->account(), 'This one hits a transient failure.');
+
+            $this->fail('a 503 must not read as a published tweet');
+        } catch (PublishFailed $e) {
+            $this->assertStringContainsString('503', $e->getMessage());
+        }
+
+        Http::assertSentCount(1);
+    }
+
     /* Verification -------------------------------------------------------------- */
 
     public function test_verify_names_the_account_and_posts_nothing(): void

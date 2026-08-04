@@ -465,6 +465,32 @@ class SlackTumblrPublisherTest extends TestCase
     }
 
     /**
+     * A 503 is hit once, not three times.
+     *
+     * `HttpPublisher::request()` retries the same `PendingRequest`, headers
+     * included, and the `Authorization` header here is a nonce that is single
+     * use by definition — `TumblrPublisher::TRIES` overrides the default of
+     * three to one for exactly that reason. This is the assertion that would
+     * catch a regression back to the default: a retried request would still
+     * fail, but as a misdiagnosed 401 rather than as the transient error it
+     * actually was.
+     */
+    public function test_a_transient_tumblr_failure_is_not_retried_because_the_nonce_would_be_replayed(): void
+    {
+        Http::fake([self::TUMBLR_POST => Http::response('Service Unavailable', 503)]);
+
+        try {
+            (new TumblrPublisher)->publish($this->tumblrAccount(), 'This one hits a transient failure.');
+
+            $this->fail('a 503 must not be retried with a replayed signature');
+        } catch (PublishFailed $e) {
+            $this->assertStringContainsString('503', $e->getMessage());
+        }
+
+        Http::assertSentCount(1);
+    }
+
+    /**
      * Tumblr's own trap: HTTP 200 with a failing `meta.status`.
      *
      * The same shape as Slack's `ok: false` and Telegram's, and the reason both

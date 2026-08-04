@@ -157,6 +157,19 @@ trait MetaGraph
      * put it; a POST deliberately keeps it out of the URL so it does not end up
      * in a web server's access log.
      *
+     * 🔴 **An access token in a GET's query string is not only an access-log
+     * problem, and this paragraph used to say it was.** The three `verify()`
+     * calls in this family — Facebook Pages, Instagram and Threads — each send
+     * the token as a `$fields` entry on a GET. When one of those times out,
+     * Guzzle builds its `ConnectionException` message by appending the whole
+     * effective URI, token and all, and `⚡account-connect` catches
+     * `PublishFailed` and renders `getMessage()` straight into the page and a
+     * toast. One slow credential check would have printed a working Page or
+     * Instagram token on screen. That is why `graphBody()` goes through
+     * `HttpPublisher::cannotReach()` rather than through the exception message —
+     * see the long note there. The publish paths were always safe, because they
+     * are POSTs and the token is in the body.
+     *
      * @param  'get'|'post'  $method
      * @param  array<string, string>  $fields
      * @return array<array-key, mixed>
@@ -373,7 +386,13 @@ trait MetaGraph
                 ? $request->get($url, $fields)
                 : $request->post($url, $fields);
         } catch (ConnectionException $e) {
-            throw PublishFailed::unreachable($this->graphName(), $e->getMessage());
+            // Not `$e->getMessage()`: on a GET the access token is in that URI,
+            // and this message is rendered on the connect page. See `graphSend()`
+            // and `HttpPublisher::cannotReach()`. Passing the network **key**
+            // rather than `graphName()` is deliberate — `PublishFailed` labels it
+            // itself, so the old call was labelling an already-labelled name and
+            // only worked because `Networks::label()` falls back to `ucfirst()`.
+            throw $this->cannotReach($url, $e);
         }
 
         $body = $response->json();

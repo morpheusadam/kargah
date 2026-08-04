@@ -107,7 +107,7 @@ abstract class HttpPublisher implements Publisher
                 ? $request->get($url, $payload)
                 : $request->post($url, $payload);
         } catch (ConnectionException $e) {
-            throw PublishFailed::unreachable($this->network(), $e->getMessage());
+            throw $this->cannotReach($url, $e);
         }
 
         if ($response->failed()) {
@@ -170,7 +170,7 @@ abstract class HttpPublisher implements Publisher
             /** @var Response $response */
             $response = $request->post($url, $fields);
         } catch (ConnectionException $e) {
-            throw PublishFailed::unreachable($this->network(), $e->getMessage());
+            throw $this->cannotReach($url, $e);
         }
 
         if ($response->failed()) {
@@ -206,7 +206,7 @@ abstract class HttpPublisher implements Publisher
                 ->withBody($bytes, $mime)
                 ->post($url);
         } catch (ConnectionException $e) {
-            throw PublishFailed::unreachable($this->network(), $e->getMessage());
+            throw $this->cannotReach($url, $e);
         }
 
         if ($response->failed()) {
@@ -240,12 +240,84 @@ abstract class HttpPublisher implements Publisher
                 ->withBody($bytes, $mime)
                 ->put($url);
         } catch (ConnectionException $e) {
-            throw PublishFailed::unreachable($this->network(), $e->getMessage());
+            throw $this->cannotReach($url, $e);
         }
 
         if ($response->failed()) {
             throw PublishFailed::status($this->network(), $response->status(), $this->detailFrom($response));
         }
+    }
+
+    /**
+     * A connection that never completed, said usefully, without the request URL in it.
+     *
+     * 🔴 **Guzzle builds a `ConnectionException` message by appending the whole
+     * request URI, and that message ends up in the database and on a page.**
+     * `PostPublisher` writes a `PublishFailed` to `post_targets.error` and the
+     * posts page renders it, so anything in the URL is then plaintext in SQLite
+     * and printed in a red row. None of `SocialAccount`'s three layers of
+     * credential hiding apply — they protect a model, and this is a URL.
+     *
+     * VK closed this per driver by moving its access token out of the query
+     * string into a form body; the argument is written out in
+     * `VkPublisher::vkSend()` and it is still the right fix when there is a
+     * choice. **Telegram has no choice.** Its bot token is a path segment —
+     * `api.telegram.org/bot<token>/sendMessage` — and the Bot API has no header
+     * scheme and no parameter scheme to move it to. So one timed-out Telegram
+     * send leaks a working bot token, and no amount of care in the driver can
+     * prevent it. That is why this is here, once, rather than a third copy of
+     * VK's paragraph in a fourteenth file.
+     *
+     * **The message is rebuilt from an allow-list, not scrubbed.** The whole URL
+     * is treated as secret and only two things are put back:
+     *
+     * - the **host**, from `parse_url()`. It is the one component that is
+     *   addressing rather than authorisation, and taking it structurally also
+     *   drops `user:pass@` userinfo, which a hand-typed WordPress or Lemmy base
+     *   URL can carry;
+     * - the client's **reason**, cut at the first `://` in it.
+     *
+     * That cut is positional rather than pattern-based, and deliberately so: a
+     * redaction that works by recognising secrets — a regex for things shaped
+     * like a token, a list of known credential names — fails silently the first
+     * time a network issues a credential shaped differently, and the failure is
+     * a leak. This one does not read the secret at all. It rests on one property
+     * instead: everything the client appends that came from the request is a
+     * URI, and a URI here always begins `scheme://`, so cutting at the first
+     * occurrence removes it whole no matter what is inside it. Guzzle's shape is
+     * `cURL error N: <reason> (see https://curl.se/…) for <uri>`, and both URLs
+     * in it go.
+     *
+     * 🔴 **`str_replace($url, …)` is the obvious alternative and it does not
+     * work.** The URI in the message is the *effective* one, not the `$url` this
+     * was handed: `send()` passes a GET's payload to `$request->get()`, which
+     * appends it as a query string — that is exactly where VK's token used to be
+     * — and a redirect replaces it again. Removing the string we know still
+     * leaves the part we did not. And `putBytes()`/`sendMultipart()` are called
+     * with URLs Kargah never built at all (VK's `uploadServer()` hands over an
+     * upload URL VK chose), so there is nothing to compare against there.
+     *
+     * What is left is still diagnostic: which host did not answer and what the
+     * client said about why, which is what somebody reading a red row needs. The
+     * cost is the path, and the path is the part that cannot be shown.
+     */
+    protected function cannotReach(string $url, ConnectionException $e): PublishFailed
+    {
+        $host = parse_url($url, PHP_URL_HOST);
+        $where = is_string($host) && $host !== '' ? $host : 'the destination host';
+
+        $reason = trim((string) preg_replace(
+            '~\s*(?:\(see\s+|for\s+)?\S*://.*$~s',
+            '',
+            trim($e->getMessage()),
+        ));
+
+        return PublishFailed::unreachable(
+            $this->network(),
+            $reason === ''
+                ? $where.' did not answer and the HTTP client gave no reason'
+                : $where.' — '.mb_substr($reason, 0, 300),
+        );
     }
 
     /**

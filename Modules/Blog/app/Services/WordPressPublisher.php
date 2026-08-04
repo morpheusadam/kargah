@@ -688,7 +688,14 @@ class WordPressPublisher extends HttpPublisher implements TakesTargetOptions
             /** @var Response $response */
             $response = $this->authorised($account)->post($url, ['name' => $name]);
         } catch (ConnectionException $e) {
-            throw PublishFailed::unreachable($this->network(), $e->getMessage());
+            // Not `$e->getMessage()`: `$base` is a URL the operator typed into the
+            // connect page, so it can carry `https://user:pass@site/` — and Guzzle
+            // appends the whole effective URI to a connection failure, which then
+            // lands in `post_targets.error` and on a page. `cannotReach()` takes
+            // the host structurally with `parse_url()`, which drops the userinfo
+            // along with everything else. Basic auth in a header is safe; a
+            // credential somebody pasted into the *address* is not.
+            throw $this->cannotReach($url, $e);
         }
 
         $body = $response->json();
@@ -739,7 +746,14 @@ class WordPressPublisher extends HttpPublisher implements TakesTargetOptions
                 ? $request->get($url, $payload)
                 : $request->post($url, $payload);
         } catch (ConnectionException $e) {
-            throw PublishFailed::unreachable($this->network(), $e->getMessage());
+            // Not `$e->getMessage()`: `$base` is a URL the operator typed into the
+            // connect page, so it can carry `https://user:pass@site/` — and Guzzle
+            // appends the whole effective URI to a connection failure, which then
+            // lands in `post_targets.error` and on a page. `cannotReach()` takes
+            // the host structurally with `parse_url()`, which drops the userinfo
+            // along with everything else. Basic auth in a header is safe; a
+            // credential somebody pasted into the *address* is not.
+            throw $this->cannotReach($url, $e);
         }
 
         if ($response->failed()) {

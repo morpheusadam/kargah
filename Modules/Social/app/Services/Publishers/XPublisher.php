@@ -63,6 +63,27 @@ class XPublisher extends HttpPublisher
 
     private const WEB = 'https://x.com';
 
+    /**
+     * One attempt, not three.
+     *
+     * `HttpPublisher::request()` retries the same `PendingRequest`, so a
+     * retried tweet would carry the identical `Authorization` header —
+     * `OAuth1::header()` is called once, before `->post()` is dispatched, and
+     * Laravel's retry re-sends what it already built rather than signing
+     * again. A nonce is single use by definition (`uploadAll()` below signs a
+     * fresh one per picture for exactly this reason), so X refuses the
+     * replay: a transient 503 on the first attempt becomes a 401 on the
+     * second, and that reads on the posts page as a bad credential rather
+     * than the blip it was. The cost accepted here is that a genuine
+     * transient failure now fails the target on the first try instead of
+     * healing itself inside the job; `PostTarget::FAILED` is not terminal, so
+     * a person pressing retry signs and sends fresh rather than replaying.
+     */
+    protected const TRIES = 1;
+
+    /** The upload path signs the same way, once per call. See `TRIES`. */
+    protected const UPLOAD_TRIES = 1;
+
     public function network(): string
     {
         return Networks::X;

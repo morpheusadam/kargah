@@ -109,11 +109,14 @@ use Modules\Social\Support\Networks;
  * that sits outside `auth`, and DEV's servers go and download it.
  *
  * That means an install with no public address cannot supply one, and the
- * judgement about whether it has come from
- * `Modules\Social\Services\Publishers\FetchesOwnMedia` — loopback, private
- * range, development TLD, or a bare hostname with no dot in it. Five
- * destinations need that test and each of them once carried its own verbatim
- * copy of it; the trait is where it lives now.
+ * judgement about whether it has one — a loopback address, a private range, a
+ * development TLD, or a bare hostname with no dot in it — is
+ * `installIsFetchable()`'s, from
+ * `Modules\Social\Services\Publishers\FetchesOwnMedia`. `MetaGraph`,
+ * `SlackPublisher` and this class each once carried a verbatim copy of the
+ * same twelve-line test; the trait is where it lives now, and `use
+ * FetchesOwnMedia` above is this class pointing at it rather than keeping its
+ * own.
  *
  * 🔴 **What is different here is what happens next, and it is the opposite of
  * Instagram.** Instagram refuses the post outright when it cannot fetch a
@@ -129,6 +132,36 @@ use Modules\Social\Support\Networks;
  * `acceptableMedia()` raises before anything moves — a type DEV does not take,
  * or more pictures than the catalogue allows — because those are the person's
  * own attachment being wrong rather than the install being small.
+ *
+ * 🔴 **The link handed to DEV lives for `COVER_URL_MINUTES`, not
+ * `AttachmentService::publicUrl()`'s thirty-minute default, and that number is
+ * a guess.** Thirty minutes is right for Instagram and Threads because Meta
+ * fetches the bytes during the one container-create call that is open right
+ * now — the link only has to survive a single round trip. **Nothing in this
+ * session corroborates that DEV does the same for `main_image`.** If DEV
+ * instead renders the URL live rather than downloading it once, a thirty-minute
+ * link means the cover on a public, already-published article starts
+ * answering 403 the moment the signature expires — and nothing here would
+ * notice: `post_targets.status` stays `published`, no error is ever written,
+ * and the first anyone hears of it is a reader mentioning a broken image, days
+ * later. Assuming "DEV ingests like Meta" and leaving the default in place is
+ * the cheap guess and the dangerous one to be wrong about, so this asks for a
+ * year instead — long enough to survive DEV rendering it live, and
+ * deliberately **not** "no expiry": the trade-off named at the top of
+ * `AttachmentService::publicUrl()` still holds at this length, because
+ * `data.file-share` has no protection but the signature, and a link that never
+ * expires is a permanent public URL for a private attachment the day it leaks
+ * into a referrer log or a scraper. If the guess is wrong the other way — DEV
+ * does ingest immediately — the only cost is a larger blast radius on a link
+ * nobody was ever going to use past the one request DEV makes with it. **How
+ * to tell which is true**: open an already-published DEV article a day after
+ * it went out and check whether its cover is served from a DEV-owned host
+ * (ingested, and this guess was right) or still points back at this install's
+ * own `data.file-share` (rendered live, and the real risk this comment is
+ * about). Kargah does not check this itself; the cheap version would be a
+ * scheduled job that re-fetches each published article's own page and flags
+ * one whose cover still resolves to this install's own host — that is future
+ * work, not built here.
  */
 class DevToPublisher extends HttpPublisher implements TakesTargetOptions
 {
@@ -148,6 +181,15 @@ class DevToPublisher extends HttpPublisher implements TakesTargetOptions
 
     /** The one status that means `published: true`. See the class docblock. */
     private const PUBLISHED_STATUS = 'publish';
+
+    /**
+     * How long the signature on the cover link stays valid, in minutes.
+     *
+     * Not `AttachmentService::publicUrl()`'s own thirty-minute default — see
+     * the class docblock's cover-image section for the guess this number rests
+     * on and what breaks if it is wrong.
+     */
+    private const COVER_URL_MINUTES = 60 * 24 * 365;
 
     public function network(): string
     {
@@ -306,7 +348,13 @@ class DevToPublisher extends HttpPublisher implements TakesTargetOptions
                 ? $request->get($url, $payload)
                 : $request->post($url, $payload);
         } catch (ConnectionException $e) {
-            throw PublishFailed::unreachable($this->network(), $e->getMessage());
+            // The central redaction rather than the raw message. This driver
+            // authenticates in a header, so nothing secret is in the URL today —
+            // but a connection failure's message is written to
+            // `post_targets.error` and rendered on a page, and the next endpoint
+            // added here should not have to remember that. See
+            // `HttpPublisher::cannotReach()` for why it is not a `str_replace`.
+            throw $this->cannotReach($url, $e);
         }
 
         if ($response->failed()) {
@@ -489,7 +537,10 @@ class DevToPublisher extends HttpPublisher implements TakesTargetOptions
             return null;
         }
 
-        return app(AttachmentService::class)->publicUrl($this->coverItem($media, $options)->id);
+        return app(AttachmentService::class)->publicUrl(
+            $this->coverItem($media, $options)->id,
+            self::COVER_URL_MINUTES,
+        );
     }
 
     /**

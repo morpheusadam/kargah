@@ -61,6 +61,29 @@ use Modules\Social\Support\Networks;
  * images is therefore thirty-one requests, which is why the catalogue caps the
  * count rather than leaving it open.
  *
+ * ⚠️ **Step 3 is already public, and a failure at `wall.post` leaves it there.**
+ * `photos.saveWallPhoto` does not stage anything: it files the picture in the
+ * wall's own photo album, where the community's followers can see it and where
+ * VK may surface it in their feed — before the post it belongs to exists, and
+ * whether or not that post ever does. So a `wall.post` that fails on the last of
+ * thirty-one requests has still published the pictures, and Kargah reports the
+ * target as failed, which it is. Somebody looking at the album afterwards finds
+ * images with no post attached and nothing in Kargah explaining them.
+ *
+ * That is accepted rather than solved, and the reason is that the alternatives
+ * are each worse. Deleting on failure means `photos.delete` inside a `catch`,
+ * which is a second network call on a path that is already failing — most likely
+ * because VK is unreachable, so the cleanup fails too, and now the error message
+ * is about the cleanup rather than about the post. Uploading after `wall.post`
+ * is not possible: the attachment ids are an argument to it. The honest fix is
+ * an album chosen for the purpose, which VK's wall-upload flow does not offer.
+ *
+ * What this costs in practice is small — `wall.post` is the *most* likely of the
+ * thirty-one to succeed, since the uploads have already proved the token, the
+ * scopes and the community rights — but it is a real remote side effect from a
+ * post Kargah calls failed, and a person clearing up after one should be able to
+ * find out why the pictures are there.
+ *
  * 🔴 **`group_id` is positive where `owner_id` is negative.** The upload calls
  * take the community's bare id and the post takes it with a minus sign in front,
  * and getting that wrong is a *silent* failure: the photo uploads to the wrong

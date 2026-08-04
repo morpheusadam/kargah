@@ -99,6 +99,28 @@ class TumblrPublisher extends HttpPublisher
      */
     private const TITLE_CHARACTERS = 120;
 
+    /**
+     * One attempt, not three.
+     *
+     * `HttpPublisher::request()` and `uploadRequest()` retry the same
+     * `PendingRequest`, headers included, and the `Authorization` header sent
+     * here is `OAuth1::header()` computed once, before the first attempt —
+     * its `oauth_nonce` and `oauth_timestamp` are fixed at that instant, not
+     * recomputed per try. A nonce is single use by definition, so a
+     * conforming server refuses the replay: a transient 503 on the first
+     * attempt becomes a 401 on the second, and that reads on the posts page
+     * as a bad credential rather than as the blip it was — the symptom this
+     * override exists to prevent. The honest cost is that a genuine
+     * transient failure now fails the target on the first try instead of
+     * quietly healing within the job; that is accepted rather than fixed
+     * some other way because `PostTarget::FAILED` is not terminal — a person
+     * can press retry, which builds a fresh signature.
+     */
+    protected const TRIES = 1;
+
+    /** The photo path signs the same way, once per call. See `TRIES`. */
+    protected const UPLOAD_TRIES = 1;
+
     public function network(): string
     {
         return Networks::TUMBLR;

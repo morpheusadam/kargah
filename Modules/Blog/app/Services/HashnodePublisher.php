@@ -125,13 +125,32 @@ use Modules\Social\Support\Networks;
  * outside `auth`.
  *
  * An install with no public address cannot supply one, and the judgement about
- * whether it has comes from
+ * whether it has one — a loopback address, a private range, a development
+ * TLD, or a bare hostname with no dot in it — comes from
  * `Modules\Social\Services\Publishers\FetchesOwnMedia`, which the five
- * destinations that need it now share. As with DEV and **unlike
- * Instagram**, that is not fatal: an article is text and the cover is a
- * decoration, so the post goes out without one rather than not at all.
- * Instagram refuses, because Instagram has no text-only post and there is no
- * request that could succeed.
+ * destinations that need it now share rather than each keeping its own copy.
+ * As with DEV and **unlike Instagram**, that is not fatal: an article is text
+ * and the cover is a decoration, so the post goes out without one rather than
+ * not at all. Instagram refuses, because Instagram has no text-only post and
+ * there is no request that could succeed.
+ *
+ * 🔴 **The link handed to Hashnode lives for `COVER_URL_MINUTES`, and that
+ * number is the same guess `DevToPublisher` makes, for the same reason — see
+ * its class docblock for the argument in full.** Meta's thirty-minute default
+ * is right because Meta ingests the bytes during the one call that is open;
+ * nothing here corroborates that Hashnode does the same for `coverImageURL`
+ * rather than rendering it live wherever the reader's browser is pointed. If
+ * it renders live, thirty minutes means the cover on a public,
+ * already-published post starts 403ing the moment the signature expires, with
+ * `post_targets.status` still reading `published` and nothing in Kargah ever
+ * noticing — so this asks for a year instead of the default, and deliberately
+ * not "no expiry": `data.file-share` has no protection but the signature, and
+ * a link that never expires is a permanent public URL for a private
+ * attachment the day it leaks into a referrer log or a scraper. How to tell
+ * which guess is true: open a published Hashnode post a day later and check
+ * whether its cover still comes from this install's own host rather than
+ * Hashnode's; a scheduled check for exactly that is named as future work in
+ * `DevToPublisher`'s docblock rather than built here.
  */
 class HashnodePublisher extends HttpPublisher implements TakesTargetOptions
 {
@@ -167,6 +186,15 @@ class HashnodePublisher extends HttpPublisher implements TakesTargetOptions
      * documented number is the cheaper of the two.
      */
     private const MAX_TAGS = 5;
+
+    /**
+     * How long the signature on the cover link stays valid, in minutes.
+     *
+     * Not `AttachmentService::publicUrl()`'s own thirty-minute default — see
+     * the class docblock's cover-image section for the guess this number rests
+     * on and what breaks if it is wrong.
+     */
+    private const COVER_URL_MINUTES = 60 * 24 * 365;
 
     public function network(): string
     {
@@ -332,7 +360,13 @@ class HashnodePublisher extends HttpPublisher implements TakesTargetOptions
                 'variables' => $variables,
             ]);
         } catch (ConnectionException $e) {
-            throw PublishFailed::unreachable($this->network(), $e->getMessage());
+            // The central redaction rather than the raw message. This driver
+            // authenticates in a header, so nothing secret is in the URL today —
+            // but a connection failure's message is written to
+            // `post_targets.error` and rendered on a page, and the next endpoint
+            // added here should not have to remember that. See
+            // `HttpPublisher::cannotReach()` for why it is not a `str_replace`.
+            throw $this->cannotReach(self::ENDPOINT, $e);
         }
 
         $body = $response->json();
@@ -573,7 +607,10 @@ class HashnodePublisher extends HttpPublisher implements TakesTargetOptions
             return null;
         }
 
-        return app(AttachmentService::class)->publicUrl($this->coverItem($media, $options)->id);
+        return app(AttachmentService::class)->publicUrl(
+            $this->coverItem($media, $options)->id,
+            self::COVER_URL_MINUTES,
+        );
     }
 
     /**

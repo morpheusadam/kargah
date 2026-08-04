@@ -92,7 +92,13 @@ class LinkedInPublisher extends HttpPublisher
                 ],
             ]);
         } catch (ConnectionException $e) {
-            throw PublishFailed::unreachable($this->network(), $e->getMessage());
+            // The central redaction rather than the raw message. This driver
+            // authenticates in a header, so nothing secret is in the URL today —
+            // but a connection failure's message is written to
+            // `post_targets.error` and rendered on a page, and the next endpoint
+            // added here should not have to remember that. See
+            // `HttpPublisher::cannotReach()` for why it is not a `str_replace`.
+            throw $this->cannotReach(self::ENDPOINT, $e);
         }
 
         if ($response->failed()) {

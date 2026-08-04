@@ -18,6 +18,20 @@ use Modules\Social\Support\Networks;
  * successful status code is not evidence the message went anywhere and the body
  * is checked as well.
  *
+ * 🔴 **The bot token is a path segment: `/bot<token>/sendMessage`.** It is not a
+ * header and not a parameter, and the Bot API has no other way to address a bot
+ * — so every request this class makes carries a working credential in its URL,
+ * and anything that copies a request URL somewhere a person can read it publishes
+ * that credential. `HttpPublisher::cannotReach()` is what keeps a timed-out send
+ * from doing exactly that, and the general rule and its reasoning live there; VK
+ * had the same exposure and could fix it in its own driver by moving the token
+ * into a form body, which is not available here. Two things follow for whoever
+ * moves this network to a different transport: a request URL built here may
+ * never be logged, echoed into an exception, or shown, and the replacement has
+ * to solve that itself before the first send — it cannot be assumed, because
+ * every other network in this directory authenticates in a header and does not
+ * have this problem.
+ *
  * **Pictures: a different endpoint, not an extra field.** Telegram is the one
  * network here where attaching an image stops `publish()` calling the method it
  * otherwise calls. There are three shapes and the count decides which:
