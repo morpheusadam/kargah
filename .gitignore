@@ -49,3 +49,8 @@ Thumbs.db
 # a snapshot of one machine's findings is not.
 /tools/audit/*.json
 /storage/app/audit-copy*.sqlite
+
+# SSH credentials for the panel host. Never in git: the repository is public,
+# and a key or password in a public history is compromised the moment it lands
+# there, whether or not anybody notices. Deleting the file later does not undo it.
+/.data/
