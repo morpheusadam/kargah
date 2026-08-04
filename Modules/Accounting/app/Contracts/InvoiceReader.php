@@ -58,8 +58,16 @@ interface InvoiceReader
      * numbers may change, and a retried request must not get a second moment.
      *
      * Returns null when the invoice does not exist.
+     *
+     * 🔴 **`null` means "the configured reporting currency", and is the right
+     * thing for a caller to pass.** This defaulted to the literal `'USD'`, which
+     * was invisible while that was also Accounting's own default and became a
+     * silent disagreement the day `accounting.reporting_currency` moved to lira:
+     * an invoice issued through this contract froze dollars while the same
+     * invoice issued from the builder froze lira. A caller outside Accounting
+     * does not own that decision — see `InvoiceIssuer::reportingCurrency()`.
      */
-    public function issue(int $id, string $reportingCurrency = 'USD'): ?array;
+    public function issue(int $id, ?string $reportingCurrency = null): ?array;
 
     /**
      * The whole book's outstanding money — **per currency, never added

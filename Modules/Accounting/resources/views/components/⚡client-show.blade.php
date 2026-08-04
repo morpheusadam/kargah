@@ -784,8 +784,10 @@ class extends Component
                                 <a href="mailto:{{ $customer->email }}" class="kt-btn kt-btn-ghost justify-start gap-2">
                                     <i class="ki-filled ki-sms"></i> Email contact
                                 </a>
+                                {{-- "Recurring", not "Recurring invoices": that page now carries the
+                                     standing costs going out as well as the schedules coming in. --}}
                                 <a href="{{ route('accounting.recurring') }}" wire:navigate class="kt-btn kt-btn-ghost justify-start gap-2">
-                                    <i class="ki-filled ki-arrows-circle"></i> Recurring invoices
+                                    <i class="ki-filled ki-arrows-circle"></i> Recurring
                                 </a>
                                 <button wire:click="archive" wire:loading.attr="disabled" wire:target="archive"
                                         class="kt-btn kt-btn-ghost justify-start gap-2 {{ $customer->isArchived() ? '' : 'text-destructive' }}">

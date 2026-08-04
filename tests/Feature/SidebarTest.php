@@ -14,7 +14,7 @@ class SidebarTest extends TestCase
         foreach (['Projects','Accounting','Mail','Data','Social','Settings'] as $group) {
             $r->assertSee($group, false);
         }
-        foreach (['Boards','Archive','Invoices','Recurring','Expenses','Clients','Reports',
+        foreach (['Boards','Archive','Estimates','Invoices','Recurring','Expenses','Clients','Reports',
                   'Inbox','Campaigns','Contacts','Providers','Suppression',
                   'Files','Passwords','Links &amp; Bots','GitHub Repos','Backups',
                   'Notifications','Publish','Calendar','Queue','Accounts'] as $item) {

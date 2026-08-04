@@ -395,6 +395,158 @@ class AccountingReportsTest extends TestCase
         $this->assertSame(0, $tax['stopajForeign']);
     }
 
+    /* The reporting currency, and a mixed book ------------------------------------- */
+
+    /**
+     * 🔴 A mixed book is the normal state, and every headline figure has to
+     * survive it.
+     *
+     * The reporting currency is a setting, and changing it never rewrites an
+     * invoice that has already been issued — so older invoices report in one
+     * currency and newer ones in another. Both belong in the totals, as **two
+     * figures**. This page used to filter for dollars and drop everything else
+     * on the floor with no count and no note, which looks exactly like a book
+     * that simply earned less.
+     */
+    public function test_the_headline_totals_group_by_reporting_currency_and_never_add_them(): void
+    {
+        $customer = $this->foreignCustomer();
+
+        // Raised after the switch to lira.
+        $this->liraInvoice($customer, '40000.00', dueDaysAgo: 10, number: 'MIX-TRY', attributes: [
+            'reporting_currency' => Currencies::TRY,
+            'reporting_rate' => '1.000000',
+            'reporting_amount' => '40000.00',
+        ]);
+
+        // Raised before it, and untouched by it.
+        $this->dollarInvoice($customer, '1000.00', dueDaysAgo: 10);
+
+        $kpis = collect(Livewire::test('accounting::reports')->set('period', 'all')->viewData('kpis'))
+            ->keyBy('label');
+
+        $invoiced = $kpis['Invoiced']['values'];
+
+        $this->assertCount(2, $invoiced, 'The two reporting currencies collapsed into '.count($invoiced).' figure(s).');
+        $this->assertContains('₺40,000.00', $invoiced);
+        $this->assertContains('$1,000.00', $invoiced);
+
+        // 40,000 + 1,000 = 41,000 is what a mixed total would produce.
+        foreach ($invoiced as $figure) {
+            $this->assertStringNotContainsString('41,000', $figure);
+        }
+
+        // And the same rule on the receivables card.
+        $outstanding = $kpis['Outstanding today']['values'];
+
+        $this->assertCount(2, $outstanding);
+        $this->assertContains('₺40,000.00', $outstanding);
+        $this->assertContains('$1,000.00', $outstanding);
+    }
+
+    /** An ageing bucket totals per reporting currency too, and empty buckets keep the columns. */
+    public function test_the_ageing_card_shows_one_figure_per_reporting_currency(): void
+    {
+        $customer = $this->foreignCustomer();
+
+        $this->liraInvoice($customer, '40000.00', dueDaysAgo: 45, number: 'AGE-TRY', attributes: [
+            'reporting_currency' => Currencies::TRY,
+            'reporting_rate' => '1.000000',
+            'reporting_amount' => '40000.00',
+        ]);
+        $this->dollarInvoice($customer, '1000.00', dueDaysAgo: 45);
+
+        $ageing = collect(Livewire::test('accounting::reports')->viewData('ageing'))->keyBy('label');
+
+        $this->assertStringContainsString('$1,000.00', $ageing['31 to 60 days late']['total']);
+        $this->assertStringContainsString('₺40,000.00', $ageing['31 to 60 days late']['total']);
+
+        // An empty bucket still names both currencies, so the column reads down.
+        $this->assertStringContainsString('$0.00', $ageing['Not due yet']['total']);
+        $this->assertStringContainsString('₺0.00', $ageing['Not due yet']['total']);
+    }
+
+    /* The KDV export-of-services exemption ------------------------------------------ */
+
+    /**
+     * Exempt turnover and KDV-bearing turnover are two different numbers, and a
+     * return asks for both.
+     */
+    public function test_the_tax_summary_separates_exempt_turnover_from_kdv_bearing_turnover(): void
+    {
+        $customer = $this->foreignCustomer();
+
+        $this->liraInvoice($customer, '12000.00', dueDaysAgo: 5, number: 'KDV-STD', attributes: [
+            'subtotal' => '10000.00',
+            'tax_percent' => '20',
+            'tax_amount' => '2000.00',
+            'total' => '12000.00',
+        ]);
+
+        $this->exempt(
+            $this->liraInvoice($customer, '5000.00', dueDaysAgo: 5, number: 'KDV-302'),
+            '302',
+        );
+
+        $tax = Livewire::test('accounting::reports')->set('period', 'all')->viewData('tax');
+
+        $row = collect($tax['kdv'])->firstWhere('currency', Currencies::TRY);
+
+        $this->assertSame('₺10,000.00', $row['bearingNet'], 'Exempt turnover leaked into the KDV-bearing figure.');
+        $this->assertSame('₺5,000.00', $row['exemptNet']);
+        $this->assertSame(1, $row['exemptCount']);
+        $this->assertSame('₺15,000.00', $row['net']);
+        $this->assertSame('₺2,000.00', $row['charged']);
+
+        // Named by the code it was zero-rated under, which is what a return asks.
+        $this->assertCount(1, $tax['exemptRows']);
+        $this->assertSame('302', $tax['exemptRows'][0]['code']);
+        $this->assertSame(Currencies::TRY, $tax['exemptRows'][0]['currency']);
+        $this->assertSame('₺5,000.00', $tax['exemptRows'][0]['net']);
+        $this->assertSame(1, $tax['exemptRows'][0]['count']);
+    }
+
+    /**
+     * 🔴 An invoice that merely carries no KDV is not an exemption claim.
+     *
+     * Software must not decide the export-of-services question, and a report
+     * that counted every zero-tax invoice as zero-rated under 302 would be
+     * making exactly that claim on the operator's behalf — on a page they might
+     * hand to a mali müşavir.
+     */
+    public function test_an_invoice_at_zero_percent_is_not_reported_as_an_exemption_claim(): void
+    {
+        $customer = $this->foreignCustomer();
+
+        // Zero KDV, but nobody applied an exemption to it.
+        $this->liraInvoice($customer, '5000.00', dueDaysAgo: 5, number: 'KDV-ZERO');
+
+        $tax = Livewire::test('accounting::reports')->set('period', 'all')->viewData('tax');
+
+        $this->assertSame([], $tax['exemptRows'], 'A zero-rated invoice was reported as an exemption nobody claimed.');
+        $this->assertSame(0, $tax['exemptCount']);
+
+        $row = collect($tax['kdv'])->firstWhere('currency', Currencies::TRY);
+
+        // Still counted in the wider "at zero" column, which is a different question.
+        $this->assertSame(1, $row['zeroRated']);
+        $this->assertSame('₺0.00', $row['exemptNet']);
+    }
+
+    /** The page names the exemption and says out loud that Kargah did not apply it. */
+    public function test_the_page_names_the_exemption_without_reading_as_advice(): void
+    {
+        $customer = $this->foreignCustomer();
+
+        $this->exempt($this->liraInvoice($customer, '5000.00', dueDaysAgo: 5, number: 'KDV-PAGE'), '302');
+
+        $this->get('/accounting/reports?period=all')
+            ->assertOk()
+            ->assertSee('Zero-rated turnover, by exemption code')
+            ->assertSee('302')
+            ->assertSee('mali müşavir', escape: false);
+    }
+
     /* The page itself -------------------------------------------------------------- */
 
     public function test_the_tax_section_never_reads_as_advice(): void
@@ -535,6 +687,24 @@ class AccountingReportsTest extends TestCase
             'reporting_rate' => '1.000000',
             'reporting_amount' => $total,
         ]);
+    }
+
+    /**
+     * Apply a KDV exemption to an invoice, the way the builder does.
+     *
+     * `forceFill` because `kdv_exemption_code` is deliberately not mass
+     * assignable — nothing should be able to zero-rate an invoice by putting a
+     * key in an array.
+     */
+    private function exempt(Invoice $invoice, string $code): Invoice
+    {
+        $invoice->forceFill([
+            'kdv_exemption_code' => $code,
+            'tax_percent' => '0',
+            'tax_amount' => '0',
+        ])->save();
+
+        return $invoice->refresh();
     }
 
     private function expense(

@@ -297,8 +297,13 @@ class InvoicePagesTest extends TestCase
         $this->assertNotNull($issued->sent_at, 'Issuing did not mark the invoice as issued.');
         $this->assertSame('sent', $issued->status);
 
-        // 1500 TRY at the inverse of 34.1527 USD/TRY, frozen onto the row.
-        $this->assertSame(Currencies::USD, $issued->reporting_currency);
+        // Whatever `accounting.reporting_currency` says, frozen onto the row at
+        // issue. This asserted the literal `USD` while the edit page carried its
+        // own `REPORTING_CURRENCY` constant; that constant is gone and the
+        // currency is now a configured decision, so pinning a literal here would
+        // fail the moment the operator changes the setting — which is a thing
+        // they are meant to be able to do, not a regression.
+        $this->assertSame(InvoiceIssuer::reportingCurrency(), $issued->reporting_currency);
         $this->assertNotNull($issued->reporting_rate);
         $this->assertNotNull($issued->reporting_amount);
 

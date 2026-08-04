@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Sleep;
 use Modules\Accounting\Models\ExchangeRate;
 use Modules\Accounting\Services\ExchangeRates;
+use Modules\Accounting\Support\Currencies;
 use Tests\TestCase;
 
 /**
@@ -80,9 +81,23 @@ class ExchangeRateTest extends TestCase
         return '{"amount":1.0,"base":"USD","date":"2026-02-27","rates":{"TRY":34.1527}}';
     }
 
+    /**
+     * The dollar leg only.
+     *
+     * Deliberately still without a `try` key, because several tests below assert
+     * `->sole()` on the coingecko rows and the lira leg is a second row. That is
+     * not laziness: CoinGecko dropping the lira quote is a case the source has to
+     * survive, so a fixture without it is the one that proves the fallback.
+     */
     private function coinGeckoBody(string $usd = '0.999812'): string
     {
         return '{"tether":{"usd":'.$usd.',"last_updated_at":1772409600}}';
+    }
+
+    /** Both legs, which is what the live endpoint returns. */
+    private function coinGeckoBodyWithLira(string $usd = '0.999812', string $try = '34.1104'): string
+    {
+        return '{"tether":{"usd":'.$usd.',"try":'.$try.',"last_updated_at":1772409600}}';
     }
 
     /** @param  array<string, mixed>  $overrides */
@@ -379,6 +394,60 @@ class ExchangeRateTest extends TestCase
         $this->artisan('accounting:fetch-rates')->assertFailed();
 
         $this->assertSame(0, ExchangeRate::where('source', 'coingecko')->count());
+    }
+
+    /* The lira leg -------------------------------------------------------------- */
+
+    /**
+     * 🔴 A USDT invoice reporting in lira needs a rate that exists.
+     *
+     * `rateFor()` inverts a stored pair but will not chain two, so while
+     * CoinGecko stored only USDT/USD, `USDT→TRY` resolved to nothing and a
+     * stablecoin invoice froze null reporting figures — it fell out of every
+     * lira total with only a footnote. The fix is a directly quoted pair rather
+     * than a composite built inside `InvoiceIssuer`, so the frozen figure still
+     * names one rate from one source. See `CoinGecko`'s class docblock.
+     */
+    public function test_the_tether_lira_rate_is_stored_as_its_own_quote(): void
+    {
+        $this->fakeAll(['api.coingecko.com/*' => Http::response($this->coinGeckoBodyWithLira())]);
+
+        $this->artisan('accounting:fetch-rates')->assertSuccessful();
+
+        $lira = ExchangeRate::where('source', 'coingecko')
+            ->where('quote_currency', Currencies::TRY)
+            ->sole();
+
+        $this->assertSame(Currencies::USDT, $lira->base_currency);
+        $this->assertSame('34.110400', $lira->rate);
+
+        // The dollar leg is still stored — the peg check depends on it and must
+        // not be displaced by the addition.
+        $this->assertSame(
+            '0.999812',
+            ExchangeRate::where('source', 'coingecko')->where('quote_currency', Currencies::USD)->sole()->rate,
+        );
+
+        // The point of the whole change: the pair now resolves without chaining.
+        $this->assertSame('34.110400', app(ExchangeRates::class)->rateFor(Currencies::USDT, Currencies::TRY, '2026-03-02'));
+    }
+
+    /**
+     * The lira leg is wanted, not required.
+     *
+     * If CoinGecko stops quoting it the peg row must survive, because that is
+     * the reason this source existed first. A USDT invoice then goes back to
+     * freezing no lira figure and being counted out loud, which is the
+     * behaviour this change improves on rather than depends on.
+     */
+    public function test_a_missing_lira_quote_still_stores_the_dollar_peg(): void
+    {
+        $this->fakeAll(['api.coingecko.com/*' => Http::response($this->coinGeckoBody())]);
+
+        $this->artisan('accounting:fetch-rates')->assertSuccessful();
+
+        $this->assertSame('0.999812', ExchangeRate::where('source', 'coingecko')->sole()->rate);
+        $this->assertNull(app(ExchangeRates::class)->rateFor(Currencies::USDT, Currencies::TRY, '2026-03-02'));
     }
 
     /* The peg ------------------------------------------------------------------- */

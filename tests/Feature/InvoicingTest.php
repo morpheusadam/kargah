@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Schema;
+use Livewire\Livewire;
 use Modules\Accounting\Models\Invoice;
 use Modules\Accounting\Models\InvoiceLine;
 use Modules\Accounting\Models\LedgerEntry;
@@ -88,6 +89,332 @@ class InvoicingTest extends TestCase
     private function issuer(): InvoiceIssuer
     {
         return app(InvoiceIssuer::class);
+    }
+
+    /* The reporting currency ---------------------------------------------------- */
+
+    /**
+     * 🔴 The assertion that protects everything already in the book.
+     *
+     * `reporting_currency`, `reporting_rate` and `reporting_amount` are frozen
+     * on an invoice at issue and are the record of what was believed then.
+     * Changing the setting affects invoices issued *from now on* and nothing
+     * else: no backfill, no recompute. So a book that has run for a while is a
+     * mixed one — older invoices in dollars, newer in lira — and that is the
+     * normal state rather than a defect to be tidied away.
+     *
+     * If this ever fails, some well-meaning change is rewriting history, and
+     * every figure the owner has already filed moves with it.
+     */
+    public function test_an_invoice_issued_before_the_setting_changed_still_reports_in_the_currency_it_froze(): void
+    {
+        config(['accounting.reporting_currency' => Currencies::USD]);
+
+        $old = $this->issuer()->issue($this->draft(['number' => 'INV-8001']));
+
+        $this->assertSame(Currencies::USD, $old->reporting_currency);
+
+        $frozenRate = (string) $old->reporting_rate;
+        $frozenAmount = (string) $old->reporting_amount;
+
+        // The owner switches to declaring in lira and raises the next invoice.
+        config(['accounting.reporting_currency' => Currencies::TRY]);
+
+        $new = $this->issuer()->issue($this->draft(['number' => 'INV-8002']));
+
+        $this->assertSame(Currencies::TRY, $new->reporting_currency, 'The new invoice did not pick up the new setting.');
+
+        $reread = Invoice::query()->find($old->id);
+
+        $this->assertSame(
+            Currencies::USD,
+            $reread->reporting_currency,
+            'An already-issued invoice was moved to the new reporting currency. Nothing may backfill history.',
+        );
+        $this->assertSame($frozenRate, (string) $reread->reporting_rate);
+        $this->assertSame($frozenAmount, (string) $reread->reporting_amount);
+    }
+
+    /** Configuration decides it, not a default buried in a signature. */
+    public function test_the_reporting_currency_comes_from_configuration(): void
+    {
+        config(['accounting.reporting_currency' => Currencies::USD]);
+
+        $this->assertSame(
+            Currencies::USD,
+            $this->issuer()->issue($this->draft(['number' => 'INV-8003']))->reporting_currency,
+        );
+
+        config(['accounting.reporting_currency' => Currencies::TRY]);
+
+        $this->assertSame(
+            Currencies::TRY,
+            $this->issuer()->issue($this->draft(['number' => 'INV-8004']))->reporting_currency,
+        );
+    }
+
+    /** The owner is in Turkey and declares in lira, so that is what Kargah ships. */
+    public function test_the_shipped_default_reporting_currency_is_lira(): void
+    {
+        $this->assertSame(Currencies::TRY, config('accounting.reporting_currency'));
+        $this->assertSame(Currencies::TRY, InvoiceIssuer::reportingCurrency());
+    }
+
+    /**
+     * A mistyped setting must not cost the owner an invoice.
+     *
+     * Refusing to issue because a config line says "TL" instead of "TRY" would
+     * be a far worse failure than freezing the shipped default, so it falls
+     * back rather than throwing.
+     */
+    public function test_a_setting_that_is_not_a_supported_currency_falls_back_rather_than_throwing(): void
+    {
+        config(['accounting.reporting_currency' => 'TL']);
+
+        $this->assertSame(Currencies::TRY, InvoiceIssuer::reportingCurrency());
+        $this->assertSame(
+            Currencies::TRY,
+            $this->issuer()->issue($this->draft(['number' => 'INV-8005']))->reporting_currency,
+        );
+    }
+
+    /**
+     * 🔴 The gap lira reporting opens, pinned so nobody discovers it in
+     * production.
+     *
+     * `accounting:fetch-rates` only ever stores USD/TRY and USDT/USD, and
+     * `rateFor()` inverts a stored pair but will not chain two of them — so
+     * there is no USDT→TRY rate and a stablecoin invoice freezes null reporting
+     * figures. What matters is that it is still *issued*: an invoice that
+     * refused to exist because a rate was missing would be the serious
+     * regression, and a null figure the page counts out loud is not.
+     */
+    public function test_a_tether_invoice_reporting_in_lira_is_issued_without_a_figure_rather_than_refused(): void
+    {
+        config(['accounting.reporting_currency' => Currencies::TRY]);
+
+        $invoice = $this->issuer()->issue(
+            $this->draft(['currency' => Currencies::USDT, 'number' => 'INV-8006']),
+        );
+
+        $this->assertNotNull($invoice->sent_at, 'A missing USDT/TRY rate stopped the invoice being issued.');
+        $this->assertSame(Currencies::TRY, $invoice->reporting_currency);
+        $this->assertNull($invoice->reporting_rate);
+        $this->assertNull($invoice->reporting_amount);
+    }
+
+    /**
+     * The two lira figures answer two different questions and stay two figures.
+     *
+     * With lira as the reporting currency a domestic Turkish invoice now
+     * computes a lira amount twice — once for the owner's own books at the
+     * market rate, once for the document at the TCMB *buying* rate Turkish tax
+     * procedure names. They are not duplication: they come from different rates
+     * and only one of them is legally pinned. Merging them would let a
+     * Frankfurter mid-market rate onto a document where the law names TCMB's.
+     */
+    public function test_the_reporting_figure_and_the_legal_lira_figure_are_two_different_numbers(): void
+    {
+        config(['accounting.reporting_currency' => Currencies::TRY]);
+
+        $invoice = $this->issuer()->issue(
+            $this->draft(['company_id' => $this->turkish->id, 'number' => 'INV-8007']),
+        );
+
+        // The market rate, for the books.
+        $this->assertSame('34.152700', (string) $invoice->reporting_rate);
+        $this->assertSame('51229.050000', (string) $invoice->reporting_amount);
+
+        // The TCMB buying rate, for the document. A different rate, from a
+        // different source, recorded with its own date.
+        $this->assertSame('34.081500', (string) $invoice->issue_rate_to_try);
+        $this->assertSame('tcmb_evds', $invoice->issue_rate_source);
+        $this->assertSame('51122.250000', (string) $invoice->try_equivalent);
+
+        $this->assertNotSame(
+            (string) $invoice->reporting_amount,
+            (string) $invoice->try_equivalent,
+            'The two lira figures collapsed into one, which loses the rate type the law pins.',
+        );
+    }
+
+    /* The KDV export-of-services exemption ---------------------------------------- */
+
+    /**
+     * 🔴 Off unless somebody turned it on. Being abroad is not consent.
+     *
+     * The export-of-services zero rate needs four cumulative conditions to hold
+     * and it is a judgement the freelancer makes per invoice. An invoice to a
+     * foreign client with nothing set carries the KDV it was raised at, because
+     * software inferring the exemption is software answering a tax question on
+     * somebody else's liability.
+     */
+    public function test_an_invoice_to_a_foreign_client_still_carries_kdv_unless_the_exemption_is_applied(): void
+    {
+        $invoice = $this->issuer()->issue(
+            $this->draft(['tax_percent' => '20', 'number' => 'INV-8010']),
+        );
+
+        $this->assertFalse($this->foreign->is_domestic);
+        $this->assertNull($invoice->kdv_exemption_code, 'A zero-rating was inferred from the client being abroad.');
+        $this->assertSame('20.000000', (string) $invoice->tax_percent);
+        $this->assertSame('300.000000', (string) $invoice->tax_amount);
+        $this->assertSame('1800.000000', (string) $invoice->total);
+    }
+
+    /** With the exemption applied, KDV is zero and every total agrees with it. */
+    public function test_an_exempt_invoice_carries_no_kdv_and_its_totals_agree(): void
+    {
+        $draft = $this->draft(['tax_percent' => '20', 'number' => 'INV-8011']);
+
+        // As the invoice builder writes it once a person has confirmed each
+        // condition. `forceFill` because the column is not mass-assignable.
+        $draft->forceFill(['kdv_exemption_code' => '302'])->save();
+
+        $invoice = $this->issuer()->issue($draft);
+
+        $this->assertSame('302', $invoice->kdv_exemption_code);
+        $this->assertSame('1500.000000', (string) $invoice->subtotal);
+        $this->assertSame('0.000000', (string) $invoice->tax_amount);
+        $this->assertSame(
+            '0.000000',
+            (string) $invoice->tax_percent,
+            'A zero-rated invoice kept a 20% rate that the document flatly contradicts.',
+        );
+        $this->assertSame('1500.000000', (string) $invoice->total);
+    }
+
+    /** The artefact a tax office reads has to say which exemption, and its code. */
+    public function test_the_document_states_the_exemption_and_its_code(): void
+    {
+        $draft = $this->draft(['tax_percent' => '20', 'number' => 'INV-8012']);
+        $draft->forceFill(['kdv_exemption_code' => '302'])->save();
+
+        $invoice = $this->issuer()->issue($draft);
+
+        $html = view('accounting::documents.invoice', app(InvoiceDocument::class)->data($invoice->fresh()))->render();
+
+        $this->assertStringContainsString('302', $html);
+        $this->assertStringContainsString(
+            (string) config('accounting.tax.kdv_exemptions.302.label'),
+            $html,
+            'The document names a code with no reason beside it.',
+        );
+    }
+
+    /**
+     * The control is not reachable where the exemption plainly cannot apply.
+     *
+     * Condition two is that the client's residence or business centre is
+     * abroad. For a domestic Turkish buyer it fails outright, and for an
+     * invoice billed to a person rather than a company there is no evidence
+     * either way — so in both cases the question is not asked at all. A
+     * disabled control is an invitation to look for the way round it.
+     */
+    public function test_the_exemption_is_not_offered_where_it_plainly_cannot_apply(): void
+    {
+        $domestic = Livewire::test('accounting::invoice-edit', [
+            'invoice' => (string) $this->draft(['company_id' => $this->turkish->id, 'number' => 'INV-8020'])->id,
+        ]);
+
+        $this->assertSame([], $domestic->viewData('exemptions'));
+        $domestic->assertDontSee('Apply the zero rate');
+
+        // Billed to the person, not a company. `draft()` falls back to the
+        // foreign company when the key is null, so this clears it afterwards.
+        $orphan = $this->draft(['number' => 'INV-8021']);
+        $orphan->forceFill(['company_id' => null])->save();
+
+        $noCompany = Livewire::test('accounting::invoice-edit', ['invoice' => (string) $orphan->id]);
+
+        $this->assertSame([], $noCompany->viewData('exemptions'));
+    }
+
+    /**
+     * 🔴 Applying it is something a person did, one condition at a time.
+     *
+     * Three of the four confirmed is not confirmation, and the invoice keeps
+     * its KDV until every one has been ticked and the exemption applied.
+     */
+    public function test_applying_the_exemption_needs_every_condition_confirmed(): void
+    {
+        $invoice = $this->draft(['tax_percent' => '20', 'number' => 'INV-8022']);
+
+        $page = Livewire::test('accounting::invoice-edit', ['invoice' => (string) $invoice->id]);
+
+        $this->assertNotSame([], $page->viewData('exemptions'), 'A foreign buyer was not offered the question at all.');
+        $this->assertNull($page->viewData('appliedExemption'), 'The exemption did not start off.');
+
+        $page->set('kdvConfirmed.302.0', true)
+            ->set('kdvConfirmed.302.1', true)
+            ->set('kdvConfirmed.302.2', true)
+            ->call('applyExemption', '302');
+
+        $this->assertNull($page->viewData('appliedExemption'), 'Three of four conditions was enough to zero-rate it.');
+
+        $page->set('kdvConfirmed.302.3', true)->call('applyExemption', '302');
+
+        $this->assertSame('302', $page->viewData('appliedExemption'));
+
+        $page->call('save');
+
+        $saved = $invoice->fresh();
+
+        $this->assertSame('302', $saved->kdv_exemption_code);
+        $this->assertSame('0.000000', (string) $saved->tax_percent);
+        $this->assertSame('0.000000', (string) $saved->tax_amount);
+        $this->assertSame('1500.000000', (string) $saved->total);
+    }
+
+    /**
+     * The checkboxes are a user interface; the server is the authority.
+     *
+     * Livewire state arrives from the browser, so a payload that simply asserts
+     * the code without any of the confirmations behind it writes nothing.
+     */
+    public function test_an_exemption_code_with_no_confirmations_behind_it_is_not_written(): void
+    {
+        $invoice = $this->draft(['tax_percent' => '20', 'number' => 'INV-8023']);
+
+        Livewire::test('accounting::invoice-edit', ['invoice' => (string) $invoice->id])
+            ->set('kdvExemptionCode', '302')
+            ->call('save');
+
+        $saved = $invoice->fresh();
+
+        $this->assertNull($saved->kdv_exemption_code, 'An unconfirmed exemption reached the column.');
+        $this->assertSame('300.000000', (string) $saved->tax_amount, 'KDV was dropped without an exemption behind it.');
+    }
+
+    /** Withdrawing a confirmation withdraws the exemption, rather than leaving a stale one applied. */
+    public function test_unticking_a_condition_withdraws_the_exemption(): void
+    {
+        $invoice = $this->draft(['tax_percent' => '20', 'number' => 'INV-8024']);
+
+        $page = Livewire::test('accounting::invoice-edit', ['invoice' => (string) $invoice->id])
+            ->set('kdvConfirmed.302.0', true)
+            ->set('kdvConfirmed.302.1', true)
+            ->set('kdvConfirmed.302.2', true)
+            ->set('kdvConfirmed.302.3', true)
+            ->call('applyExemption', '302');
+
+        $this->assertSame('302', $page->viewData('appliedExemption'));
+
+        $page->set('kdvConfirmed.302.2', false)->call('save');
+
+        $this->assertNull($page->viewData('appliedExemption'));
+        $this->assertNull($invoice->fresh()->kdv_exemption_code);
+    }
+
+    /** An ordinary invoice says nothing about exemptions, because none applies. */
+    public function test_the_document_of_an_ordinary_invoice_claims_no_exemption(): void
+    {
+        $invoice = $this->issuer()->issue($this->draft(['tax_percent' => '20', 'number' => 'INV-8013']));
+
+        $html = view('accounting::documents.invoice', app(InvoiceDocument::class)->data($invoice->fresh()))->render();
+
+        $this->assertStringNotContainsString('KDV exemption', $html);
+        $this->assertStringNotContainsString('302', $html);
     }
 
     /* The headline criterion ------------------------------------------------- */

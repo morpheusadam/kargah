@@ -30,6 +30,13 @@ Route::middleware('auth')->prefix('accounting')->name('accounting.')->group(func
 
     Route::livewire('/recurring', 'accounting::recurring')->name('recurring');
 
+    // Quotes. Their own section rather than a tab on the invoice book: an
+    // estimate is a different document with its own numbering, and nothing here
+    // may touch the invoice sequence.
+    Route::livewire('/estimates', 'accounting::estimates')->name('estimates');
+    Route::livewire('/estimates/create', 'accounting::estimate-edit')->name('estimate-create');
+    Route::livewire('/estimates/{estimate}/edit', 'accounting::estimate-edit')->name('estimate-edit');
+
     Route::livewire('/expenses', 'accounting::expenses')->name('expenses');
     Route::livewire('/expenses/create', 'accounting::expense-edit')->name('expense-create');
     Route::livewire('/expenses/{expense}/edit', 'accounting::expense-edit')->name('expense-edit');

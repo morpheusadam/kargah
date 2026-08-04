@@ -5,6 +5,7 @@ use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schedule;
 use Modules\Accounting\Console\FetchRates;
+use Modules\Accounting\Console\GenerateRecurringExpenses;
 use Modules\Accounting\Console\GenerateRecurringInvoices;
 use Modules\Data\Console\SyncRepos;
 use Modules\Data\Console\TakeBackup;
@@ -47,6 +48,30 @@ Schedule::command('accounting:fetch-rates')->dailyAt('09:00')->withoutOverlappin
 ConsoleApplication::starting(fn (ConsoleApplication $artisan) => $artisan->resolve(GenerateRecurringInvoices::class));
 
 Schedule::command('accounting:generate-recurring')->dailyAt('09:30')->withoutOverlapping();
+
+/*
+ * Recurring expenses — hosting, domains, subscriptions, the accountant's fee.
+ *
+ * 🔴 **After the rates, and that ordering is load-bearing rather than tidy.**
+ * Unlike a recurring invoice, which is raised as a draft and freezes nothing,
+ * every expense this records freezes its own reporting rate on the spot. Run it
+ * before `accounting:fetch-rates` and a non-USD cost recorded on a fresh day
+ * finds the most recent rate is yesterday's — or, ten days into an outage, finds
+ * none at all and is written with no reporting figure. Neither is wrong, and
+ * both are avoidable by running second.
+ *
+ * Five minutes after the invoices rather than alongside them: the two jobs touch
+ * different tables and could not deadlock, but a single-threaded shared host
+ * runs them one after another anyway and a stagger makes a slow run legible in
+ * a log rather than interleaved with another.
+ *
+ * Re-running is harmless: the job claims an occurrence with a conditional update
+ * on `next_run_on`, in the same transaction as the expense it writes, so a
+ * second run — or a second process — finds nothing left to claim.
+ */
+ConsoleApplication::starting(fn (ConsoleApplication $artisan) => $artisan->resolve(GenerateRecurringExpenses::class));
+
+Schedule::command('accounting:generate-recurring-expenses')->dailyAt('09:35')->withoutOverlapping();
 
 /*
  * Reading mail.

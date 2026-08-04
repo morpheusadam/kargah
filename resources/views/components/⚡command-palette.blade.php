@@ -38,6 +38,7 @@ new class extends Component
             ['group' => 'Go to', 'label' => 'Campaigns',    'icon' => 'ki-paper-plane',         'route' => 'mail.campaigns',       'keywords' => 'bulk newsletter blast'],
             ['group' => 'Go to', 'label' => 'Contacts',     'icon' => 'ki-people',       'route' => 'mail.contacts',        'keywords' => 'subscribers lists'],
             ['group' => 'Go to', 'label' => 'Providers',    'icon' => 'ki-rocket',       'route' => 'mail.providers',       'keywords' => 'smtp brevo resend ses quota'],
+            ['group' => 'Go to', 'label' => 'Estimates',    'icon' => 'ki-document',     'route' => 'accounting.estimates', 'keywords' => 'quote quotes proposal bid'],
             ['group' => 'Go to', 'label' => 'Invoices',     'icon' => 'ki-dollar',       'route' => 'accounting.invoices',  'keywords' => 'billing money paid'],
             ['group' => 'Go to', 'label' => 'Expenses',     'icon' => 'ki-wallet',       'route' => 'accounting.expenses',  'keywords' => 'costs spending receipts'],
             ['group' => 'Go to', 'label' => 'Clients',      'icon' => 'ki-profile-circle', 'route' => 'accounting.clients',   'keywords' => 'customers companies'],

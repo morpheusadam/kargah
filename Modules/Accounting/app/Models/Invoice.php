@@ -30,6 +30,21 @@ class Invoice extends Model
     use LogsActivity;
     use SoftDeletes;
 
+    /**
+     * 🔴 `kdv_exemption_code` is deliberately **not** here.
+     *
+     * Zero-rating an invoice is a declaration that four legal conditions hold,
+     * made by a person who ticked them one at a time in the builder — it is not
+     * a value that should arrive by putting a key in an array that came from
+     * somewhere else. `⚡invoice-edit` writes it with `forceFill()` after
+     * re-deriving the whole decision server-side, and `InvoiceIssuer` reads it.
+     *
+     * The trap this leaves is real and is the reason for this note:
+     * `Invoice::query()->create(['kdv_exemption_code' => '302'])` silently drops
+     * it and produces an invoice carrying KDV that the caller believes is
+     * exempt. If you are writing a fixture, use `forceFill()` or
+     * `forceCreate()`.
+     */
     protected $fillable = [
         'number', 'company_id', 'customer_id', 'status', 'currency',
         'subtotal', 'tax_percent', 'tax_amount', 'total',

@@ -34,6 +34,22 @@
 </head>
 <body>
 
+@php
+    /**
+     * The KDV exemption this invoice was raised under, if a person applied one.
+     *
+     * Read straight off the row rather than passed in, and null unless somebody
+     * confirmed every condition on the invoice builder — Kargah never infers a
+     * zero-rating from the client being abroad. The label comes from
+     * `config/accounting.php` so the wording a tax office reads and the wording
+     * the operator confirmed are the same string.
+     */
+    $exemptionCode = $invoice->kdv_exemption_code ?: null;
+    $exemptionLabel = $exemptionCode === null
+        ? null
+        : config('accounting.tax.kdv_exemptions.'.$exemptionCode.'.label');
+@endphp
+
 <table class="head">
     <tr>
         <td style="width: 55%">
@@ -99,7 +115,15 @@
         <td class="muted">Subtotal</td>
         <td class="num">{{ $subtotal }}</td>
     </tr>
-    @if ((string) $invoice->tax_percent !== '0.000000')
+    @if ($exemptionCode)
+        {{-- Zero-rated. The line is stated rather than omitted: an invoice with
+             no tax line at all reads as an oversight, and the code is the thing
+             a tax office looks for. --}}
+        <tr>
+            <td class="muted">KDV 0%</td>
+            <td class="num">{{ $taxAmount }}</td>
+        </tr>
+    @elseif ((string) $invoice->tax_percent !== '0.000000')
         <tr>
             <td class="muted">Tax {{ rtrim(rtrim((string) $invoice->tax_percent, '0'), '.') }}%</td>
             <td class="num">{{ $taxAmount }}</td>
@@ -116,6 +140,18 @@
     <dl>
         <dt>Invoice currency</dt>
         <dd>{{ $invoice->currency }}</dd>
+
+        @if ($exemptionCode)
+            {{-- The exemption belongs on the document above all else: this page
+                 is the artefact a tax office reads, and a zero KDV line with no
+                 stated reason is the one thing it will ask about. --}}
+            <dt>KDV exemption</dt>
+            <dd>
+                Zero-rated under exemption code {{ $exemptionCode }}@if ($exemptionLabel) — {{ $exemptionLabel }}@endif.
+                The issuer confirmed that each of the exemption's conditions applied to this invoice when it was
+                raised.
+            </dd>
+        @endif
 
         @if ($reporting)
             <dt>Converted for reporting</dt>

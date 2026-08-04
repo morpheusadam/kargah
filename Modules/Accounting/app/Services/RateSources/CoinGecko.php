@@ -8,12 +8,27 @@ use Modules\Accounting\Services\ExchangeRates;
 use Modules\Accounting\Support\Currencies;
 
 /**
- * USDT/USD, volume-weighted across exchanges.
+ * USDT priced in dollars **and** in lira, volume-weighted across exchanges.
  *
- * A tether is supposed to be a dollar and usually is, so this looks like a
+ * A tether is supposed to be a dollar and usually is, so USDT/USD looks like a
  * pointless row until the day it is not. Storing it every day is what makes the
  * peg check possible, and a depeg is something the owner needs to know about
  * before invoicing in USDT rather than after being paid in it.
+ *
+ * 🔴 **USDT/TRY is fetched directly rather than derived, and that is the whole
+ * point of it being here.** `ExchangeRates::rateFor()` inverts a stored pair but
+ * will not chain two, so while this source stored only USDT/USD, a USDT invoice
+ * reporting in lira froze **null** figures — it dropped out of every lira total
+ * with nothing but a footnote to say so. The tempting fix is to multiply
+ * USDT/USD by USD/TRY inside `InvoiceIssuer`, and `InvoiceIssuer::reportingFigures()`
+ * argues at length against exactly that: a composite of two rates from two
+ * providers is a number with no single source, on a figure whose entire job is to
+ * be defensible to somebody who did not compute it.
+ *
+ * Asking CoinGecko for the lira price costs nothing — `vs_currencies` is a list
+ * and this is the same request — and what comes back is one quote, from one
+ * source, on one day, which `rateFor()` then resolves directly. The rule the
+ * module keeps is intact: **every frozen figure names the rate that produced it.**
  *
  * The public endpoint needs no key. A free demo key raises the per-minute limit
  * and is used when one is configured; Kargah calls this once a day, so neither
@@ -37,7 +52,7 @@ class CoinGecko extends HttpRateSource
     {
         $body = $this->get(self::ENDPOINT, [
             'ids' => self::TETHER_ID,
-            'vs_currencies' => strtolower(Currencies::USD),
+            'vs_currencies' => strtolower(Currencies::USD).','.strtolower(Currencies::TRY),
             'include_last_updated_at' => 'true',
         ]);
 
@@ -47,9 +62,25 @@ class CoinGecko extends HttpRateSource
             throw RateSourceFailed::malformed($this->name(), 'the response carried no USDT price');
         }
 
-        return [
-            $this->quote(Currencies::USDT, Currencies::USD, $rate, ExchangeRates::MARKET, $this->asOf($body)),
+        $asOf = $this->asOf($body);
+
+        $quotes = [
+            $this->quote(Currencies::USDT, Currencies::USD, $rate, ExchangeRates::MARKET, $asOf),
         ];
+
+        // The lira leg is wanted but not required. If CoinGecko ever stops
+        // quoting it, the dollar peg check — the reason this source existed
+        // first — must keep working, and a USDT invoice goes back to freezing
+        // no lira figure and being counted out loud. That is the behaviour this
+        // change improves on, so falling back to it is safe; throwing here
+        // would take the peg row down with it.
+        $lira = $body[self::TETHER_ID]['try'] ?? null;
+
+        if ($lira !== null) {
+            $quotes[] = $this->quote(Currencies::USDT, Currencies::TRY, $lira, ExchangeRates::MARKET, $asOf);
+        }
+
+        return $quotes;
     }
 
     protected function request(): PendingRequest

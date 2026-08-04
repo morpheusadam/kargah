@@ -28,6 +28,7 @@
             'icon'  => 'ki-dollar',
             'match' => 'accounting.*',
             'items' => [
+                ['label' => 'Estimates', 'route' => 'accounting.estimates', 'match' => ['accounting.estimates', 'accounting.estimate-*']],
                 ['label' => 'Invoices',  'route' => 'accounting.invoices', 'match' => ['accounting.invoices', 'accounting.invoice-*']],
                 ['label' => 'Recurring', 'route' => 'accounting.recurring'],
                 ['label' => 'Expenses',  'route' => 'accounting.expenses', 'match' => ['accounting.expenses', 'accounting.expense-*']],

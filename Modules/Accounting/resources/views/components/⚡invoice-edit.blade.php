@@ -40,20 +40,24 @@ use Modules\Core\Models\Customer;
  * **A missing invoice is a page, not a 404.** The route parameter is resolved
  * by hand rather than by model binding, so a link to an invoice that has since
  * been deleted explains itself instead of dead-ending.
+ *
+ * 🔴 **The KDV zero-rating is a decision this page records, never one it
+ * makes.** An invoice to a foreign client *may* qualify as an export of
+ * services under exemption code 302, but only if four cumulative conditions all
+ * hold, and whether they do is a judgement for the operator and their mali
+ * müşavir. So the control appears only where it could plausibly apply — a buyer
+ * that is not a domestic Turkish company — it starts off, every condition has
+ * to be confirmed one at a time before it can be applied, and
+ * `exemptionCode()` re-checks all of that on the server before anything is
+ * written. Inferring "the client is abroad, therefore zero-rated" would be
+ * software answering a tax question on somebody's behalf, and getting it wrong
+ * is the operator's liability, not Kargah's.
  */
 new
 #[Title('Invoice builder — Kargah')]
 class extends Component
 {
     use InteractsWithToasts;
-
-    /**
-     * The owner's profit-and-loss currency.
-     *
-     * Settings will own this. Until they do it is stated in one place rather
-     * than assumed in several, and it is the same default `InvoiceIssuer` uses.
-     */
-    private const REPORTING_CURRENCY = Currencies::USD;
 
     /** How long a new invoice gives the client to pay. */
     private const PAYMENT_DAYS = 30;
@@ -79,6 +83,22 @@ class extends Component
     /** A percentage, as a decimal string: '20' is twenty per cent. */
     public string $taxPercent = '0';
 
+    /**
+     * The KDV exemption the operator has applied, or null for the standard rate.
+     *
+     * Null by default and null on every new draft. Nothing sets this except a
+     * person clicking through the checklist below.
+     */
+    public ?string $kdvExemptionCode = null;
+
+    /**
+     * Which of an exemption's conditions the operator has confirmed, by code
+     * then by the condition's position in the configured list.
+     *
+     * @var array<string, array<int, bool>>
+     */
+    public array $kdvConfirmed = [];
+
     public string $notes = '';
 
     public string $terms = '';
@@ -95,6 +115,10 @@ class extends Component
     public array $items = [];
 
     private ?Invoice $resolved = null;
+
+    private ?Company $companyCache = null;
+
+    private ?string $companyCacheKey = null;
 
     public function mount(?string $invoice = null): void
     {
@@ -138,6 +162,19 @@ class extends Component
         $this->taxPercent = $this->trimZeros((string) $invoice->tax_percent);
         $this->notes = (string) $invoice->notes;
         $this->terms = (string) $invoice->terms;
+
+        // A stored code is the record that somebody confirmed every condition,
+        // so reopening the draft shows them confirmed rather than making the
+        // operator tick through a decision they already made.
+        $this->kdvExemptionCode = $invoice->kdv_exemption_code ?: null;
+
+        if ($this->kdvExemptionCode !== null) {
+            $this->kdvConfirmed[$this->kdvExemptionCode] = array_fill(
+                0,
+                count($this->conditionsFor($this->kdvExemptionCode)),
+                true,
+            );
+        }
 
         $this->items = $invoice->lines->map(fn (InvoiceLine $line): array => [
             'id' => (int) $line->id,
@@ -193,6 +230,175 @@ class extends Component
         return $this->invoice()?->isIssued() ?? false;
     }
 
+    /* KDV exemption ------------------------------------------------------------ */
+
+    /**
+     * The buyer, when one has been named.
+     *
+     * Read fresh from the selected id rather than from the loaded invoice, so
+     * changing the company on the form changes what the page offers on the same
+     * keystroke instead of on the next save.
+     */
+    private function selectedCompany(): ?Company
+    {
+        if ($this->companyId === null || $this->companyId === '') {
+            return null;
+        }
+
+        // Memoised per request and keyed on the id, because the totals preview
+        // asks whether the exemption applies on every keystroke and one query
+        // per keystroke per line is not a preview, it is a load test.
+        if ($this->companyCacheKey !== $this->companyId) {
+            $this->companyCacheKey = $this->companyId;
+            $this->companyCache = Company::query()->find((int) $this->companyId);
+        }
+
+        return $this->companyCache;
+    }
+
+    /**
+     * The exemptions this invoice could plausibly be raised under.
+     *
+     * 🔴 Empty unless the buyer is a company that is **not** domestic. Condition
+     * two of the export-of-services exemption is that the client's residence or
+     * business centre is abroad, and that is the one condition Kargah can read
+     * off a record rather than having to ask. Where it plainly fails — a
+     * domestic Turkish buyer — the control is not rendered at all, because a
+     * disabled control is an invitation to look for the way round it. Where
+     * Kargah has no company at all it also stays hidden: "billed to a person,
+     * not a company" is not evidence of anything, and offering a zero-rating on
+     * no evidence is the failure this whole design exists to prevent.
+     *
+     * Kargah still decides nothing. This narrows *where the question may be
+     * asked*; the answer is four confirmations by a person.
+     *
+     * @return array<string, array{label: string, conditions: list<string>}>
+     */
+    public function offeredExemptions(): array
+    {
+        $company = $this->selectedCompany();
+
+        if ($company === null || $company->is_domestic) {
+            return [];
+        }
+
+        $configured = config('accounting.tax.kdv_exemptions');
+
+        return is_array($configured) ? $configured : [];
+    }
+
+    /** @return list<string> */
+    private function conditionsFor(string $code): array
+    {
+        $configured = config('accounting.tax.kdv_exemptions.'.$code.'.conditions');
+
+        return is_array($configured) ? array_values($configured) : [];
+    }
+
+    /** Has this condition been confirmed? Used by the template, one checkbox at a time. */
+    public function confirmed(string $code, int $index): bool
+    {
+        return (bool) ($this->kdvConfirmed[$code][$index] ?? false);
+    }
+
+    /** Every condition, one by one. Anything less and the exemption cannot be applied. */
+    public function allConfirmed(string $code): bool
+    {
+        $conditions = $this->conditionsFor($code);
+
+        if ($conditions === []) {
+            return false;
+        }
+
+        foreach (array_keys($conditions) as $index) {
+            if (! $this->confirmed($code, $index)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * The code that will actually be written, re-derived from scratch.
+     *
+     * 🔴 The single authority, and the reason the checkboxes are only a user
+     * interface. Livewire state arrives from the browser and can be tampered
+     * with; this re-reads the configured codes, re-reads whether the buyer is
+     * foreign, and re-counts the confirmations, so the only way to get '302'
+     * into the column is for all of it to be true on the server at the moment
+     * of the write. Anything else is null, which means the standard rate.
+     */
+    private function exemptionCode(): ?string
+    {
+        if ($this->kdvExemptionCode === null) {
+            return null;
+        }
+
+        if (! array_key_exists($this->kdvExemptionCode, $this->offeredExemptions())) {
+            return null;
+        }
+
+        return $this->allConfirmed($this->kdvExemptionCode) ? $this->kdvExemptionCode : null;
+    }
+
+    public function applyExemption(string $code): void
+    {
+        if ($this->refuseWhenIssued()) {
+            return;
+        }
+
+        if (! array_key_exists($code, $this->offeredExemptions())) {
+            $this->toastError(
+                'That exemption does not apply here',
+                'The zero rate is only offered when the invoice is billed to a company outside Turkey.',
+            );
+
+            return;
+        }
+
+        if (! $this->allConfirmed($code)) {
+            $this->toastError(
+                'Confirm each condition first',
+                'The exemption applies only if all four hold at once. Tick each one you have confirmed.',
+            );
+
+            return;
+        }
+
+        $this->kdvExemptionCode = $code;
+
+        // Zero-rated means the rate is zero, not that the amount happens to be.
+        // Leaving 20 in the box would put a figure on screen that the document
+        // contradicts, and the document is what a tax office reads.
+        $this->taxPercent = '0';
+    }
+
+    public function removeExemption(): void
+    {
+        if ($this->refuseWhenIssued()) {
+            return;
+        }
+
+        $this->kdvExemptionCode = null;
+    }
+
+    /** Unticking a condition withdraws the exemption, rather than leaving a stale one applied. */
+    public function updatedKdvConfirmed(): void
+    {
+        if ($this->kdvExemptionCode !== null && ! $this->allConfirmed($this->kdvExemptionCode)) {
+            $this->kdvExemptionCode = null;
+        }
+    }
+
+    /** Changing the buyer can take the question away entirely. */
+    public function updatedCompanyId(): void
+    {
+        if ($this->kdvExemptionCode !== null && ! array_key_exists($this->kdvExemptionCode, $this->offeredExemptions())) {
+            $this->kdvExemptionCode = null;
+        }
+    }
+
     /* Money ------------------------------------------------------------------- */
 
     /**
@@ -244,9 +450,15 @@ class extends Component
         );
     }
 
+    /** The rate that will actually be stored: zero whenever an exemption holds. */
+    private function effectiveTaxPercent(): string
+    {
+        return $this->exemptionCode() === null ? $this->decimal($this->taxPercent) : '0';
+    }
+
     private function taxAmount(): BrickMoney
     {
-        return Money::percentageOf($this->subtotal(), $this->decimal($this->taxPercent));
+        return Money::percentageOf($this->subtotal(), $this->effectiveTaxPercent());
     }
 
     private function total(): BrickMoney
@@ -278,6 +490,11 @@ class extends Component
                 'total' => $this->show($this->total()),
             ],
             'storedLines' => $invoice?->lines ?? collect(),
+
+            'exemptions' => $this->offeredExemptions(),
+            'appliedExemption' => $this->exemptionCode(),
+            'kdvPercent' => (string) config('accounting.tax.kdv_percent', '20'),
+            'reportingCurrency' => InvoiceIssuer::reportingCurrency(),
         ];
     }
 
@@ -420,7 +637,11 @@ class extends Component
                 'company_id' => $this->companyId === null || $this->companyId === '' ? null : (int) $this->companyId,
                 'status' => 'draft',
                 'currency' => $this->safeCurrency(),
-                'tax_percent' => $this->decimal($this->taxPercent),
+                // `exemptionCode()` re-derives the zero-rating on the server;
+                // `effectiveTaxPercent()` is what it implies. Written together
+                // so the column and the rate can never disagree.
+                'kdv_exemption_code' => $this->exemptionCode(),
+                'tax_percent' => $this->effectiveTaxPercent(),
                 'issued_on' => $this->issuedOn,
                 'due_on' => $this->dueOn,
                 'notes' => $this->notes === '' ? null : $this->notes,
@@ -509,7 +730,12 @@ class extends Component
         $invoice = $this->persist();
 
         try {
-            $issued = app(InvoiceIssuer::class)->issue($invoice, self::REPORTING_CURRENCY);
+            // No currency argument: the owner's reporting currency is a setting
+            // in `config/accounting.php`, not something this page decides. It
+            // used to pass a constant of USD, which meant every invoice ever
+            // issued froze a dollar figure whatever the owner actually declares
+            // in — and the lira reports were near-empty as a result.
+            $issued = app(InvoiceIssuer::class)->issue($invoice);
         } catch (\DomainException $e) {
             $this->resolved = null;
 
@@ -871,6 +1097,100 @@ class extends Component
         <div class="grid grid-cols-12 gap-5 items-start">
 
             <div class="col-span-12 lg:col-span-7 flex flex-col gap-5">
+
+                {{--
+                    The KDV zero-rating.
+
+                    Rendered only where it could plausibly apply — a buyer that
+                    is a company outside Turkey — because a control that is
+                    always there teaches people to reach for it. The conditions
+                    are the control, not fine print beside it: nothing can be
+                    applied until each one has been confirmed on its own, and
+                    `exemptionCode()` re-checks every part of that on the server
+                    before the column is written.
+                --}}
+                @if ($exemptions !== [])
+                    <div class="kt-card">
+                        <div class="kt-card-header">
+                            <h3 class="kt-card-title">KDV — zero-rating an export of services</h3>
+                            <span class="kt-badge kt-badge-sm {{ $appliedExemption ? 'kt-badge-success' : 'kt-badge-outline' }}">
+                                {{ $appliedExemption ? 'Applied — code '.$appliedExemption : 'Not applied' }}
+                            </span>
+                        </div>
+                        <div class="kt-card-content p-5 flex flex-col gap-5">
+                            @foreach ($exemptions as $code => $exemption)
+                                <div class="flex flex-col gap-4" wire:key="kdv-{{ $code }}">
+
+                                    <p class="text-sm text-secondary-foreground leading-relaxed">
+                                        This invoice is billed to a company outside Turkey, so it <em>may</em> be
+                                        raised at a KDV rate of zero under exemption code {{ $code }},
+                                        {{ $exemption['label'] }} — instead of the standard {{ $kdvPercent }}% on
+                                        professional services. It qualifies only if every one of the following holds
+                                        at the same time. Confirm each one you have checked with your mali müşavir.
+                                        Kargah records the decision; it does not make it, and it will not apply the
+                                        zero rate just because the client is abroad.
+                                    </p>
+
+                                    <div class="flex flex-col gap-2.5">
+                                        @foreach ($exemption['conditions'] as $i => $condition)
+                                            <label class="flex items-start gap-2.5 cursor-pointer"
+                                                   wire:key="kdv-{{ $code }}-{{ $i }}">
+                                                <input type="checkbox" class="kt-checkbox mt-0.5"
+                                                       wire:model.live="kdvConfirmed.{{ $code }}.{{ $i }}">
+                                                <span class="text-sm text-secondary-foreground leading-relaxed">
+                                                    {{ $condition }}
+                                                </span>
+                                            </label>
+                                        @endforeach
+                                    </div>
+
+                                    @if ($appliedExemption === (string) $code)
+                                        <div class="rounded-lg border border-success/30 bg-success/10 p-4 flex flex-col gap-3">
+                                            <p class="text-sm text-mono">
+                                                <i class="ki-filled ki-shield-tick text-success"></i>
+                                                Zero-rated under code {{ $code }}. This invoice carries no KDV, and
+                                                the document states the exemption and its code so a tax office can
+                                                read it.
+                                            </p>
+                                            <div>
+                                                <button wire:click="removeExemption"
+                                                        class="kt-btn kt-btn-sm kt-btn-outline gap-2">
+                                                    <i class="ki-filled ki-arrow-circle-left"></i>
+                                                    Charge KDV at the standard rate instead
+                                                </button>
+                                            </div>
+                                        </div>
+                                    @else
+                                        <div class="flex flex-wrap items-center gap-3">
+                                            <button wire:click="applyExemption('{{ $code }}')"
+                                                    @disabled(! $this->allConfirmed((string) $code))
+                                                    class="kt-btn kt-btn-sm kt-btn-primary gap-2 disabled:opacity-40">
+                                                <i class="ki-filled ki-shield-tick"></i>
+                                                Apply the zero rate under code {{ $code }}
+                                            </button>
+                                            <span class="text-xs text-muted-foreground">
+                                                @if ($this->allConfirmed((string) $code))
+                                                    Applying this sets the tax rate on this invoice to zero.
+                                                @else
+                                                    Confirm every condition above before this can be applied.
+                                                @endif
+                                            </span>
+                                        </div>
+                                    @endif
+                                </div>
+                            @endforeach
+                        </div>
+                        <div class="kt-card-footer">
+                            <p class="text-xs text-muted-foreground leading-relaxed">
+                                None of this is tax advice, and Kargah has not checked any of it against the Gelir
+                                İdaresi Başkanlığı's own publications. The conditions are quoted so you can confirm
+                                them with your mali müşavir; if any one of them fails, the standard rate applies
+                                instead. What is stored is which exemption you applied, and that you applied it.
+                            </p>
+                        </div>
+                    </div>
+                @endif
+
                 <div class="kt-card">
                     <div class="kt-card-header"><h3 class="kt-card-title">Notes</h3></div>
                     <div class="kt-card-content p-5">
@@ -902,19 +1222,37 @@ class extends Component
                             <span class="font-medium text-mono">{{ $totals['subtotal'] }}</span>
                         </div>
 
-                        <div class="flex items-center justify-between gap-3">
-                            <label class="kt-form-label" for="invoice_tax">Tax rate</label>
-                            <div class="flex items-center gap-3">
-                                <div class="kt-input-group max-w-[140px]">
-                                    <input id="invoice_tax" type="text" inputmode="decimal"
-                                           wire:model.live.debounce.400ms="taxPercent"
-                                           class="kt-input kt-input-sm text-end @error('taxPercent') border-destructive @enderror">
-                                    <span class="kt-input-addon kt-input-addon-sm">%</span>
+                        @if ($appliedExemption)
+                            {{--
+                                No input at all once an exemption is applied. A
+                                zero-rated invoice has a rate of zero, and a box
+                                that still accepted 20 would put a figure on
+                                screen that the document contradicts.
+                            --}}
+                            <div class="flex items-center justify-between gap-3">
+                                <div>
+                                    <div class="text-sm font-medium text-mono">Tax rate</div>
+                                    <div class="text-xs text-muted-foreground mt-0.5">
+                                        Zero-rated under exemption code {{ $appliedExemption }}
+                                    </div>
                                 </div>
                                 <span class="text-sm font-medium text-mono w-[110px] text-end">{{ $totals['tax'] }}</span>
                             </div>
-                        </div>
-                        @error('taxPercent')<span class="text-xs text-destructive -mt-2 text-end">{{ $message }}</span>@enderror
+                        @else
+                            <div class="flex items-center justify-between gap-3">
+                                <label class="kt-form-label" for="invoice_tax">Tax rate</label>
+                                <div class="flex items-center gap-3">
+                                    <div class="kt-input-group max-w-[140px]">
+                                        <input id="invoice_tax" type="text" inputmode="decimal"
+                                               wire:model.live.debounce.400ms="taxPercent"
+                                               class="kt-input kt-input-sm text-end @error('taxPercent') border-destructive @enderror">
+                                        <span class="kt-input-addon kt-input-addon-sm">%</span>
+                                    </div>
+                                    <span class="text-sm font-medium text-mono w-[110px] text-end">{{ $totals['tax'] }}</span>
+                                </div>
+                            </div>
+                            @error('taxPercent')<span class="text-xs text-destructive -mt-2 text-end">{{ $message }}</span>@enderror
+                        @endif
 
                         <div class="flex items-center justify-between border-t border-border pt-4">
                             <span class="text-sm font-medium text-mono">Amount due</span>
@@ -925,7 +1263,9 @@ class extends Component
 
                         <p class="text-xs text-muted-foreground">
                             Totals recalculate on the server as you type, through the same code that stores them.
-                            {{ $currency }} is the currency this invoice is issued in.
+                            {{ $currency }} is the currency this invoice is issued in, and issuing freezes what it
+                            is worth in {{ $reportingCurrency }} — the reporting currency set in
+                            <span class="text-mono">config/accounting.php</span>.
                         </p>
 
                     </div>

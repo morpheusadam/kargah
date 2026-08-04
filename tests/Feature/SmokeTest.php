@@ -52,6 +52,11 @@ class SmokeTest extends TestCase
             'invoice-edit' => ['/accounting/invoices/1/edit'],
             'invoice-show' => ['/accounting/invoices/1'],
             'recurring' => ['/accounting/recurring'],
+            'estimates' => ['/accounting/estimates'],
+            'estimate-create' => ['/accounting/estimates/create'],
+            // A fixed id on an empty database, as 'social post' above: the edit
+            // page answers 200 explaining the estimate is not there.
+            'estimate-edit' => ['/accounting/estimates/1/edit'],
             'expenses' => ['/accounting/expenses'],
             'expense-create' => ['/accounting/expenses/create'],
             'expense-edit' => ['/accounting/expenses/1/edit'],

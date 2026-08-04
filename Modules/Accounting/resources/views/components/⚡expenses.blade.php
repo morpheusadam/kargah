@@ -8,6 +8,7 @@ use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
 use Modules\Accounting\Models\Expense;
+use Modules\Accounting\Services\InvoiceIssuer;
 use Modules\Accounting\Support\Currencies;
 use Modules\Accounting\Support\Money;
 use Modules\Core\Concerns\InteractsWithToasts;
@@ -22,12 +23,21 @@ use Modules\Core\Concerns\InteractsWithToasts;
  * double. The rows are fetched and added through `Money::sum()` instead, which
  * works on decimal strings. Counting rows in SQL is fine; adding money is not.
  *
- * **Currencies are never mixed.** A total is per currency, and the single
- * reporting figure alongside it comes from each row's *frozen*
- * `reporting_amount` — the figure the expense recorded on the day it was
- * incurred. Rows that never got a rate are excluded and counted out loud rather
- * than converted at today's rate, which would make last March's cost move every
- * time the lira does.
+ * **Currencies are never mixed.** A total is per currency, and the reporting
+ * figures alongside it come from each row's *frozen* `reporting_amount` — the
+ * figure the expense recorded on the day it was incurred. Rows that never got a
+ * rate are excluded and counted out loud rather than converted at today's rate,
+ * which would make last March's cost move every time the lira does.
+ *
+ * 🔴 **That applies to the reporting figures too, and this page used to get it
+ * wrong.** Every card here once filtered for `reporting_currency === USD` and
+ * dropped everything else on the floor — no count, no note, just a total that
+ * quietly shrank. `config('accounting.reporting_currency')` has changed at least
+ * once in this install's life and nothing backfills a row, so older expenses
+ * report in dollars and newer ones in lira and **a mixed book is the normal
+ * state**. Every figure is therefore one number per reporting currency, joined
+ * for display and never added: adding a dollar to a lira needs a rate, and a
+ * rate needs a date and a source before anybody can argue with the result.
  */
 new
 #[Title('Expenses — Kargah')]
@@ -152,18 +162,68 @@ class extends Component
         );
     }
 
-    /** The rows carrying a frozen reporting figure, which is the only kind that can be added across currencies. */
-    private function converted(Collection $rows): Collection
+    /**
+     * Add frozen reporting figures across rows — **one total per currency**.
+     *
+     * The shape `⚡reports.blade.php::reported()` settled on, and the same
+     * reasoning: a row is added under the currency *it* froze, and a row with no
+     * frozen figure at all is counted and left out rather than converted at
+     * today's rate. `unconverted` has to be shown wherever these totals are — a
+     * cost figure that silently omits four expenses reads as a cheap quarter.
+     *
+     * @param  Collection<int, Expense>  $rows
+     * @return array{totals: array<string, BrickMoney>, unconverted: int}
+     */
+    private function reported(Collection $rows): array
     {
-        return $rows->filter(
-            fn (Expense $expense): bool => $expense->reporting_amount !== null
-                && $expense->reporting_currency === Currencies::USD,
-        );
+        $totals = [];
+        $unconverted = 0;
+
+        foreach ($rows as $expense) {
+            $currency = $expense->reporting_currency;
+
+            if ($expense->reporting_amount === null || $currency === null || ! Currencies::isKnown($currency)) {
+                $unconverted++;
+
+                continue;
+            }
+
+            $totals[$currency] = ($totals[$currency] ?? Money::zero($currency))->plus(
+                Money::fromStorage((string) $expense->reporting_amount, $currency),
+                Money::ROUNDING,
+            );
+        }
+
+        ksort($totals);
+
+        return ['totals' => $totals, 'unconverted' => $unconverted];
     }
 
-    private function reportingTotal(Collection $rows): BrickMoney
+    /** One figure, in its own currency. There is deliberately no method that formats a mixed one. */
+    private function amount(BrickMoney $money): string
     {
-        return $this->sumOf($this->converted($rows), 'reporting_amount', Currencies::USD);
+        return Money::format(Money::toStorage($money), $money->getCurrency()->getCurrencyCode());
+    }
+
+    /**
+     * A set of per-currency totals, as one string per currency — never their sum.
+     *
+     * With nothing on file it shows a zero in the currency Kargah would freeze
+     * onto an expense recorded right now, so an empty card still says which
+     * currency it is empty in. That is the only place the configured currency is
+     * used here: a stored row says which currency it froze, and that is the one
+     * thing that decides how it is added.
+     *
+     * @param  array<string, BrickMoney>  $totals
+     * @return list<string>
+     */
+    private function figures(array $totals): array
+    {
+        if ($totals === []) {
+            return [$this->amount(Money::zero(InvoiceIssuer::reportingCurrency()))];
+        }
+
+        return array_values(array_map(fn (BrickMoney $money): string => $this->amount($money), $totals));
     }
 
     /**
@@ -187,24 +247,75 @@ class extends Component
 
     /* View ------------------------------------------------------------------- */
 
+    /**
+     * Spending by category, ranked **inside each reporting currency**.
+     *
+     * Ranking is a comparison and a bar is a ratio, so both can only ever
+     * compare like with like: one list per currency, each with its own peak,
+     * rather than one list that put a lira category above a dollar one for
+     * arithmetic reasons. The rows with no frozen figure are not here at all,
+     * which is why the panel prints how many it left out.
+     *
+     * @param  Collection<int, Expense>  $rows
+     * @return list<array{currency: string, rows: list<array{name: string, count: int, formatted: string, width: int}>}>
+     */
+    private function categoryBreakdown(Collection $rows): array
+    {
+        /** @var array<string, array<string, array{count: int, total: BrickMoney}>> $perCurrency */
+        $perCurrency = [];
+
+        foreach ($rows as $expense) {
+            $currency = $expense->reporting_currency;
+
+            if ($expense->reporting_amount === null || $currency === null || ! Currencies::isKnown($currency)) {
+                continue;
+            }
+
+            $name = $expense->category ?: 'Uncategorised';
+
+            $perCurrency[$currency][$name] ??= ['count' => 0, 'total' => Money::zero($currency)];
+            $perCurrency[$currency][$name]['count']++;
+            $perCurrency[$currency][$name]['total'] = $perCurrency[$currency][$name]['total']->plus(
+                Money::fromStorage((string) $expense->reporting_amount, $currency),
+                Money::ROUNDING,
+            );
+        }
+
+        ksort($perCurrency);
+
+        $series = [];
+
+        foreach ($perCurrency as $currency => $categories) {
+            // Compared as decimals, not as strings: sorted by text, "9" beats
+            // "10" and the biggest category ends up halfway down the list.
+            uasort($categories, fn (array $a, array $b): int => $b['total']->getAmount()->compareTo($a['total']->getAmount()));
+
+            $peak = $categories === [] ? Money::zero($currency) : reset($categories)['total'];
+
+            $entries = [];
+
+            foreach ($categories as $name => $entry) {
+                $entries[] = [
+                    // Cast back: PHP normalises a numeric array key to an int,
+                    // so a category somebody named "2026" comes out of the
+                    // grouping as an integer and stops being a string.
+                    'name' => (string) $name,
+                    'count' => $entry['count'],
+                    'formatted' => $this->amount($entry['total']),
+                    'width' => $this->share($entry['total'], $peak),
+                ];
+            }
+
+            $series[] = ['currency' => $currency, 'rows' => $entries];
+        }
+
+        return $series;
+    }
+
     public function with(): array
     {
         $rows = $this->expenses();
-        $converted = $this->converted($rows);
-
-        $byCategory = $rows
-            ->groupBy(fn (Expense $expense): string => $expense->category ?: 'Uncategorised')
-            ->map(fn (Collection $group): array => [
-                'count' => $group->count(),
-                'total' => $this->sumOf($this->converted($group), 'reporting_amount', Currencies::USD),
-            ])
-            // Compared as decimals, not as strings: sorted by text, "9" beats
-            // "10" and the biggest category ends up halfway down the list.
-            ->sort(fn (array $a, array $b): int => $b['total']->getAmount()->compareTo($a['total']->getAmount()));
-
-        $peak = $byCategory->isEmpty()
-            ? Money::zero(Currencies::USD)
-            : $byCategory->first()['total'];
+        $reported = $this->reported($rows);
 
         $unbilled = $rows->filter(
             fn (Expense $expense): bool => $expense->is_billable && ! $expense->isRebilled(),
@@ -221,28 +332,25 @@ class extends Component
                 'receipt' => $expense->receipt_reference,
                 'amount' => $expense->formattedAmount(),
                 'currency' => $expense->currency,
-                'reporting' => $expense->currency === Currencies::USD ? null : $expense->formattedReporting(),
+                // Shown only when it is a different number from the amount
+                // beside it. A cost spent in the currency it reports in has
+                // nothing to add, and repeating the figure reads as two costs.
+                'reporting' => $expense->currency === $expense->reporting_currency
+                    ? null
+                    : $expense->formattedReporting(),
                 'rate' => $expense->reporting_rate === null ? null : (string) $expense->reporting_rate,
                 'billing' => $this->billingState($expense),
                 'rebilledOn' => $expense->rebilledOn?->number,
             ])->all(),
 
             'totals' => $this->totalsByCurrency($rows),
-            'reportingTotal' => Money::format(Money::toStorage($this->reportingTotal($rows)), Currencies::USD),
-            'unconverted' => $rows->count() - $converted->count(),
+            'reportingTotals' => $this->figures($reported['totals']),
+            'unconverted' => $reported['unconverted'],
 
             'unbilledCount' => $unbilled->count(),
-            'unbilledTotal' => Money::format(
-                Money::toStorage($this->sumOf($this->converted($unbilled), 'reporting_amount', Currencies::USD)),
-                Currencies::USD,
-            ),
+            'unbilledTotals' => $this->figures($this->reported($unbilled)['totals']),
 
-            'categories' => $byCategory->map(fn (array $entry, string $name): array => [
-                'name' => $name,
-                'count' => $entry['count'],
-                'formatted' => Money::format(Money::toStorage($entry['total']), Currencies::USD),
-                'width' => $this->share($entry['total'], $peak),
-            ])->values()->all(),
+            'categories' => $this->categoryBreakdown($rows),
 
             'categoryOptions' => Expense::query()
                 ->whereNotNull('category')
@@ -360,14 +468,22 @@ class extends Component
             </div>
         </div>
 
+        {{-- One figure per reporting currency, side by side and never added:
+             a book that changed reporting currency has rows frozen in both, and
+             a single number here would be two currencies pretending to be one.
+             It would look exactly like a correct total. --}}
         <div class="kt-card">
             <div class="kt-card-content p-5">
                 <div class="flex items-center gap-2 text-sm text-secondary-foreground">
-                    <i class="ki-filled ki-dollar text-primary"></i> In USD, as reported
+                    <i class="ki-filled ki-dollar text-primary"></i> As reported
                 </div>
-                <div class="text-2xl font-semibold text-mono mt-2">{{ $reportingTotal }}</div>
+                <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 mt-2">
+                    @foreach ($reportingTotals as $figure)
+                        <span class="text-2xl font-semibold text-mono">{{ $figure }}</span>
+                    @endforeach
+                </div>
                 <p class="text-xs text-muted-foreground mt-1">
-                    Converted at the rate each expense froze on its own date.
+                    Each figure is added at the rate its own expenses froze, on their own dates.
                     @if ($unconverted > 0)
                         {{ $unconverted }} {{ $unconverted === 1 ? 'row has' : 'rows have' }} no rate and {{ $unconverted === 1 ? 'is' : 'are' }} left out.
                     @endif
@@ -380,7 +496,11 @@ class extends Component
                 <div class="flex items-center gap-2 text-sm text-secondary-foreground">
                     <i class="ki-filled ki-arrow-up text-warning"></i> Recoverable, not yet invoiced
                 </div>
-                <div class="text-2xl font-semibold text-mono mt-2">{{ $unbilledTotal }}</div>
+                <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 mt-2">
+                    @foreach ($unbilledTotals as $figure)
+                        <span class="text-2xl font-semibold text-mono">{{ $figure }}</span>
+                    @endforeach
+                </div>
                 <p class="text-xs text-muted-foreground mt-1">
                     {{ $unbilledCount }} billable {{ $unbilledCount === 1 ? 'cost' : 'costs' }} no invoice carries yet.
                 </p>
@@ -506,19 +626,32 @@ class extends Component
                     <i class="ki-filled ki-loading animate-spin"></i>
                 </span>
             </div>
+            {{-- One list per reporting currency. A bar is a ratio against a
+                 peak, so a bar can only compare like with like: each currency
+                 is ranked against its own biggest category rather than every
+                 category being flattened against whichever one happens to be
+                 in the largest-numbered currency. --}}
             <div class="kt-card-content p-5 flex flex-col gap-4">
-                @forelse ($categories as $entry)
-                    <div class="flex flex-col gap-1.5" wire:key="cat-{{ $entry['name'] }}">
-                        <div class="flex items-baseline justify-between gap-3 text-sm">
-                            <span class="text-secondary-foreground truncate">{{ $entry['name'] }}</span>
-                            <span class="text-mono font-medium shrink-0">{{ $entry['formatted'] }}</span>
-                        </div>
-                        <div class="h-1.5 rounded-full bg-muted overflow-hidden">
-                            <div class="h-full rounded-full bg-primary/70" style="width: {{ $entry['width'] }}%"></div>
-                        </div>
-                        <span class="text-xs text-muted-foreground">
-                            {{ $entry['count'] }} {{ $entry['count'] === 1 ? 'expense' : 'expenses' }}
-                        </span>
+                @forelse ($categories as $group)
+                    <div class="flex flex-col gap-4" wire:key="cat-group-{{ $group['currency'] }}">
+                        @if (count($categories) > 1)
+                            <span class="text-xs font-medium text-secondary-foreground">{{ $group['currency'] }}</span>
+                        @endif
+
+                        @foreach ($group['rows'] as $entry)
+                            <div class="flex flex-col gap-1.5" wire:key="cat-{{ $group['currency'] }}-{{ $entry['name'] }}">
+                                <div class="flex items-baseline justify-between gap-3 text-sm">
+                                    <span class="text-secondary-foreground truncate">{{ $entry['name'] }}</span>
+                                    <span class="text-mono font-medium shrink-0">{{ $entry['formatted'] }}</span>
+                                </div>
+                                <div class="h-1.5 rounded-full bg-muted overflow-hidden">
+                                    <div class="h-full rounded-full bg-primary/70" style="width: {{ $entry['width'] }}%"></div>
+                                </div>
+                                <span class="text-xs text-muted-foreground">
+                                    {{ $entry['count'] }} {{ $entry['count'] === 1 ? 'expense' : 'expenses' }}
+                                </span>
+                            </div>
+                        @endforeach
                     </div>
                 @empty
                     <p class="text-sm text-muted-foreground text-center py-6">
@@ -526,9 +659,14 @@ class extends Component
                     </p>
                 @endforelse
 
-                @if ($categories !== [])
+                @if ($categories !== [] || $unconverted > 0)
                     <p class="text-xs text-muted-foreground border-t border-border pt-3">
-                        Each category is added in USD from the rate its rows froze, so two currencies never share a total.
+                        Each category is added inside its own reporting currency, from the rate its rows froze,
+                        so two currencies never share a total.
+                        @if ($unconverted > 0)
+                            {{ $unconverted }} {{ $unconverted === 1 ? 'expense has' : 'expenses have' }} no frozen
+                            figure and {{ $unconverted === 1 ? 'is' : 'are' }} not broken down here.
+                        @endif
                     </p>
                 @endif
             </div>

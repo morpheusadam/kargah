@@ -6,6 +6,7 @@ use Livewire\Component;
 use Modules\Accounting\Models\CryptoPayment;
 use Modules\Accounting\Models\Invoice;
 use Modules\Accounting\Models\Payment;
+use Modules\Accounting\Services\InvoiceIssuer;
 use Modules\Accounting\Services\PaymentRecorder;
 use Modules\Accounting\Support\Currencies;
 use Modules\Accounting\Support\Money;
@@ -186,8 +187,13 @@ class extends Component
         return [
             'rate' => $unrealised['rate'],
             'on' => today()->format('j F Y'),
-            'at_today' => Money::format($unrealised['at_today'], $invoice->reporting_currency ?? Currencies::USD),
-            'difference' => Money::format($unrealised['difference'], $invoice->reporting_currency ?? Currencies::USD),
+            // The configured currency, not a literal USD. Unreachable today —
+            // `unrealised()` returns nulls when the invoice froze no rate, and an
+            // invoice with no rate has no `reporting_currency` either — but a
+            // hardcoded dollar here stopped matching the book the day the setting
+            // moved to lira, and it would have been wrong without saying so.
+            'at_today' => Money::format($unrealised['at_today'], $invoice->reporting_currency ?? InvoiceIssuer::reportingCurrency()),
+            'difference' => Money::format($unrealised['difference'], $invoice->reporting_currency ?? InvoiceIssuer::reportingCurrency()),
             'gain' => ! str_starts_with((string) $unrealised['difference'], '-'),
         ];
     }
@@ -840,8 +846,20 @@ class extends Component
                                 {{ \Modules\Accounting\Support\Money::format((string) $invoice->subtotal, $invoice->currency) }}
                             </span>
                         </div>
+                        {{-- An exempt invoice says which exemption, not just "0%".
+
+                             The PDF already names the code and its label, because that is the
+                             artefact a tax office reads. The screen did not, so a zero-rated
+                             invoice and one that simply had no tax on it looked identical to
+                             the person who has to answer for the difference. --}}
                         <div class="flex items-center gap-6 text-sm">
-                            <span class="text-secondary-foreground">Tax at {{ rtrim(rtrim((string) $invoice->tax_percent, '0'), '.') ?: '0' }}%</span>
+                            <span class="text-secondary-foreground">
+                                @if ($invoice->kdv_exemption_code)
+                                    KDV 0% — zero-rated under {{ $invoice->kdv_exemption_code }}
+                                @else
+                                    Tax at {{ rtrim(rtrim((string) $invoice->tax_percent, '0'), '.') ?: '0' }}%
+                                @endif
+                            </span>
                             <span class="font-medium text-mono w-[140px] text-end">
                                 {{ \Modules\Accounting\Support\Money::format((string) $invoice->tax_amount, $invoice->currency) }}
                             </span>

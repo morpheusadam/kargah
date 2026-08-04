@@ -114,6 +114,23 @@ class ExpenseReader implements ExpenseReaderContract
     /**
      * What one expense is worth in lira, or null when nothing on the row says.
      * Never derives a rate — see the contract's docblock.
+     *
+     * 🔴 **Lira is a literal here, deliberately, and not
+     * `config('accounting.reporting_currency')`.** This series exists to be
+     * drawn on one axis against `InvoiceReader::revenueByMonth()`, which is
+     * lira by construction — it reads each invoice's `try_equivalent`, the
+     * figure Turkish tax procedure requires on the document, and has no
+     * configured currency in it at all. Reading config on this side alone would
+     * mean that the day the setting moved to dollars the dashboard would plot a
+     * revenue line in lira against a cost line in dollars, on one axis, with one
+     * symbol — which is the exact defect this whole change exists to remove.
+     *
+     * The condition below is therefore not a bug even though it looks like the
+     * one: an expense counts when it *froze* a lira figure, which is what every
+     * expense now does while the setting says lira, and what none of them did
+     * while it said dollars. If the reporting currency is ever moved off lira,
+     * the two readers move together or not at all, and that is a change to
+     * `InvoiceReader` — a file this did not own.
      */
     private function lira(Expense $expense): ?BrickMoney
     {

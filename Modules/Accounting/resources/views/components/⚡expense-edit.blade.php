@@ -9,6 +9,7 @@ use Livewire\Component;
 use Modules\Accounting\Models\Expense;
 use Modules\Accounting\Models\LedgerEntry;
 use Modules\Accounting\Services\ExchangeRates;
+use Modules\Accounting\Services\InvoiceIssuer;
 use Modules\Accounting\Support\Currencies;
 use Modules\Accounting\Support\Money;
 use Modules\Core\Concerns\InteractsWithToasts;
@@ -27,9 +28,12 @@ use Modules\Core\Models\Company;
  * through `Money`.
  *
  * **The reporting figure is frozen at save**, exactly as an invoice freezes its
- * own. Converting at read time would make last March's cost move every time the
- * lira does. When no rate is available for the date, the figure is left null
- * and the toast says so — an invented rate is worse than a missing one.
+ * own, in the currency `config('accounting.reporting_currency')` names — read
+ * through `InvoiceIssuer::reportingCurrency()` so there is one place that
+ * decides and nothing has to assume. Converting at read time would make last
+ * March's cost move every time the lira does. When no rate is available for the
+ * date, the figure is left null and the toast says so — an invented rate is
+ * worse than a missing one.
  *
  * **Deleting an expense lives here and nowhere else.** The list page links each
  * vendor to this page rather than carrying its own delete: the routine has to
@@ -84,6 +88,13 @@ class extends Component
     public string $receiptReference = '';
 
     private ?Collection $resolvedCompanies = null;
+
+    /**
+     * Per-request memo for `reportingCurrency()`, so the summary panel and the
+     * save that follows it cannot disagree, and an edit does not ask the
+     * database the same one-column question on every render.
+     */
+    private ?string $resolvedReportingCurrency = null;
 
     /** Whether the last `persist()` inserted or updated. Set there, read by the toasts. */
     private bool $wasCreated = true;
@@ -177,17 +188,72 @@ class extends Component
     }
 
     /**
+     * The currency this expense's reporting figure is expressed in.
+     *
+     * A new expense takes it from configuration, through the same
+     * `InvoiceIssuer::reportingCurrency()` an invoice uses at issue — one place
+     * decides, so the two halves of the book cannot drift apart and report
+     * income in lira against costs in dollars.
+     *
+     * 🔴 **An expense that already exists keeps the currency it froze**, even
+     * when the setting has changed since. That is the no-backfill rule, and it
+     * lives here rather than in `persist()` because the summary panel has to
+     * preview the same answer the save will write. `reporting_currency` is the
+     * record of what was believed on the day the money left; a book that has
+     * run for a while is a *mixed* book — older costs in dollars, newer ones in
+     * lira — and that is the normal state, which is why every total on the
+     * expenses page groups by it. Without this, correcting a typo on a March
+     * expense would silently move it out of the dollar column into the lira
+     * one, and no page would say it had moved.
+     *
+     * An edit still recomputes the *rate* and the *amount* in that frozen
+     * currency: those have to follow an edited amount or date. It is the
+     * currency that must not drift.
+     */
+    private function reportingCurrency(): string
+    {
+        if ($this->resolvedReportingCurrency !== null) {
+            return $this->resolvedReportingCurrency;
+        }
+
+        $frozen = $this->expenseId === null
+            ? null
+            : Expense::query()->whereKey($this->expenseId)->value('reporting_currency');
+
+        return $this->resolvedReportingCurrency = is_string($frozen) && Currencies::isKnown($frozen)
+            ? $frozen
+            : InvoiceIssuer::reportingCurrency();
+    }
+
+    /**
      * The reporting figure, frozen at the date the money was spent.
+     *
+     * 🔴 Which pairs actually resolve, because it decides what comes back null.
+     * `rateFor()` will invert a stored pair but will not chain two of them, and
+     * it asks for the `market` rate — so TCMB's buying and selling rows, which
+     * are stored under their own rate types, are not what this reads. With lira
+     * as the reporting currency a lira cost is the identity and a **dollar cost
+     * needs Frankfurter's USD/TRY row for that date**. USDT/TRY is fetched too,
+     * but only as the optional lira leg of the CoinGecko call — see
+     * `CoinGecko::fetch()` — so a stablecoin cost converts on the days that leg
+     * was quoted and freezes nothing on the days it was not.
+     *
+     * Either way the expense is still recorded. A cost that really left the
+     * account must never be refused because a rate was missing, and one counted
+     * out loud as unconverted is worth far more than one that is not on the
+     * book at all.
      *
      * @return array{0: ?string, 1: ?string} the rate and the converted amount, both null when no rate exists
      */
     private function reportingFigures(BrickMoney $amount): array
     {
-        if ($this->knownCurrency() === Currencies::USD) {
+        $reporting = $this->reportingCurrency();
+
+        if ($this->knownCurrency() === $reporting) {
             return ['1.000000', Money::toStorage($amount)];
         }
 
-        $rate = app(ExchangeRates::class)->rateFor($this->knownCurrency(), Currencies::USD, $this->spentOn);
+        $rate = app(ExchangeRates::class)->rateFor($this->knownCurrency(), $reporting, $this->spentOn);
 
         if ($rate === null) {
             // Nothing to defend a converted number with, so there is no
@@ -195,7 +261,7 @@ class extends Component
             return [null, null];
         }
 
-        return [$rate, Money::toStorage(Money::convert($amount, $rate, Currencies::USD))];
+        return [$rate, Money::toStorage(Money::convert($amount, $rate, $reporting))];
     }
 
     /* View --------------------------------------------------------------------- */
@@ -244,18 +310,20 @@ class extends Component
     /** What the reporting figure will be, said before the expense is saved rather than after. */
     private function reportingNote(): string
     {
-        if ($this->knownCurrency() === Currencies::USD) {
-            return 'Reported in USD at 1.000000 — it is already the reporting currency.';
+        $reporting = $this->reportingCurrency();
+
+        if ($this->knownCurrency() === $reporting) {
+            return 'Reported in '.$reporting.' at 1.000000 — it is already the reporting currency.';
         }
 
         [$rate, $converted] = $this->reportingFigures($this->money());
 
         if ($rate === null) {
-            return 'No '.$this->knownCurrency().' to USD rate is stored for '.$this->spentOn
+            return 'No '.$this->knownCurrency().' to '.$reporting.' rate is stored for '.$this->spentOn
                 .', so the reporting figure will be left blank rather than guessed.';
         }
 
-        return 'Reports as '.Money::format($converted, Currencies::USD).' at '.$rate.', the rate for '.$this->spentOn.'.';
+        return 'Reports as '.Money::format($converted, $reporting).' at '.$rate.', the rate for '.$this->spentOn.'.';
     }
 
     /* Actions -------------------------------------------------------------------- */
@@ -293,6 +361,9 @@ class extends Component
         // Keep the date, currency and category: recording one expense usually
         // means recording three from the same afternoon.
         $this->expenseId = null;
+        // The form is a new expense again, so the currency it would freeze is
+        // the configured one and not whatever the row just left behind froze.
+        $this->resolvedReportingCurrency = null;
         $this->vendor = '';
         $this->description = '';
         $this->amount = '';
@@ -322,7 +393,7 @@ class extends Component
             'description' => trim($this->description) === '' ? null : trim($this->description),
             'currency' => $this->currency,
             'amount' => Money::toStorage($amount),
-            'reporting_currency' => Currencies::USD,
+            'reporting_currency' => $this->reportingCurrency(),
             'reporting_rate' => $rate,
             'reporting_amount' => $reportingAmount,
             'is_billable' => $this->billable,
@@ -353,7 +424,8 @@ class extends Component
             .$expense->spent_on->format('d M Y').'.';
 
         if ($expense->reporting_amount === null) {
-            return $description.' No '.$expense->currency.' to USD rate was available for that date, so the reporting figure is blank.';
+            return $description.' No '.$expense->currency.' to '.$expense->reporting_currency
+                .' rate was available for that date, so the reporting figure is blank.';
         }
 
         if ($expense->is_billable) {

@@ -53,7 +53,7 @@ class InvoiceReader implements InvoiceReaderContract
         ];
     }
 
-    public function issue(int $id, string $reportingCurrency = 'USD'): ?array
+    public function issue(int $id, ?string $reportingCurrency = null): ?array
     {
         $invoice = $this->query()->find($id);
 

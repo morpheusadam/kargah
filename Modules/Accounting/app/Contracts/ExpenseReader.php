@@ -45,10 +45,17 @@ interface ExpenseReader
      * here. An expense paid in lira contributes its own `amount`; an expense
      * paid in another currency contributes `reporting_amount` **only when
      * `reporting_currency` is lira**, because that is the figure whoever
-     * recorded the expense froze against a stated rate. Anything else —
-     * including an expense reported in dollars, which is what the factory
-     * produces by default — is excluded and counted, never re-converted at
-     * today's rate.
+     * recorded the expense froze against a stated rate. Anything else is
+     * excluded and counted, never re-converted at today's rate.
+     *
+     * 🔴 What "anything else" means in practice changed, and the count moves
+     * with it. `config('accounting.reporting_currency')` ships as **TRY**, so
+     * every expense Kargah records — typed or generated — now freezes a lira
+     * figure and lands in the totals. Older rows frozen while the setting said
+     * dollars, and `ExpenseFactory`'s default, still do not, and are the
+     * `excluded` count rather than an error. Lira itself is a literal in this
+     * reader on purpose: see `ExpenseReader::lira()` for why reading config
+     * here alone would put a dollar cost line on a lira axis.
      *
      * `excluded` has to be shown wherever `months` is: a cost line that
      * silently omits four expenses reads as a cheap quarter.

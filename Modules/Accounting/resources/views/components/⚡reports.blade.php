@@ -11,6 +11,7 @@ use Livewire\Component;
 use Modules\Accounting\Models\Expense;
 use Modules\Accounting\Models\Invoice;
 use Modules\Accounting\Models\Payment;
+use Modules\Accounting\Services\InvoiceIssuer;
 use Modules\Accounting\Services\PaymentRecorder;
 use Modules\Accounting\Support\Currencies;
 use Modules\Accounting\Support\Money;
@@ -258,29 +259,66 @@ class extends Component
     }
 
     /**
-     * Add a frozen reporting figure across rows.
+     * The currency Kargah would freeze onto an invoice issued *right now*.
      *
-     * Only rows that carry one, and only in the reporting currency. A row with
-     * no rate is left out and counted, because converting it here would mean
-     * inventing a rate for a date that has already passed.
-     *
-     * @param  Collection<int, \Illuminate\Database\Eloquent\Model>  $rows
-     * @return array{0: BrickMoney, 1: int}
+     * Used only where a figure has to be shown and there is nothing on file to
+     * take a currency from — an empty bucket, an empty period. It is never used
+     * to interpret a stored row: a row says which currency it froze, and that
+     * is the only thing that decides how it is added.
      */
-    private function reported(Collection $rows): array
+    private function reportingCurrency(): string
     {
-        $converted = $rows->filter(
-            fn ($row): bool => $row->reporting_amount !== null && $row->reporting_currency === Currencies::USD,
-        );
-
-        return [
-            Money::sum($converted->map(fn ($row): string => (string) $row->reporting_amount), Currencies::USD),
-            $rows->count() - $converted->count(),
-        ];
+        return InvoiceIssuer::reportingCurrency();
     }
 
     /**
-     * What is outstanding on an invoice, at the rate the invoice itself froze.
+     * Add frozen reporting figures across rows — **one total per currency**.
+     *
+     * 🔴 A mixed book is the normal state, not a defect. Each invoice and each
+     * expense froze `reporting_currency` at the moment it was issued or
+     * recorded, and that setting has changed at least once in this install's
+     * life: older rows report in dollars, newer ones in lira. This used to
+     * filter for `Currencies::USD` and drop everything else on the floor — no
+     * count, no note, just a total that quietly shrank as the newer rows piled
+     * up. Grouping is the only honest answer, because adding a dollar to a lira
+     * needs a rate, and a rate needs a date and a source before anybody can
+     * argue with the result.
+     *
+     * A row with no frozen figure at all is counted and left out, never
+     * converted at today's rate: doing that would make last March move every
+     * time the lira does.
+     *
+     * @param  Collection<int, \Illuminate\Database\Eloquent\Model>  $rows
+     * @return array{totals: array<string, BrickMoney>, unconverted: int}
+     */
+    private function reported(Collection $rows): array
+    {
+        $totals = [];
+        $unconverted = 0;
+
+        foreach ($rows as $row) {
+            $currency = $row->reporting_currency;
+
+            if ($row->reporting_amount === null || $currency === null || ! Currencies::isKnown($currency)) {
+                $unconverted++;
+
+                continue;
+            }
+
+            $totals[$currency] = ($totals[$currency] ?? Money::zero($currency))->plus(
+                Money::fromStorage((string) $row->reporting_amount, $currency),
+                Money::ROUNDING,
+            );
+        }
+
+        ksort($totals);
+
+        return ['totals' => $totals, 'unconverted' => $unconverted];
+    }
+
+    /**
+     * What is outstanding on an invoice, at the rate the invoice itself froze,
+     * in whichever currency it froze it in.
      *
      * Not today's rate: this is the receivable as the books recorded it. What
      * it would be worth at today's rate is the unrealised section further down,
@@ -288,16 +326,62 @@ class extends Component
      */
     private function outstandingReported(Invoice $invoice): ?BrickMoney
     {
-        if ($invoice->reporting_rate === null || $invoice->reporting_currency !== Currencies::USD) {
+        $currency = $invoice->reporting_currency;
+
+        if ($invoice->reporting_rate === null || $currency === null || ! Currencies::isKnown($currency)) {
             return null;
         }
 
-        return Money::convert($this->outstandingOf($invoice), (string) $invoice->reporting_rate, Currencies::USD);
+        return Money::convert($this->outstandingOf($invoice), (string) $invoice->reporting_rate, $currency);
     }
 
-    private function usd(BrickMoney $money): string
+    /** One figure, in its own currency. There is deliberately no method that formats a mixed one. */
+    private function amount(BrickMoney $money): string
     {
-        return Money::format(Money::toStorage($money), Currencies::USD);
+        return Money::format(Money::toStorage($money), $money->getCurrency()->getCurrencyCode());
+    }
+
+    /**
+     * A set of per-currency totals, as one string per currency.
+     *
+     * Never their sum — the separator is there so that two figures read as two
+     * figures. With nothing on file it shows a zero in the currency Kargah
+     * would use today, so an empty report still says which currency it is
+     * empty in.
+     *
+     * @param  array<string, BrickMoney>  $totals
+     * @return list<string>
+     */
+    private function figures(array $totals, ?string $emptyIn = null): array
+    {
+        if ($totals === []) {
+            return [$this->amount(Money::zero($emptyIn ?? $this->reportingCurrency()))];
+        }
+
+        return array_values(array_map(fn (BrickMoney $money): string => $this->amount($money), $totals));
+    }
+
+    /**
+     * The reporting currencies the open invoices actually froze figures in.
+     *
+     * Read once so every ageing bucket shows the same columns: a bucket that
+     * happens to be empty must still say it is empty *in dollars*, otherwise
+     * the row above and the row below are not comparable.
+     *
+     * @return list<string>
+     */
+    private function openReportingCurrencies(): array
+    {
+        $codes = $this->openInvoices()
+            ->map(fn (Invoice $invoice): ?BrickMoney => $this->outstandingReported($invoice))
+            ->filter()
+            ->map(fn (BrickMoney $money): string => $money->getCurrency()->getCurrencyCode())
+            ->unique()
+            ->sort()
+            ->values()
+            ->all();
+
+        return $codes === [] ? [$this->reportingCurrency()] : $codes;
     }
 
     /** A bar width as a whole percentage — a ratio of two amounts, not an amount. */
@@ -433,12 +517,21 @@ class extends Component
     /* Sections ------------------------------------------------------------------ */
 
     /**
-     * Receivables by how late they are, in the reporting currency.
+     * Receivables by how late they are, at each invoice's own frozen rate.
      *
-     * @return list<array{label: string, count: int, total: string, tone: string}>
+     * 🔴 `total` is one figure per reporting currency, joined for display and
+     * **never added together**. With a mixed book — older invoices reporting in
+     * dollars, newer ones in lira — a single number here would be two
+     * currencies pretending to be one, and it would look exactly like a correct
+     * total. Every bucket shows the same set of currencies, including the empty
+     * ones, so the column reads down the page.
+     *
+     * @return list<array{label: string, count: int, total: string, unconverted: int, tone: string}>
      */
     private function ageing(): array
     {
+        $columns = $this->openReportingCurrencies();
+
         $buckets = [
             'current' => ['label' => 'Not due yet', 'tone' => 'text-mono', 'rows' => []],
             'thirty' => ['label' => '1 to 30 days late', 'tone' => 'text-warning', 'rows' => []],
@@ -450,18 +543,35 @@ class extends Component
             $buckets[$this->bucketFor($invoice)]['rows'][] = $invoice;
         }
 
-        return array_values(array_map(function (array $bucket): array {
-            $rows = collect($bucket['rows']);
+        return array_values(array_map(function (array $bucket) use ($columns): array {
+            $totals = [];
 
-            $total = Money::sum(
-                $rows->map(fn (Invoice $invoice): ?BrickMoney => $this->outstandingReported($invoice))->filter(),
-                Currencies::USD,
-            );
+            foreach ($columns as $currency) {
+                $totals[$currency] = Money::zero($currency);
+            }
+
+            $unconverted = 0;
+
+            foreach ($bucket['rows'] as $invoice) {
+                $reported = $this->outstandingReported($invoice);
+
+                if ($reported === null) {
+                    $unconverted++;
+
+                    continue;
+                }
+
+                $currency = $reported->getCurrency()->getCurrencyCode();
+
+                $totals[$currency] = ($totals[$currency] ?? Money::zero($currency))
+                    ->plus($reported, Money::ROUNDING);
+            }
 
             return [
                 'label' => $bucket['label'],
-                'count' => $rows->count(),
-                'total' => $this->usd($total),
+                'count' => count($bucket['rows']),
+                'total' => implode(' · ', $this->figures($totals)),
+                'unconverted' => $unconverted,
                 'tone' => $bucket['tone'],
             ];
         }, $buckets));
@@ -559,14 +669,14 @@ class extends Component
     {
         $recorder = app(PaymentRecorder::class);
         $exposed = $this->openInvoices()->filter(
-            fn (Invoice $invoice): bool => $invoice->currency !== ($invoice->reporting_currency ?? Currencies::USD),
+            fn (Invoice $invoice): bool => $invoice->currency !== ($invoice->reporting_currency ?? $this->reportingCurrency()),
         );
 
         return [
             'rows' => $exposed->map(function (Invoice $invoice) use ($recorder): array {
                 $revaluation = $recorder->unrealised($invoice);
                 $outstanding = $this->outstandingOf($invoice);
-                $reporting = $invoice->reporting_currency ?? Currencies::USD;
+                $reporting = $invoice->reporting_currency ?? $this->reportingCurrency();
 
                 return [
                     'id' => $invoice->id,
@@ -598,71 +708,163 @@ class extends Component
     }
 
     /**
-     * Twelve months of invoiced revenue against expenses, both in the reporting currency.
+     * Twelve months of invoiced revenue against expenses — **one chart per
+     * reporting currency**.
      *
-     * @return list<array{month: string, invoiced: string, spent: string, invoicedHeight: int, spentHeight: int}>
+     * A bar has a height, and a height is a ratio against a peak, so a bar can
+     * only ever compare like with like. With a mixed book that means one series
+     * per currency rather than one series that silently added two: each has its
+     * own peak, so a dollar month and a lira month are each drawn against their
+     * own scale and neither is flattened by the other.
+     *
+     * @return list<array{
+     *     currency: string,
+     *     months: list<array{month: string, invoiced: string, spent: string, invoicedHeight: int, spentHeight: int}>,
+     * }>
      */
     private function trend(): array
     {
         $invoices = Invoice::query()->issued()->get();
         $expenses = Expense::query()->get();
 
-        $months = [];
+        /** @var array<string, list<array{month: string, invoiced: BrickMoney, spent: BrickMoney}>> $series */
+        $series = [];
+        $labels = [];
 
         for ($back = 11; $back >= 0; $back--) {
             $start = now()->startOfMonth()->subMonths($back);
+            $labels[] = $start->format('M');
 
-            [$invoiced] = $this->reported($invoices->filter(
+            $invoiced = $this->reported($invoices->filter(
                 fn (Invoice $invoice): bool => $invoice->issued_on !== null && $invoice->issued_on->isSameMonth($start),
-            ));
+            ))['totals'];
 
-            [$spent] = $this->reported($expenses->filter(
+            $spent = $this->reported($expenses->filter(
                 fn (Expense $expense): bool => $expense->spent_on->isSameMonth($start),
-            ));
+            ))['totals'];
 
-            $months[] = ['month' => $start->format('M'), 'invoiced' => $invoiced, 'spent' => $spent];
-        }
+            foreach (array_keys($invoiced + $spent) as $currency) {
+                $series[$currency] ??= [];
+            }
 
-        $peak = Money::zero(Currencies::USD);
-
-        foreach ($months as $month) {
-            foreach ([$month['invoiced'], $month['spent']] as $figure) {
-                if ($figure->isGreaterThan($peak)) {
-                    $peak = $figure;
-                }
+            foreach (array_keys($series) as $currency) {
+                $series[$currency][] = [
+                    'month' => $start->format('M'),
+                    'invoiced' => $invoiced[$currency] ?? Money::zero($currency),
+                    'spent' => $spent[$currency] ?? Money::zero($currency),
+                ];
             }
         }
 
-        return array_map(fn (array $month): array => [
-            'month' => $month['month'],
-            'invoiced' => $this->usd($month['invoiced']),
-            'spent' => $this->usd($month['spent']),
-            'invoicedHeight' => $this->share($month['invoiced'], $peak),
-            'spentHeight' => $this->share($month['spent'], $peak),
-        ], $months);
+        // A currency that only appeared in month nine has short months; pad it
+        // at the front so every chart has twelve columns and the axes line up.
+        foreach ($series as $currency => $months) {
+            while (count($months) < count($labels)) {
+                array_unshift($months, [
+                    'month' => $labels[count($labels) - count($months) - 1],
+                    'invoiced' => Money::zero($currency),
+                    'spent' => Money::zero($currency),
+                ]);
+            }
+
+            $series[$currency] = $months;
+        }
+
+        if ($series === []) {
+            $series[$this->reportingCurrency()] = array_map(fn (string $label): array => [
+                'month' => $label,
+                'invoiced' => Money::zero($this->reportingCurrency()),
+                'spent' => Money::zero($this->reportingCurrency()),
+            ], $labels);
+        }
+
+        ksort($series);
+
+        $charts = [];
+
+        foreach ($series as $currency => $months) {
+            $peak = Money::zero($currency);
+
+            foreach ($months as $month) {
+                foreach ([$month['invoiced'], $month['spent']] as $figure) {
+                    if ($figure->isGreaterThan($peak)) {
+                        $peak = $figure;
+                    }
+                }
+            }
+
+            $charts[] = [
+                'currency' => $currency,
+                'months' => array_map(fn (array $month): array => [
+                    'month' => $month['month'],
+                    'invoiced' => $this->amount($month['invoiced']),
+                    'spent' => $this->amount($month['spent']),
+                    'invoicedHeight' => $this->share($month['invoiced'], $peak),
+                    'spentHeight' => $this->share($month['spent'], $peak),
+                ], $months),
+            ];
+        }
+
+        return $charts;
     }
 
     /**
-     * Who the money came from, in the reporting currency.
+     * Who the money came from, ranked inside each reporting currency.
      *
-     * @return list<array{name: string, total: string, count: int, width: int}>
+     * Ranking is a comparison, and a comparison across currencies needs a rate
+     * nobody stated — so the ranking happens per currency and the page shows
+     * one list per currency rather than one list that put a lira client above a
+     * dollar client for arithmetic reasons.
+     *
+     * @return list<array{currency: string, rows: list<array{name: string, total: string, count: int, width: int}>}>
      */
     private function topClients(): array
     {
-        $groups = $this->invoices()
-            ->groupBy(fn (Invoice $invoice): string => $invoice->customer?->name ?? 'No client on the invoice')
-            ->map(fn (Collection $group): array => ['total' => $this->reported($group)[0], 'count' => $group->count()])
-            ->sort(fn (array $a, array $b): int => $b['total']->getAmount()->compareTo($a['total']->getAmount()))
-            ->take(5);
+        /** @var array<string, array<string, array{total: BrickMoney, count: int}>> $perCurrency */
+        $perCurrency = [];
 
-        $peak = $groups->isEmpty() ? Money::zero(Currencies::USD) : $groups->first()['total'];
+        foreach ($this->invoices() as $invoice) {
+            $currency = $invoice->reporting_currency;
 
-        return $groups->map(fn (array $entry, string $name): array => [
-            'name' => $name,
-            'count' => $entry['count'],
-            'total' => $this->usd($entry['total']),
-            'width' => $this->share($entry['total'], $peak),
-        ])->values()->all();
+            if ($invoice->reporting_amount === null || $currency === null || ! Currencies::isKnown($currency)) {
+                continue;
+            }
+
+            $name = $invoice->customer?->name ?? 'No client on the invoice';
+
+            $perCurrency[$currency][$name] ??= ['total' => Money::zero($currency), 'count' => 0];
+            $perCurrency[$currency][$name]['total'] = $perCurrency[$currency][$name]['total']->plus(
+                Money::fromStorage((string) $invoice->reporting_amount, $currency),
+                Money::ROUNDING,
+            );
+            $perCurrency[$currency][$name]['count']++;
+        }
+
+        ksort($perCurrency);
+
+        $series = [];
+
+        foreach ($perCurrency as $currency => $clients) {
+            uasort($clients, fn (array $a, array $b): int => $b['total']->getAmount()->compareTo($a['total']->getAmount()));
+
+            $clients = array_slice($clients, 0, 5, true);
+            $peak = $clients === [] ? Money::zero($currency) : reset($clients)['total'];
+
+            $rows = [];
+
+            foreach ($clients as $name => $entry) {
+                $rows[] = [
+                    'name' => $name,
+                    'count' => $entry['count'],
+                    'total' => $this->amount($entry['total']),
+                    'width' => $this->share($entry['total'], $peak),
+                ];
+            }
+
+            $series[] = ['currency' => $currency, 'rows' => $rows];
+        }
+
+        return $series;
     }
 
     /* Aged receivables ------------------------------------------------------------ */
@@ -1020,6 +1222,11 @@ class extends Component
      *    a rate to a subtotal. An invoice zero-rated under the export-of-
      *    services exemption froze zero, and re-applying 20% would invent a
      *    liability that does not exist.
+     *  - **Exempt turnover is separated from KDV-bearing turnover**, and the
+     *    exempt part is named by the code it was zero-rated under, because that
+     *    is the split a return asks for. Kargah still decides nothing: the code
+     *    is on the invoice only because a person confirmed every condition of
+     *    the exemption on the invoice builder and applied it.
      *  - **The geçici vergi rate and threshold come from configuration**, with
      *    the year they belong to printed next to the answer, because Turkish
      *    brackets are revalued annually and a hardcoded 15% silently becomes
@@ -1063,25 +1270,91 @@ class extends Component
             $kdvLira = $kdvLira->plus($share, Money::ROUNDING);
         }
 
+        // 🔴 Exempt turnover and KDV-bearing turnover are two different numbers
+        // and a return asks for both. `zeroRated` counts invoices that happen to
+        // carry no KDV for any reason at all — a nil-rated line, a zero total, a
+        // draft raised at 0% by hand — while `exemptNet` is only turnover an
+        // operator deliberately zero-rated under a named exemption code. They
+        // are not the same set and neither substitutes for the other.
+        $exemptions = config('accounting.tax.kdv_exemptions');
+        $exemptions = is_array($exemptions) ? $exemptions : [];
+
+        $isExempt = fn (Invoice $invoice): bool => $invoice->kdv_exemption_code !== null
+            && $invoice->kdv_exemption_code !== ''
+            && array_key_exists((string) $invoice->kdv_exemption_code, $exemptions);
+
         $kdv = $this->invoices()
             ->groupBy('currency')
-            ->map(fn (Collection $group, string $currency): array => [
-                'currency' => $currency,
-                'count' => $group->count(),
-                'net' => Money::format(
-                    Money::toStorage(Money::sum($group->map(fn (Invoice $i): string => (string) $i->subtotal), $currency)),
-                    $currency,
-                ),
-                'charged' => Money::format(
-                    Money::toStorage(Money::sum($group->map(fn (Invoice $i): string => (string) $i->tax_amount), $currency)),
-                    $currency,
-                ),
-                'zeroRated' => $group->filter(
-                    fn (Invoice $i): bool => BigDecimal::of((string) $i->tax_amount)->isZero(),
-                )->count(),
-            ])
+            ->map(function (Collection $group, string $currency) use ($isExempt): array {
+                $exempt = $group->filter($isExempt);
+                $bearing = $group->reject($isExempt);
+
+                return [
+                    'currency' => $currency,
+                    'count' => $group->count(),
+                    'net' => Money::format(
+                        Money::toStorage(Money::sum($group->map(fn (Invoice $i): string => (string) $i->subtotal), $currency)),
+                        $currency,
+                    ),
+                    'charged' => Money::format(
+                        Money::toStorage(Money::sum($group->map(fn (Invoice $i): string => (string) $i->tax_amount), $currency)),
+                        $currency,
+                    ),
+                    'zeroRated' => $group->filter(
+                        fn (Invoice $i): bool => BigDecimal::of((string) $i->tax_amount)->isZero(),
+                    )->count(),
+
+                    'exemptCount' => $exempt->count(),
+                    'exemptNet' => Money::format(
+                        Money::toStorage(Money::sum($exempt->map(fn (Invoice $i): string => (string) $i->subtotal), $currency)),
+                        $currency,
+                    ),
+                    'bearingNet' => Money::format(
+                        Money::toStorage(Money::sum($bearing->map(fn (Invoice $i): string => (string) $i->subtotal), $currency)),
+                        $currency,
+                    ),
+                ];
+            })
             ->values()
             ->all();
+
+        // What was zero-rated, named by the code it was zero-rated under —
+        // which is the figure a KDV return actually asks about, and the one the
+        // operator has to be able to point at and defend.
+        $byCode = [];
+
+        foreach ($this->invoices()->filter($isExempt) as $invoice) {
+            $code = (string) $invoice->kdv_exemption_code;
+            $currency = $invoice->currency;
+
+            $byCode[$code][$currency] ??= ['count' => 0, 'net' => Money::zero($currency)];
+            $byCode[$code][$currency]['count']++;
+            $byCode[$code][$currency]['net'] = $byCode[$code][$currency]['net']->plus(
+                Money::fromStorage((string) $invoice->subtotal, $currency),
+                Money::ROUNDING,
+            );
+        }
+
+        ksort($byCode);
+
+        $exemptRows = [];
+
+        foreach ($byCode as $code => $currencies) {
+            ksort($currencies);
+
+            foreach ($currencies as $currency => $entry) {
+                $exemptRows[] = [
+                    // Cast back: PHP normalises a numeric array key to an int,
+                    // so '302' comes out of the grouping as 302 and would then
+                    // compare unequal to the string on the invoice.
+                    'code' => (string) $code,
+                    'label' => $exemptions[$code]['label'] ?? null,
+                    'currency' => $currency,
+                    'count' => $entry['count'],
+                    'net' => $this->amount($entry['net']),
+                ];
+            }
+        }
 
         /* Geçici vergi ------------------------------------------------------- */
 
@@ -1108,6 +1381,8 @@ class extends Component
             'kdv' => $kdv,
             'kdvLira' => $this->lira($kdvLira),
             'kdvUnconverted' => $kdvUnconverted,
+            'exemptRows' => $exemptRows,
+            'exemptCount' => $this->invoices()->filter($isExempt)->count(),
 
             'quarter' => 'Quarter '.$quarterStart->quarter.' of '.$quarterStart->year,
             'quarterRange' => $quarterStart->format('d M').' to '.$quarterEnd->format('d M Y'),
@@ -1206,21 +1481,45 @@ class extends Component
 
     public function with(): array
     {
-        [$invoiced, $invoicesUnconverted] = $this->reported($this->invoices());
-        [$spent, $expensesUnconverted] = $this->reported($this->expenses());
+        $invoiced = $this->reported($this->invoices());
+        $spent = $this->reported($this->expenses());
 
-        $net = $invoiced->minus($spent, Money::ROUNDING);
+        // Net per currency, over every currency either side used. Dollars in
+        // and lira out do not net off; they are two answers and stay two.
+        $net = [];
 
-        $receivable = Money::sum(
-            $this->openInvoices()
-                ->map(fn (Invoice $invoice): ?BrickMoney => $this->outstandingReported($invoice))
-                ->filter(),
-            Currencies::USD,
-        );
+        foreach (array_keys($invoiced['totals'] + $spent['totals']) as $currency) {
+            $net[$currency] = ($invoiced['totals'][$currency] ?? Money::zero($currency))
+                ->minus($spent['totals'][$currency] ?? Money::zero($currency), Money::ROUNDING);
+        }
 
-        $receivableUnconverted = $this->openInvoices()->filter(
-            fn (Invoice $invoice): bool => $this->outstandingReported($invoice) === null,
-        )->count();
+        ksort($net);
+
+        $receivable = [];
+        $receivableUnconverted = 0;
+
+        foreach ($this->openInvoices() as $invoice) {
+            $reported = $this->outstandingReported($invoice);
+
+            if ($reported === null) {
+                $receivableUnconverted++;
+
+                continue;
+            }
+
+            $currency = $reported->getCurrency()->getCurrencyCode();
+
+            $receivable[$currency] = ($receivable[$currency] ?? Money::zero($currency))
+                ->plus($reported, Money::ROUNDING);
+        }
+
+        ksort($receivable);
+
+        $anyNegative = false;
+
+        foreach ($net as $figure) {
+            $anyNegative = $anyNegative || $figure->isNegative();
+        }
 
         return [
             'periods' => [
@@ -1231,31 +1530,37 @@ class extends Component
             ],
             'periodLabel' => $this->periodLabel(),
 
+            // 🔴 `values` is a list, one figure per reporting currency, and the
+            // card prints them on separate lines. It was a single string, which
+            // only worked while every invoice in the book reported in the same
+            // currency — and the reporting currency has changed at least once
+            // in this install's life, so it does not.
             'kpis' => [
                 [
                     'label' => 'Invoiced',
-                    'value' => $this->usd($invoiced),
+                    'values' => $this->figures($invoiced['totals']),
                     'icon' => 'ki-bill',
                     'tone' => 'text-primary',
-                    'note' => $this->conversionNote($invoicesUnconverted, 'invoice'),
+                    'note' => $this->conversionNote($invoiced['unconverted'], 'invoice'),
                 ],
                 [
                     'label' => 'Expenses',
-                    'value' => $this->usd($spent),
+                    'values' => $this->figures($spent['totals']),
                     'icon' => 'ki-wallet',
                     'tone' => 'text-destructive',
-                    'note' => $this->conversionNote($expensesUnconverted, 'expense'),
+                    'note' => $this->conversionNote($spent['unconverted'], 'expense'),
                 ],
                 [
                     'label' => 'Invoiced less expenses',
-                    'value' => $this->usd($net),
+                    'values' => $this->figures($net),
                     'icon' => 'ki-chart-line-up',
-                    'tone' => $net->isNegative() ? 'text-destructive' : 'text-success',
-                    'note' => 'What was billed in the period, less what it cost to run.',
+                    'tone' => $anyNegative ? 'text-destructive' : 'text-success',
+                    'note' => 'What was billed in the period, less what it cost to run. '
+                        .'One line per reporting currency; they are never added together.',
                 ],
                 [
                     'label' => 'Outstanding today',
-                    'value' => $this->usd($receivable),
+                    'values' => $this->figures($receivable),
                     'icon' => 'ki-time',
                     'tone' => 'text-warning',
                     'note' => $receivableUnconverted === 0
@@ -1285,7 +1590,7 @@ class extends Component
 
     private function conversionNote(int $unconverted, string $noun): string
     {
-        $base = 'Added in USD from the rate each '.$noun.' froze on its own date.';
+        $base = 'One line per reporting currency, added from the rate each '.$noun.' froze on its own date.';
 
         return $unconverted === 0
             ? $base
@@ -1333,7 +1638,13 @@ class extends Component
                         <i class="ki-filled {{ $k['icon'] }} {{ $k['tone'] }}"></i>
                         {{ $k['label'] }}
                     </div>
-                    <div class="text-2xl font-semibold text-mono mt-2">{{ $k['value'] }}</div>
+                    {{-- One line per reporting currency. Two currencies are two
+                         figures; there is no line anywhere that adds them. --}}
+                    <div class="flex flex-col gap-0.5 mt-2">
+                        @foreach ($k['values'] as $figure)
+                            <div class="text-2xl font-semibold text-mono">{{ $figure }}</div>
+                        @endforeach
+                    </div>
                     <p class="text-xs text-muted-foreground mt-1">{{ $k['note'] }}</p>
                 </div>
             </div>
@@ -1452,29 +1763,45 @@ class extends Component
 
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
 
-        {{-- Invoiced against spent, twelve months, both from frozen figures. --}}
+        {{--
+            Invoiced against spent, twelve months, from frozen figures.
+
+            One chart per reporting currency. A bar height is a ratio against a
+            peak, so a chart can only compare like with like: a dollar month and
+            a lira month get their own scale rather than one of them flattening
+            the other.
+        --}}
         <div class="kt-card">
             <div class="kt-card-header">
                 <h3 class="kt-card-title">Invoiced and spent</h3>
-                <span class="text-sm text-muted-foreground">Last twelve months, in USD</span>
+                <span class="text-sm text-muted-foreground">Last twelve months</span>
             </div>
-            <div class="kt-card-content p-5">
-                <div class="flex items-end justify-between gap-2 h-[220px]">
-                    @foreach ($trend as $m)
-                        <div class="flex flex-col items-center gap-2 grow min-w-0">
-                            <div class="flex items-end justify-center gap-0.5 w-full grow">
-                                <div class="w-1/2 rounded-t bg-primary/70 min-h-[2px]"
-                                     style="height: {{ max($m['invoicedHeight'], 1) }}%"
-                                     title="Invoiced {{ $m['month'] }} — {{ $m['invoiced'] }}"></div>
-                                <div class="w-1/2 rounded-t bg-destructive/60 min-h-[2px]"
-                                     style="height: {{ max($m['spentHeight'], 1) }}%"
-                                     title="Spent {{ $m['month'] }} — {{ $m['spent'] }}"></div>
+            <div class="kt-card-content p-5 flex flex-col gap-6">
+                @foreach ($trend as $chart)
+                    <div class="flex flex-col gap-2" wire:key="trend-{{ $chart['currency'] }}">
+                        @if (count($trend) > 1)
+                            <div class="text-xs font-medium text-secondary-foreground">
+                                Reported in {{ $chart['currency'] }}
                             </div>
-                            <span class="text-[10px] text-muted-foreground">{{ $m['month'] }}</span>
+                        @endif
+                        <div class="flex items-end justify-between gap-2 h-[220px]">
+                            @foreach ($chart['months'] as $m)
+                                <div class="flex flex-col items-center gap-2 grow min-w-0">
+                                    <div class="flex items-end justify-center gap-0.5 w-full grow">
+                                        <div class="w-1/2 rounded-t bg-primary/70 min-h-[2px]"
+                                             style="height: {{ max($m['invoicedHeight'], 1) }}%"
+                                             title="Invoiced {{ $m['month'] }} — {{ $m['invoiced'] }}"></div>
+                                        <div class="w-1/2 rounded-t bg-destructive/60 min-h-[2px]"
+                                             style="height: {{ max($m['spentHeight'], 1) }}%"
+                                             title="Spent {{ $m['month'] }} — {{ $m['spent'] }}"></div>
+                                    </div>
+                                    <span class="text-[10px] text-muted-foreground">{{ $m['month'] }}</span>
+                                </div>
+                            @endforeach
                         </div>
-                    @endforeach
-                </div>
-                <div class="flex items-center gap-4 mt-4 text-xs text-muted-foreground">
+                    </div>
+                @endforeach
+                <div class="flex items-center gap-4 text-xs text-muted-foreground">
                     <span class="inline-flex items-center gap-1.5">
                         <span class="size-2.5 rounded-sm bg-primary/70"></span> Invoiced
                     </span>
@@ -1485,29 +1812,38 @@ class extends Component
             </div>
         </div>
 
-        {{-- Top clients --}}
+        {{-- Top clients, ranked inside each reporting currency and never across them. --}}
         <div class="kt-card">
             <div class="kt-card-header">
                 <h3 class="kt-card-title">Where the revenue came from</h3>
-                <span class="text-sm text-muted-foreground">In USD, as reported</span>
+                <span class="text-sm text-muted-foreground">As each invoice reported it</span>
             </div>
-            <div class="kt-card-content p-5 flex flex-col gap-4">
-                @forelse ($topClients as $client)
-                    <div class="flex flex-col gap-1.5" wire:key="client-{{ $loop->index }}">
-                        <div class="flex items-baseline justify-between gap-3 text-sm">
-                            <span class="text-secondary-foreground truncate">{{ $client['name'] }}</span>
-                            <span class="text-mono font-medium shrink-0">{{ $client['total'] }}</span>
-                        </div>
-                        <div class="h-1.5 rounded-full bg-muted overflow-hidden">
-                            <div class="h-full rounded-full bg-primary/70" style="width: {{ $client['width'] }}%"></div>
-                        </div>
-                        <span class="text-xs text-muted-foreground">
-                            {{ $client['count'] }} {{ $client['count'] === 1 ? 'invoice' : 'invoices' }}
-                        </span>
+            <div class="kt-card-content p-5 flex flex-col gap-5">
+                @forelse ($topClients as $series)
+                    <div class="flex flex-col gap-4" wire:key="clients-{{ $series['currency'] }}">
+                        @if (count($topClients) > 1)
+                            <div class="text-xs font-medium text-secondary-foreground">
+                                Reported in {{ $series['currency'] }}
+                            </div>
+                        @endif
+                        @foreach ($series['rows'] as $client)
+                            <div class="flex flex-col gap-1.5" wire:key="client-{{ $series['currency'] }}-{{ $loop->index }}">
+                                <div class="flex items-baseline justify-between gap-3 text-sm">
+                                    <span class="text-secondary-foreground truncate">{{ $client['name'] }}</span>
+                                    <span class="text-mono font-medium shrink-0">{{ $client['total'] }}</span>
+                                </div>
+                                <div class="h-1.5 rounded-full bg-muted overflow-hidden">
+                                    <div class="h-full rounded-full bg-primary/70" style="width: {{ $client['width'] }}%"></div>
+                                </div>
+                                <span class="text-xs text-muted-foreground">
+                                    {{ $client['count'] }} {{ $client['count'] === 1 ? 'invoice' : 'invoices' }}
+                                </span>
+                            </div>
+                        @endforeach
                     </div>
                 @empty
                     <p class="text-sm text-muted-foreground text-center py-10">
-                        Nothing was invoiced in this period.
+                        Nothing in this period froze a reporting figure to rank clients by.
                     </p>
                 @endforelse
             </div>
@@ -1550,7 +1886,13 @@ class extends Component
             <div class="kt-card-footer">
                 <p class="text-xs text-muted-foreground">
                     Every period, not just the one selected — what is owed today is owed today. Converted at the
-                    rate each invoice froze when it was issued.
+                    rate each invoice froze when it was issued, and shown as one figure per reporting currency:
+                    older invoices reported in one currency and newer ones in another, and they are never added.
+                    @php $unconverted = collect($ageing)->sum('unconverted'); @endphp
+                    @if ($unconverted > 0)
+                        {{ $unconverted }} open {{ $unconverted === 1 ? 'invoice' : 'invoices' }} froze no
+                        reporting figure at all and {{ $unconverted === 1 ? 'is' : 'are' }} left out.
+                    @endif
                 </p>
             </div>
         </div>
@@ -1788,9 +2130,11 @@ class extends Component
                             <tr>
                                 <th class="w-[90px]">Currency</th>
                                 <th class="w-[90px] text-end">Invoices</th>
-                                <th class="text-end">Net of KDV</th>
+                                <th class="text-end">Net, KDV-bearing</th>
+                                <th class="text-end">Net, exempt</th>
+                                <th class="text-end">Net, all</th>
                                 <th class="text-end">KDV charged</th>
-                                <th class="w-[130px] text-end">At zero</th>
+                                <th class="w-[110px] text-end">At zero</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -1798,13 +2142,21 @@ class extends Component
                                 <tr wire:key="kdv-{{ $row['currency'] }}">
                                     <td class="font-medium text-mono">{{ $row['currency'] }}</td>
                                     <td class="text-end text-secondary-foreground">{{ $row['count'] }}</td>
+                                    <td class="text-end text-mono">{{ $row['bearingNet'] }}</td>
+                                    <td class="text-end text-mono">
+                                        {{ $row['exemptNet'] }}
+                                        <div class="text-xs text-muted-foreground">
+                                            {{ $row['exemptCount'] }}
+                                            {{ $row['exemptCount'] === 1 ? 'invoice' : 'invoices' }}
+                                        </div>
+                                    </td>
                                     <td class="text-end text-mono">{{ $row['net'] }}</td>
                                     <td class="text-end font-medium text-mono">{{ $row['charged'] }}</td>
                                     <td class="text-end text-secondary-foreground">{{ $row['zeroRated'] }}</td>
                                 </tr>
                             @empty
                                 <tr>
-                                    <td colspan="5" class="py-6 text-center text-sm text-muted-foreground">
+                                    <td colspan="7" class="py-6 text-center text-sm text-muted-foreground">
                                         Nothing was invoiced in this period, so no KDV was charged.
                                     </td>
                                 </tr>
@@ -1819,11 +2171,64 @@ class extends Component
                         charged KDV but froze no lira figure and {{ $tax['kdvUnconverted'] === 1 ? 'is' : 'are' }}
                         left out.
                     @endif
-                    The standard rate on professional services is {{ $tax['kdvPercent'] }}%. An invoice showing zero
-                    may be zero-rated as an export of services under exemption code 302, but that needs four
-                    conditions to hold at once and is a judgement per invoice — Kargah counts them and assumes
-                    nothing.
+                    The standard rate on professional services is {{ $tax['kdvPercent'] }}%. "Net, exempt" is
+                    turnover on invoices somebody deliberately zero-rated under a named exemption code; "At zero"
+                    is the wider count of invoices carrying no KDV for any reason at all, which is not the same set.
                 </p>
+
+                {{--
+                    What was zero-rated, and under which code — the split a KDV
+                    return asks for. Rendered only when there is something to
+                    render, because an empty table here would read as a claim
+                    that nothing qualified rather than that nothing was claimed.
+                --}}
+                @if ($tax['exemptRows'] !== [])
+                    <div class="flex flex-col gap-3">
+                        <h4 class="text-sm font-medium text-mono">
+                            Zero-rated turnover, by exemption code
+                            <span class="text-xs text-muted-foreground font-normal">
+                                — applied per invoice by you, never inferred by Kargah
+                            </span>
+                        </h4>
+                        <div class="kt-scrollable-x-auto">
+                            <table class="kt-table align-middle text-sm">
+                                <thead>
+                                    <tr>
+                                        <th class="w-[90px]">Code</th>
+                                        <th>Exemption</th>
+                                        <th class="w-[90px]">Currency</th>
+                                        <th class="w-[100px] text-end">Invoices</th>
+                                        <th class="w-[160px] text-end">Turnover at zero</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach ($tax['exemptRows'] as $row)
+                                        <tr wire:key="exempt-{{ $row['code'] }}-{{ $row['currency'] }}">
+                                            <td class="font-medium text-mono">{{ $row['code'] }}</td>
+                                            <td class="text-secondary-foreground">{{ $row['label'] ?? '—' }}</td>
+                                            <td class="text-mono">{{ $row['currency'] }}</td>
+                                            <td class="text-end text-secondary-foreground">{{ $row['count'] }}</td>
+                                            <td class="text-end font-medium text-mono">{{ $row['net'] }}</td>
+                                        </tr>
+                                    @endforeach
+                                </tbody>
+                            </table>
+                        </div>
+                        <p class="text-xs text-muted-foreground">
+                            An export of services can be zero-rated under code 302 only if four conditions hold at
+                            once. Kargah never applies that itself and never infers it from a client being abroad:
+                            each of these invoices carries the code because somebody confirmed every condition on
+                            the invoice builder and applied it. Whether they hold is a judgement for you and your
+                            mali müşavir, per invoice.
+                        </p>
+                    </div>
+                @else
+                    <p class="text-xs text-muted-foreground">
+                        No invoice in this period was raised under a KDV exemption. Kargah does not apply one on its
+                        own — an export of services can be zero-rated under code 302 only if four conditions hold at
+                        once, and confirming them is a judgement for you and your mali müşavir on each invoice.
+                    </p>
+                @endif
             </div>
 
             {{-- Geçici vergi --}}

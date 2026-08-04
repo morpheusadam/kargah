@@ -6,6 +6,7 @@ use App\Models\User;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
+use Modules\Accounting\Contracts\ExpenseReader as ExpenseReaderContract;
 use Modules\Accounting\Models\Expense;
 use Modules\Accounting\Models\Invoice;
 use Modules\Accounting\Models\LedgerEntry;
@@ -127,6 +128,87 @@ class AccountingPagesTest extends TestCase
             ->assertSee('$45.00');
     }
 
+    /**
+     * 🔴 A mixed book is the normal state, and the page must not tidy it away.
+     *
+     * `reporting_currency` is frozen per row and nothing backfills it, so an
+     * install that has run for a while has costs reported in dollars *and* in
+     * lira. The page shows one figure per currency. A single number would be two
+     * currencies pretending to be one, and it would look exactly like a correct
+     * total — which is why this asserts the combined figure is nowhere on the
+     * page as well as asserting the two real ones are.
+     */
+    public function test_the_expenses_page_reports_a_dollar_row_and_a_lira_row_without_adding_them(): void
+    {
+        // Recorded back when the setting said dollars.
+        $this->expense('Hostinger', 'Hosting', '100.00', days: 3);
+
+        // And after it changed to lira: spent in dollars, reported in lira.
+        $this->expense('Hetzner', 'Hosting', '50.00', days: 2, attributes: [
+            'reporting_currency' => Currencies::TRY,
+            'reporting_rate' => '40.000000',
+            'reporting_amount' => '2000.00',
+        ]);
+
+        // A cost that never got a rate at all: counted, never converted.
+        $this->expense('Apple Store', 'Hardware', '1299.00', days: 5, attributes: [
+            'reporting_currency' => Currencies::TRY,
+            'reporting_rate' => null,
+            'reporting_amount' => null,
+        ]);
+
+        $page = Livewire::test('accounting::expenses');
+
+        // Sorted by currency code, so lira comes before dollars.
+        $this->assertSame(['₺2,000.00', '$100.00'], $page->viewData('reportingTotals'));
+        $this->assertSame(1, $page->viewData('unconverted'));
+
+        $this->assertSame(
+            [Currencies::TRY, Currencies::USD],
+            array_column($page->viewData('categories'), 'currency'),
+            'Two reporting currencies were ranked in one list, so a bar compares a lira with a dollar.',
+        );
+
+        $this->get('/accounting/expenses')
+            ->assertOk()
+            ->assertSee('₺2,000.00')
+            ->assertSee('$100.00')
+            // 100 + 2000 as though the currencies were the same thing.
+            ->assertDontSee('$2,100.00')
+            ->assertDontSee('₺2,100.00');
+    }
+
+    /**
+     * The dashboard's cost line, end to end.
+     *
+     * `ExpenseReader::expensesByMonth()` counts an expense only when it froze a
+     * lira figure. While every expense the application wrote froze dollars, that
+     * meant the chart's whole cost series was empty and the page said so. This
+     * asserts the join actually closes: record a cost through the form, and the
+     * reader finds it.
+     */
+    public function test_an_expense_recorded_through_the_form_reaches_the_dashboards_cost_series(): void
+    {
+        $spentOn = now()->startOfMonth()->toDateString();
+
+        app(ExchangeRates::class)->record(Currencies::USD, Currencies::TRY, '40.000000', 'frankfurter', $spentOn);
+
+        Livewire::test('accounting::expense-edit')
+            ->set('vendor', 'Hetzner')
+            ->set('category', 'Hosting')
+            ->set('amount', '100.00')
+            ->set('currency', Currencies::USD)
+            ->set('spentOn', $spentOn)
+            ->call('save');
+
+        $series = app(ExpenseReaderContract::class)->expensesByMonth(12);
+        $thisMonth = collect($series['months'])->firstWhere('month', now()->format('Y-m'));
+
+        $this->assertSame(1, $series['counted'], 'The cost line is still empty for an expense recorded today.');
+        $this->assertSame(0, $series['excluded']);
+        $this->assertSame('4000.000000', $thisMonth['amount']);
+    }
+
     public function test_the_expenses_page_filters_by_category(): void
     {
         $this->expense('Hostinger', 'Hosting', '71.88', days: 3);
@@ -169,8 +251,112 @@ class AccountingPagesTest extends TestCase
     {
         $spentOn = now()->subDays(3)->toDateString();
 
+        app(ExchangeRates::class)->record(Currencies::USD, Currencies::TRY, '40.000000', 'frankfurter', $spentOn);
+
+        Livewire::test('accounting::expense-edit')
+            ->set('vendor', 'Hostinger')
+            ->set('category', 'Hosting')
+            ->set('amount', '100.00')
+            ->set('currency', Currencies::USD)
+            ->set('spentOn', $spentOn)
+            ->call('save');
+
+        $expense = Expense::query()->firstOrFail();
+
+        $this->assertSame('100.000000', (string) $expense->amount);
+        $this->assertSame(Currencies::TRY, $expense->reporting_currency);
+        $this->assertSame('40.000000', (string) $expense->reporting_rate);
+        $this->assertSame('4000.000000', (string) $expense->reporting_amount);
+
+        // And it stays put when the market moves.
+        app(ExchangeRates::class)->record(Currencies::USD, Currencies::TRY, '50.000000', 'frankfurter', now());
+
+        $this->assertSame('4000.000000', (string) $expense->fresh()->reporting_amount);
+    }
+
+    /**
+     * 🔴 The assertion that protects everything already in the book.
+     *
+     * `reporting_currency`, `reporting_rate` and `reporting_amount` are frozen
+     * on an expense when it is recorded and are the record of what was believed
+     * then. Changing the setting affects expenses recorded *from now on* and
+     * nothing else: no backfill, no recompute. So a book that has run for a
+     * while is a mixed one — older costs in dollars, newer in lira — and that is
+     * the normal state rather than a defect to be tidied away.
+     *
+     * The second half is the one an edit can break: correcting a typo on a
+     * March expense must not quietly move it out of the dollar column.
+     */
+    public function test_an_expense_recorded_before_the_setting_changed_still_reports_in_the_currency_it_froze(): void
+    {
+        config(['accounting.reporting_currency' => Currencies::USD]);
+
+        Livewire::test('accounting::expense-edit')
+            ->set('vendor', 'Hostinger')
+            ->set('category', 'Hosting')
+            ->set('amount', '71.88')
+            ->set('currency', Currencies::USD)
+            ->set('spentOn', now()->toDateString())
+            ->call('save');
+
+        $old = Expense::query()->firstOrFail();
+
+        $this->assertSame(Currencies::USD, $old->reporting_currency);
+
+        $frozenRate = (string) $old->reporting_rate;
+        $frozenAmount = (string) $old->reporting_amount;
+
+        // The owner switches to declaring in lira and records the next cost.
+        config(['accounting.reporting_currency' => Currencies::TRY]);
+
+        Livewire::test('accounting::expense-edit')
+            ->set('vendor', 'Beşiktaş muhasebeci')
+            ->set('category', 'Other')
+            ->set('amount', '1000.00')
+            ->set('currency', Currencies::TRY)
+            ->set('spentOn', now()->toDateString())
+            ->call('save');
+
+        $new = Expense::query()->where('vendor', 'Beşiktaş muhasebeci')->firstOrFail();
+
+        $this->assertSame(Currencies::TRY, $new->reporting_currency, 'The new expense did not pick up the new setting.');
+
+        $reread = Expense::query()->find($old->id);
+
+        $this->assertSame(
+            Currencies::USD,
+            $reread->reporting_currency,
+            'An already-recorded expense was moved to the new reporting currency. Nothing may backfill history.',
+        );
+        $this->assertSame($frozenRate, (string) $reread->reporting_rate);
+        $this->assertSame($frozenAmount, (string) $reread->reporting_amount);
+
+        // And editing it does not move it either: the figures follow the new
+        // amount, in the currency the row itself froze.
+        Livewire::test('accounting::expense-edit', ['expense' => (string) $old->id])
+            ->set('amount', '81.88')
+            ->call('save');
+
+        $edited = Expense::query()->find($old->id);
+
+        $this->assertSame('81.880000', (string) $edited->amount);
+        $this->assertSame(
+            Currencies::USD,
+            $edited->reporting_currency,
+            'Editing an expense moved it to the currency the setting names today.',
+        );
+        $this->assertSame('81.880000', (string) $edited->reporting_amount);
+    }
+
+    /** Configuration decides it, not a default buried in a method body. */
+    public function test_the_expense_reporting_currency_comes_from_configuration(): void
+    {
+        $spentOn = now()->subDays(2)->toDateString();
+
         // Only USD/TRY is stored; the reader inverts it for TRY/USD.
         app(ExchangeRates::class)->record(Currencies::USD, Currencies::TRY, '40.000000', 'frankfurter', $spentOn);
+
+        config(['accounting.reporting_currency' => Currencies::USD]);
 
         Livewire::test('accounting::expense-edit')
             ->set('vendor', 'Harbour ofis kirası')
@@ -182,28 +368,26 @@ class AccountingPagesTest extends TestCase
 
         $expense = Expense::query()->firstOrFail();
 
-        $this->assertSame('1000.000000', (string) $expense->amount);
         $this->assertSame(Currencies::USD, $expense->reporting_currency);
         $this->assertSame('0.025000', (string) $expense->reporting_rate);
         $this->assertSame('25.000000', (string) $expense->reporting_amount);
-
-        // And it stays put when the market moves.
-        app(ExchangeRates::class)->record(Currencies::USD, Currencies::TRY, '50.000000', 'frankfurter', now());
-
-        $this->assertSame('25.000000', (string) $expense->fresh()->reporting_amount);
     }
 
     /**
      * "When no rate is available, leave it null and say so rather than
      * inventing one."
+     *
+     * A dollar cost with no USD/TRY rate on file for its date, because that is
+     * the pair Kargah actually has to look up now that lira is the reporting
+     * currency.
      */
     public function test_an_expense_with_no_rate_available_is_saved_with_no_reporting_figure(): void
     {
         Livewire::test('accounting::expense-edit')
-            ->set('vendor', 'Beşiktaş muhasebeci')
-            ->set('category', 'Other')
+            ->set('vendor', 'DigitalOcean')
+            ->set('category', 'Hosting')
             ->set('amount', '2500.00')
-            ->set('currency', Currencies::TRY)
+            ->set('currency', Currencies::USD)
             ->set('spentOn', '2020-01-01')
             ->call('save');
 
@@ -212,6 +396,8 @@ class AccountingPagesTest extends TestCase
         $this->assertSame('2500.000000', (string) $expense->amount);
         $this->assertNull($expense->reporting_rate, 'A rate was invented for a date with no rate on file.');
         $this->assertNull($expense->reporting_amount);
+        // The cost still went out of the door, so it is still on the book.
+        $this->assertSame(Currencies::TRY, $expense->reporting_currency);
     }
 
     public function test_saving_an_expense_without_an_amount_saves_nothing(): void

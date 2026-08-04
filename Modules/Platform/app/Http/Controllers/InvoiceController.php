@@ -72,7 +72,19 @@ class InvoiceController
             return ApiResponse::validationFailed($validator);
         }
 
-        $reportingCurrency = strtoupper((string) $request->input('reporting_currency', 'USD'));
+        // 🔴 Null, not `'USD'`, when the caller says nothing.
+        //
+        // Accounting's `InvoiceIssuer::issue()` takes a nullable currency for
+        // exactly this: null means "use the configured reporting currency". This
+        // defaulted to the literal `USD`, which was invisible while that was
+        // also Accounting's default and became a real disagreement the day the
+        // setting moved to lira — an invoice raised through the API and the same
+        // invoice raised through the form would have frozen different currencies,
+        // with nothing on either to say why. Platform does not own that decision
+        // and should not restate it.
+        $reportingCurrency = $request->has('reporting_currency')
+            ? strtoupper((string) $request->input('reporting_currency'))
+            : null;
 
         $result = $this->invoices->issue($invoice, $reportingCurrency);
 

@@ -8,7 +8,6 @@ use Modules\Accounting\Models\CryptoPayment;
 use Modules\Accounting\Models\Invoice;
 use Modules\Accounting\Models\LedgerEntry;
 use Modules\Accounting\Models\Payment;
-use Modules\Accounting\Support\Currencies;
 use Modules\Accounting\Support\Money;
 
 /**
@@ -422,7 +421,13 @@ class PaymentRecorder
     public function unrealised(Invoice $invoice, Carbon|string|null $on = null): array
     {
         $on = $on === null ? now() : ($on instanceof Carbon ? $on : Carbon::parse($on));
-        $reporting = $invoice->reporting_currency ?? Currencies::USD;
+
+        // The configured currency, not a literal USD. Unreachable today — an
+        // invoice with no `reporting_currency` also has no `reporting_rate` and
+        // the guard four lines down returns before this is used — but a hardcoded
+        // dollar in a fallback stops matching the book the moment somebody
+        // removes that early return, and it would be wrong silently.
+        $reporting = $invoice->reporting_currency ?? InvoiceIssuer::reportingCurrency();
 
         $outstanding = Money::fromStorage($this->outstanding($invoice), $invoice->currency);
 
