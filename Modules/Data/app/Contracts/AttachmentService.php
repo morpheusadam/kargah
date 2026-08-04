@@ -137,6 +137,31 @@ interface AttachmentService
     public function find(int $attachmentId): ?array;
 
     /**
+     * A signed, expiring URL that somebody outside this install can fetch.
+     *
+     * **Not a convenience.** Instagram and Threads will not accept image bytes:
+     * their container-create step takes an `image_url` and Meta's own servers go
+     * and fetch it, so a picture that only exists behind `auth` cannot be
+     * published to either network at all. `inline_url` is permanent and
+     * authenticated, which is right for a card cover on your own board and
+     * useless here; this is the other thing the class docblock above already
+     * named — "the signed, expiring link… for handing a file to somebody
+     * outside".
+     *
+     * The default window is short on purpose. Meta fetches the URL during the
+     * container-create call, which is one HTTP round trip away, so half an hour
+     * is generous by two orders of magnitude — and the whole point of an expiry
+     * is that a URL which leaks stops working. Nothing should raise this to make
+     * a link last; a link that needs to last wants `inline_url` and a session.
+     *
+     * Returns null when the row is gone. It does **not** check that the bytes
+     * are still on the disk: that would cost a storage round trip on every
+     * attach, and the route behind the signature answers 404 for a missing file
+     * anyway — which is the same thing Meta would make of it.
+     */
+    public function publicUrl(int $attachmentId, int $minutes = 30): ?string;
+
+    /**
      * Stream one attachment to the browser.
      *
      * `$inline` decides between showing it in the tab and offering it as a

@@ -16,20 +16,27 @@ namespace Modules\Social\Support;
  * docs/frontend-conventions.md.
  *
  * `ingests` says whether the network's API lets Kargah read notifications back.
- * Mastodon and Bluesky publish a notifications endpoint that needs no special
- * partnership. LinkedIn's requires partner access nobody self-serving has,
- * Telegram's `getUpdates` consumes the update queue the bot itself needs, and a
- * Discord incoming webhook has no read side at all, so those three are marked
- * false and `social:sync-notifications` skips them rather than pretending there
- * is nothing to show.
+ * **Only Mastodon and Bluesky do.** They publish a notifications endpoint that
+ * needs no special partnership; every other entry here is marked false and
+ * `social:sync-notifications` skips it rather than pretending there is nothing
+ * to show. The reasons differ and each is worth having written down, because
+ * "not supported" invites somebody to try again: LinkedIn's requires partner
+ * access nobody self-serving has, Telegram's `getUpdates` consumes the update
+ * queue the bot itself needs, a Discord incoming webhook has no read side at
+ * all, X's mentions endpoint needs a paid tier, Meta's would need permissions
+ * Kargah deliberately does not request, and WordPress has no notifications.
  *
  * `token_lifetime_days` is null for every credential that does not expire on
  * its own — Mastodon, Bluesky, Telegram and Discord all issue a scoped,
  * revocable token from the network's own settings screen with no clock
  * attached; the
- * person revokes it, Kargah does not out-wait it. LinkedIn's member token is
- * the one exception Kargah has today, and the pasted-token model means there
- * is no OAuth response to read a real expiry off — the credential arrives
+ * person revokes it, Kargah does not out-wait it. X joins them, for a reason
+ * worth naming: OAuth 1.0a issues no expiry and no refresh token at all, which
+ * is exactly why it fits a model that has nowhere to put either.
+ *
+ * LinkedIn and the three Meta networks are the exceptions, and the pasted-token
+ * model means there is no OAuth response to read a real expiry off — the
+ * credential arrives
  * over `⚡account-connect`'s form, not a token exchange this application ever
  * sees. `social:check-token-expiry` therefore infers `token_expires_at` from
  * this lifetime, counted from the moment the credential was saved. That is an
@@ -71,6 +78,31 @@ final class Networks
     public const TELEGRAM = 'telegram';
 
     public const DISCORD = 'discord';
+
+    public const X = 'x';
+
+    public const FACEBOOK_PAGE = 'facebook_page';
+
+    public const INSTAGRAM = 'instagram';
+
+    public const THREADS = 'threads';
+
+    /**
+     * A WordPress site, which is a network here for one reason: everything
+     * downstream then works for free.
+     *
+     * The alternative was a second publishing concept living beside this one —
+     * its own table, its own queue, its own retry. Making a site an account and
+     * a published article a `post_targets` row means the scheduler, the
+     * one-minute cron, the claim, the forward-only status, the per-target error
+     * and the media pipeline all apply to it without a line being written for
+     * any of them, and the composer can send an article to the blog and a teaser
+     * to X as **one intention** rather than two things a person has to remember
+     * to do twice. The cost is that "network" now stretches to cover a website,
+     * which is a word doing slightly more work than it used to. That is the
+     * cheaper of the two wrongs. See `Modules\Blog\Services\WordPressPublisher`.
+     */
+    public const WORDPRESS = 'wordpress';
 
     /**
      * @return array<string, array{
@@ -354,6 +386,286 @@ final class Networks
                     ['allowed' => true, 'text' => 'Post messages into the one channel that webhook belongs to'],
                     ['allowed' => false, 'text' => 'Read any message, channel or member of your server'],
                     ['allowed' => false, 'text' => 'Read notifications — a webhook can only write, and has no read side at all'],
+                ],
+            ],
+            self::X => [
+                'label' => 'X',
+                'icon' => 'ki-twitter',
+                'tone' => 'text-mono',
+                'dot' => 'bg-mono',
+                'colour' => '#0f1419',
+                // The free and basic tiers' number. A Premium account writes
+                // 25,000, and there is no field on any response that says which
+                // tier a credential belongs to — so the counter shows the number
+                // every account has. Being told 280 and finding 25,000 works
+                // costs a person one edit; the reverse costs a refused post.
+                'limit' => 280,
+                'method' => 'token',
+                'summary' => 'Post to your timeline through an app you own.',
+                'requirement' => 'Create a project and an app on developer.x.com, set User authentication settings to Read and write, then copy the API key and secret from Keys and tokens and generate an access token and secret for your own account on the same screen.',
+                // The v2 mentions endpoint needs a paid tier, and the free one
+                // answers 403. Marked false so `social:sync-notifications` skips
+                // it rather than logging a refusal every hour.
+                'ingests' => false,
+                // OAuth 1.0a issues no expiry and no refresh token: the pair is
+                // good until somebody revokes it or regenerates it in the portal.
+                // This is exactly why X fits the pasted-credential model that
+                // ruled OAuth out everywhere else — see `⚡account-connect`.
+                'token_lifetime_days' => null,
+                'media' => [
+                    'max_count' => 4,
+                    // Five megabytes is the still-image ceiling. An animated GIF
+                    // is allowed fifteen, and the conservative number is the one
+                    // worth checking against because the composer cannot tell an
+                    // animated GIF from a still one without decoding it.
+                    'max_bytes' => 5 * 1024 * 1024,
+                    'mimes' => ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
+                    'max_pixels' => null,
+                    'max_dimension_sum' => null,
+                    'max_aspect_ratio' => null,
+                    'caption_limit' => null,
+                    'note' => 'Up to four images. Five megabytes each — an animated GIF is allowed more, but Kargah checks the number that is safe for both.',
+                ],
+                'credentials' => [
+                    'consumer_key' => [
+                        'label' => 'API key',
+                        'secret' => false,
+                        'placeholder' => 'The app’s API key',
+                        'hint' => 'From Keys and tokens on your app. It identifies the application, not you.',
+                    ],
+                    'consumer_secret' => [
+                        'label' => 'API key secret',
+                        'secret' => true,
+                        'placeholder' => 'The app’s API key secret',
+                        'hint' => 'Stored encrypted. Shown once when the app is created and regenerable on the same screen.',
+                    ],
+                    'access_token' => [
+                        'label' => 'Access token',
+                        'secret' => false,
+                        'placeholder' => '1234567890-AbCdEf…',
+                        'hint' => 'Generated under Keys and tokens for your own account. It carries the app’s Read and write permission.',
+                    ],
+                    'access_token_secret' => [
+                        'label' => 'Access token secret',
+                        'secret' => true,
+                        'placeholder' => 'Paste the access token secret',
+                        'hint' => 'Stored encrypted. Regenerating the token on X invalidates this and cuts Kargah off.',
+                    ],
+                ],
+                'permissions' => [
+                    ['allowed' => true, 'text' => 'Post to your timeline when you press publish or when a scheduled post fires'],
+                    ['allowed' => false, 'text' => 'Read your timeline, your direct messages or anyone’s followers'],
+                    ['allowed' => false, 'text' => 'Read notifications — the mentions endpoint needs a paid tier'],
+                ],
+            ],
+            self::FACEBOOK_PAGE => [
+                'label' => 'Facebook Page',
+                'icon' => 'ki-facebook',
+                'tone' => 'text-info',
+                'dot' => 'bg-info',
+                'colour' => '#1877f2',
+                // Facebook's own ceiling is 63,206 characters, which is not a
+                // number a composer counter can do anything useful with. Five
+                // thousand is the conservative reading, and it is the same
+                // number Mixpost settled on for the same reason.
+                'limit' => 5000,
+                'method' => 'token',
+                'summary' => 'Publish to a Page you administer.',
+                'requirement' => 'Create an app on developers.facebook.com, add the pages_manage_posts and pages_read_engagement permissions, then use Graph API Explorer to get a Page access token. Exchange it for a long-lived one first — a token straight out of the Explorer dies in an hour.',
+                'ingests' => false,
+                // A Page token derived from a **long-lived** user token does not
+                // expire at all; one taken straight out of Graph API Explorer
+                // dies in an hour. Nothing on a pasted string says which of the
+                // two it is, so Kargah warns at sixty days — early for the good
+                // credential and late for the bad one, which is the right way
+                // round: the bad one fails loudly on its first post, with the
+                // Graph error on the target row.
+                'token_lifetime_days' => 60,
+                'media' => [
+                    'max_count' => 10,
+                    // The Photo API's documented ceiling. Larger files often
+                    // work; a refusal here is cheaper than a post that uploads
+                    // three of four pictures and then stops.
+                    'max_bytes' => 4 * 1024 * 1024,
+                    // No WebP. The `/photos` edge documents JPEG, PNG, GIF, TIFF
+                    // and BMP, and a WebP is refused after the bytes have
+                    // already gone up.
+                    'mimes' => ['image/jpeg', 'image/png', 'image/gif'],
+                    'max_pixels' => null,
+                    'max_dimension_sum' => null,
+                    'max_aspect_ratio' => null,
+                    'caption_limit' => null,
+                    'note' => 'Up to ten photos. Each is uploaded unpublished first and then attached to the post, which is what lets several share one story.',
+                ],
+                'credentials' => [
+                    'page_id' => [
+                        'label' => 'Page ID',
+                        'secret' => false,
+                        'placeholder' => '102938475610293',
+                        'hint' => 'The numeric id of the Page, not its vanity name. Graph API Explorer shows it under /me/accounts.',
+                    ],
+                    'page_access_token' => [
+                        'label' => 'Page access token',
+                        'secret' => true,
+                        'placeholder' => 'EAAG…',
+                        'hint' => 'Stored encrypted. A Page token, not a user token — the two look alike and only one of them can post.',
+                    ],
+                ],
+                'permissions' => [
+                    ['allowed' => true, 'text' => 'Publish posts and photos to the one Page named above'],
+                    ['allowed' => false, 'text' => 'Post to your personal profile, or to any other Page you administer'],
+                    ['allowed' => false, 'text' => 'Read notifications — Kargah does not ask for the permission that would allow it'],
+                ],
+            ],
+            self::INSTAGRAM => [
+                'label' => 'Instagram',
+                'icon' => 'ki-instagram',
+                'tone' => 'text-primary',
+                'dot' => 'bg-primary',
+                'colour' => '#e1306c',
+                'limit' => 2200,
+                'method' => 'token',
+                'summary' => 'Publish to a Business or Creator account linked to a Page.',
+                'requirement' => 'Instagram publishing goes through the same Meta app as the Page. The account must be a Business or Creator account and it must be linked to a Facebook Page; a personal account cannot be published to by any API. Add instagram_basic and instagram_content_publish, then take the account id from /me/accounts?fields=instagram_business_account.',
+                'ingests' => false,
+                'token_lifetime_days' => 60,
+                'media' => [
+                    // A carousel. One image is a single post; two to ten is a
+                    // carousel, which is a different sequence of calls rather
+                    // than a longer one.
+                    'max_count' => 10,
+                    'max_bytes' => 8 * 1024 * 1024,
+                    // 🔴 JPEG and nothing else. This is not conservatism: the
+                    // Instagram Graph API's image container accepts JPEG only,
+                    // and refuses a PNG with an error that names neither the
+                    // file nor the reason. The composer says so while attaching
+                    // rather than letting somebody discover it from a red row.
+                    'mimes' => ['image/jpeg'],
+                    'max_pixels' => null,
+                    'max_dimension_sum' => null,
+                    'max_aspect_ratio' => null,
+                    'caption_limit' => null,
+                    'note' => 'JPEG only, and at least one is required — Instagram has no text-only post. Up to ten becomes a carousel.',
+                ],
+                'credentials' => [
+                    'ig_user_id' => [
+                        'label' => 'Instagram account ID',
+                        'secret' => false,
+                        'placeholder' => '17841400000000000',
+                        'hint' => 'The instagram_business_account id from /me/accounts, not your @handle and not the Page id.',
+                    ],
+                    'access_token' => [
+                        'label' => 'Access token',
+                        'secret' => true,
+                        'placeholder' => 'EAAG…',
+                        'hint' => 'Stored encrypted. The Page token for the Page this account is linked to.',
+                    ],
+                ],
+                'permissions' => [
+                    ['allowed' => true, 'text' => 'Publish images and carousels to the one account named above'],
+                    ['allowed' => false, 'text' => 'Post Stories or Reels — neither is reachable through this API'],
+                    ['allowed' => false, 'text' => 'Read your feed, your followers or your direct messages'],
+                ],
+            ],
+            self::THREADS => [
+                'label' => 'Threads',
+                'icon' => 'ki-abstract-33',
+                'tone' => 'text-mono',
+                'dot' => 'bg-mono',
+                'colour' => '#101010',
+                'limit' => 500,
+                'method' => 'token',
+                'summary' => 'Post to Threads through the Threads API.',
+                'requirement' => 'Threads has its own API and its own host, and its token is not the Instagram one even though the account is. Add the Threads use case to your Meta app, request threads_basic and threads_content_publish, then take the Threads user id and token from the Threads API settings.',
+                'ingests' => false,
+                'token_lifetime_days' => 60,
+                'media' => [
+                    'max_count' => 20,
+                    'max_bytes' => 8 * 1024 * 1024,
+                    'mimes' => ['image/jpeg', 'image/png'],
+                    'max_pixels' => null,
+                    'max_dimension_sum' => null,
+                    'max_aspect_ratio' => null,
+                    'caption_limit' => null,
+                    'note' => 'Up to twenty images as a carousel, or none at all — unlike Instagram, a text-only post is a real post here.',
+                ],
+                'credentials' => [
+                    'threads_user_id' => [
+                        'label' => 'Threads user ID',
+                        'secret' => false,
+                        'placeholder' => '78901234567890123',
+                        'hint' => 'From the Threads API settings on your Meta app. It is not the Instagram account id, even though the account is the same.',
+                    ],
+                    'access_token' => [
+                        'label' => 'Access token',
+                        'secret' => true,
+                        'placeholder' => 'THQV…',
+                        'hint' => 'Stored encrypted. A Threads token — an Instagram or Page token is refused here.',
+                    ],
+                ],
+                'permissions' => [
+                    ['allowed' => true, 'text' => 'Post to the Threads account named above, with or without images'],
+                    ['allowed' => false, 'text' => 'Reply on your behalf, or read your timeline'],
+                    ['allowed' => false, 'text' => 'Read notifications — Kargah does not ask for the permission that would allow it'],
+                ],
+            ],
+            self::WORDPRESS => [
+                'label' => 'WordPress',
+                'icon' => 'ki-notepad',
+                'tone' => 'text-info',
+                'dot' => 'bg-info',
+                'colour' => '#21759b',
+                // WordPress imposes no limit on post content, so this number is
+                // Kargah's rather than the network's — it exists because the
+                // composer's counter needs one, and because a body past this
+                // length is very likely a paste that went wrong.
+                'limit' => 100000,
+                'method' => 'token',
+                'summary' => 'Publish an article to your own WordPress site.',
+                'requirement' => 'On your WordPress site, open Users → Profile → Application Passwords, add one named Kargah, and paste the generated password here with your username. This is WordPress’s own mechanism and needs no plugin; the site must be reachable over HTTPS and must not have the REST API disabled.',
+                'ingests' => false,
+                // An application password does not expire. It is revocable from
+                // the same screen that created it, one row per application, so
+                // cutting Kargah off never touches the person's own login.
+                'token_lifetime_days' => null,
+                'media' => [
+                    'max_count' => 10,
+                    // The site's `upload_max_filesize`, which Kargah cannot ask
+                    // for without uploading something. Eight megabytes is what a
+                    // typical shared host ships with; a site configured lower
+                    // answers 413 and the target says so.
+                    'max_bytes' => 8 * 1024 * 1024,
+                    'mimes' => ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
+                    'max_pixels' => null,
+                    'max_dimension_sum' => null,
+                    'max_aspect_ratio' => null,
+                    'caption_limit' => null,
+                    'note' => 'The first image becomes the featured image; the rest are uploaded to the media library and left in the post’s gallery.',
+                ],
+                'credentials' => [
+                    'site_url' => [
+                        'label' => 'Site URL',
+                        'secret' => false,
+                        'placeholder' => 'https://example.com',
+                        'hint' => 'The site’s home URL with the scheme, not the /wp-json path — Kargah appends that itself.',
+                    ],
+                    'username' => [
+                        'label' => 'Username',
+                        'secret' => false,
+                        'placeholder' => 'editor',
+                        'hint' => 'The WordPress login the application password belongs to. It needs permission to publish posts.',
+                    ],
+                    'application_password' => [
+                        'label' => 'Application password',
+                        'secret' => true,
+                        'placeholder' => 'abcd EFGH 1234 ijkl MNOP 5678',
+                        'hint' => 'Stored encrypted. Paste it with the spaces exactly as WordPress showed them; revoking it there is enough to cut Kargah off.',
+                    ],
+                ],
+                'permissions' => [
+                    ['allowed' => true, 'text' => 'Create posts and upload images as the user above, as drafts or published'],
+                    ['allowed' => false, 'text' => 'Edit or delete anything that was already on the site'],
+                    ['allowed' => false, 'text' => 'Read notifications — WordPress has none to read'],
                 ],
             ],
         ];

@@ -57,11 +57,28 @@
     })();
 </script>
 
-<div class="flex grow">
+{{--
+    `min-w-0` on both of these, and it has to be both.
+
+    A flex item's default `min-width` is `auto`, which means "never shrink below
+    your content's minimum". The board canvas is a horizontally scrolling strip
+    of lists; its minimum is far wider than the screen, and without these two
+    the whole page inherited that minimum and scrolled sideways — sidebar, header,
+    footer and all — while the canvas's own scrollbar sat there doing nothing.
+    Measured at a 1302px viewport: the document was 1560px wide.
+
+    Both, because the chain has two flex items in it and each independently
+    refuses to shrink: this row is an item of `body`, and `.kt-wrapper` is an
+    item of this row. Setting it on either one alone changes nothing at all,
+    which is exactly the sort of half-fix that gets reverted as "it did not
+    work". See docs/frontend-conventions.md — "the page body never scrolls
+    sideways" is the rule this was breaking on every wide page.
+--}}
+<div class="flex grow min-w-0">
 
     @include('partials.sidebar')
 
-    <div class="kt-wrapper flex grow flex-col">
+    <div class="kt-wrapper flex grow flex-col min-w-0">
 
         @include('partials.header')
 

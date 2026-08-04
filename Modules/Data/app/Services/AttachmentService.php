@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 use Modules\Data\Contracts\AttachmentService as AttachmentServiceContract;
 use Modules\Data\Models\Attachment;
@@ -136,6 +137,24 @@ class AttachmentService implements AttachmentServiceContract
         // missing path returns null on some drivers and throws on others, and
         // the caller needs one answer.
         return $disk->exists($attachment->path) ? $disk->get($attachment->path) : null;
+    }
+
+    public function publicUrl(int $attachmentId, int $minutes = 30): ?string
+    {
+        $attachment = Attachment::query()->find($attachmentId);
+
+        if ($attachment === null) {
+            return null;
+        }
+
+        // A signature the route already checks. `data.file-share` has sat
+        // outside the auth group behind `signed` middleware since the module
+        // shipped; what was missing was anything that built the URL.
+        return URL::temporarySignedRoute(
+            'data.file-share',
+            now()->addMinutes(max(1, $minutes)),
+            ['attachment' => $attachment->getKey()],
+        );
     }
 
     public function stream(int $attachmentId, bool $inline = false): StreamedResponse

@@ -49,6 +49,7 @@ class PostTarget extends Model
         'post_id',
         'social_account_id',
         'body_override',
+        'options',
         'status',
         'remote_id',
         'remote_url',
@@ -62,6 +63,7 @@ class PostTarget extends Model
     {
         return [
             'attempts' => 'integer',
+            'options' => 'array',
             'published_at' => 'datetime',
             'last_attempt_at' => 'datetime',
         ];

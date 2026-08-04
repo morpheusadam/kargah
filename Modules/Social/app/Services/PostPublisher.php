@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\Log;
 use Modules\Social\Models\Post;
 use Modules\Social\Models\PostTarget;
 use Modules\Social\Services\Publishers\PublishFailed;
+use Modules\Social\Services\Publishers\TakesTargetOptions;
 
 /**
  * The only thing in Kargah that sends a post.
@@ -123,7 +124,23 @@ class PostPublisher
         }
 
         try {
-            $result = $driver->publish($account, $target->text(), $this->mediaFor($target));
+            // Two calls rather than one, decided by what the driver implements.
+            // Most destinations take a string and some pictures and nothing
+            // else; WordPress needs a title, categories and a draft-or-publish
+            // decision, none of which are copy. A driver that has not asked for
+            // options never sees them even when the target carries some — which
+            // is right: a post going to a blog and to X carries a title for the
+            // first, and the title is not X's business. See
+            // `Publishers\TakesTargetOptions`, and `Publishing::ingesterFor()`
+            // for the same `instanceof` shape on the read side.
+            $result = $driver instanceof TakesTargetOptions
+                ? $driver->publishWithOptions(
+                    $account,
+                    $target->text(),
+                    $this->mediaFor($target),
+                    is_array($target->options) ? $target->options : [],
+                )
+                : $driver->publish($account, $target->text(), $this->mediaFor($target));
         } catch (PublishFailed $e) {
             return $this->fail($target, $report, $e->getMessage());
         } catch (\Throwable $e) {

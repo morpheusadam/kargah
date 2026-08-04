@@ -16,6 +16,7 @@ use Modules\Social\Services\Publishers\DiscordPublisher;
 use Modules\Social\Services\Publishers\LinkedInPublisher;
 use Modules\Social\Services\Publishers\MastodonPublisher;
 use Modules\Social\Services\Publishers\TelegramPublisher;
+use Modules\Social\Services\Publishers\XPublisher;
 use Modules\Social\Services\Publishing;
 use Modules\Social\Support\Networks;
 use Nwidart\Modules\Support\ModuleServiceProvider;
@@ -62,6 +63,7 @@ class SocialServiceProvider extends ModuleServiceProvider
             $publishing->extend(Networks::LINKEDIN, fn () => new LinkedInPublisher);
             $publishing->extend(Networks::TELEGRAM, fn () => new TelegramPublisher);
             $publishing->extend(Networks::DISCORD, fn () => new DiscordPublisher);
+            $publishing->extend(Networks::X, fn () => new XPublisher);
 
             return $publishing;
         });
