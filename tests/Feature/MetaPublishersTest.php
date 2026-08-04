@@ -550,7 +550,13 @@ class MetaPublishersTest extends TestCase
         $reason = $instagram->unavailableReason($this->instagramAccount());
 
         $this->assertNotNull($reason);
-        $this->assertStringContainsString('cannot reach', $reason);
+
+        // The two things the sentence has to carry, rather than a phrase from
+        // it: the address that is the actual problem, and the setting that
+        // fixes it. Asserting on prose made this fail the day the guard moved
+        // into `FetchesOwnMedia` and its wording changed by three words, which
+        // told nobody anything — the behaviour had not moved at all.
+        $this->assertStringContainsString('localhost', $reason);
         $this->assertStringContainsString('APP_URL', $reason);
 
         $threads = new ThreadsPublisher;
@@ -565,7 +571,9 @@ class MetaPublishersTest extends TestCase
 
             $this->fail('Threads published a picture from an install Meta cannot reach.');
         } catch (PublishFailed $e) {
-            $this->assertStringContainsString('cannot reach', $e->getMessage());
+            // The address and the fix, not a phrase — see the note above.
+            $this->assertStringContainsString('localhost', $e->getMessage());
+            $this->assertStringContainsString('APP_URL', $e->getMessage());
         }
 
         // The text post and its publish, and nothing from the picture attempt.

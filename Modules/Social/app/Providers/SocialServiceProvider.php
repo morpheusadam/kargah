@@ -15,10 +15,15 @@ use Modules\Social\Services\Publishers\BlueskyPublisher;
 use Modules\Social\Services\Publishers\DiscordPublisher;
 use Modules\Social\Services\Publishers\FacebookPagePublisher;
 use Modules\Social\Services\Publishers\InstagramPublisher;
+use Modules\Social\Services\Publishers\LemmyPublisher;
 use Modules\Social\Services\Publishers\LinkedInPublisher;
 use Modules\Social\Services\Publishers\MastodonPublisher;
+use Modules\Social\Services\Publishers\RedditPublisher;
+use Modules\Social\Services\Publishers\SlackPublisher;
 use Modules\Social\Services\Publishers\TelegramPublisher;
 use Modules\Social\Services\Publishers\ThreadsPublisher;
+use Modules\Social\Services\Publishers\TumblrPublisher;
+use Modules\Social\Services\Publishers\VkPublisher;
 use Modules\Social\Services\Publishers\XPublisher;
 use Modules\Social\Services\Publishing;
 use Modules\Social\Support\Networks;
@@ -70,6 +75,11 @@ class SocialServiceProvider extends ModuleServiceProvider
             $publishing->extend(Networks::FACEBOOK_PAGE, fn () => new FacebookPagePublisher);
             $publishing->extend(Networks::INSTAGRAM, fn () => new InstagramPublisher);
             $publishing->extend(Networks::THREADS, fn () => new ThreadsPublisher);
+            $publishing->extend(Networks::SLACK, fn () => new SlackPublisher);
+            $publishing->extend(Networks::TUMBLR, fn () => new TumblrPublisher);
+            $publishing->extend(Networks::VK, fn () => new VkPublisher);
+            $publishing->extend(Networks::REDDIT, fn () => new RedditPublisher);
+            $publishing->extend(Networks::LEMMY, fn () => new LemmyPublisher);
 
             return $publishing;
         });

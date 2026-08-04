@@ -104,6 +104,48 @@ final class Networks
      */
     public const WORDPRESS = 'wordpress';
 
+    public const SLACK = 'slack';
+
+    public const TUMBLR = 'tumblr';
+
+    public const VK = 'vk';
+
+    /**
+     * Reddit and Lemmy are the two entries here that take a **real account
+     * password**, and it is worth saying so where the constants are rather than
+     * only in their catalogue copy.
+     *
+     * Every other credential in this file is a scoped, individually revocable
+     * thing a network's own settings screen hands over: an app password, a bot
+     * token, a webhook URL, an OAuth pair. Revoking one costs the person nothing
+     * else. Neither Reddit nor Lemmy has such a thing — Reddit's only flow that
+     * needs no registered callback URL is a script app's password grant, and
+     * Lemmy's API has one way in and it is `user/login`. So Kargah either stores
+     * the password or does not support them.
+     *
+     * It stores it, encrypted like every other credential, and both connect
+     * pages say plainly that a dedicated posting account is the right way to use
+     * them. That is a worse bargain than the rest of this catalogue offers and
+     * the person deserves to be told, not protected from the choice.
+     */
+    public const REDDIT = 'reddit';
+
+    public const LEMMY = 'lemmy';
+
+    /**
+     * DEV.to and Hashnode are article destinations, not social ones.
+     *
+     * Both take a title, a markdown body, tags and a canonical URL — the same
+     * shape WordPress needs — so both live in `Modules\Blog` beside
+     * `WordPressPublisher`, implement `TakesTargetOptions`, and read the article
+     * out of `post_targets.options`. They are listed in this catalogue for the
+     * same reason WordPress is: it is the one place that knows how to draw a
+     * destination and what its credentials are called.
+     */
+    public const DEVTO = 'devto';
+
+    public const HASHNODE = 'hashnode';
+
     /**
      * @return array<string, array{
      *     label: string,
@@ -666,6 +708,388 @@ final class Networks
                     ['allowed' => true, 'text' => 'Create posts and upload images as the user above, as drafts or published'],
                     ['allowed' => false, 'text' => 'Edit or delete anything that was already on the site'],
                     ['allowed' => false, 'text' => 'Read notifications — WordPress has none to read'],
+                ],
+            ],
+            self::SLACK => [
+                'label' => 'Slack',
+                'icon' => 'ki-slack',
+                // Not `destructive`, which was the first thing written here and
+                // was wrong for a reason worth recording: `destructive` is the
+                // red this application uses for a failed target, so a Slack
+                // account would have rendered its dot in the colour that means
+                // "this did not send". Slack's aubergine has no token in the
+                // Metronic palette — there is no purple — and `mono` is the
+                // least wrong of the six that exist. The real brand colour is
+                // in `colour` below, where the calendar and the charts read it.
+                'tone' => 'text-mono',
+                'dot' => 'bg-mono',
+                'colour' => '#4a154b',
+                // `chat.postMessage`'s `text` allows 40,000, but attaching a
+                // picture turns the message into blocks and a block's text is
+                // capped at 3,000. This is the number that holds in both shapes,
+                // which is what a counter has to show.
+                'limit' => 3000,
+                'method' => 'token',
+                'summary' => 'Post into a channel of a workspace you administer.',
+                'requirement' => 'Create an app at api.slack.com/apps, add the chat:write bot scope under OAuth & Permissions, install it to the workspace, then paste the Bot User OAuth Token. Invite the app to the channel with /invite, or it can only post to channels it is already in.',
+                'ingests' => false,
+                // A bot token lives until somebody revokes it or reinstalls the
+                // app. There is no clock on it.
+                'token_lifetime_days' => null,
+                'media' => [
+                    'max_count' => 10,
+                    'max_bytes' => 8 * 1024 * 1024,
+                    'mimes' => ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
+                    'max_pixels' => null,
+                    'max_dimension_sum' => null,
+                    'max_aspect_ratio' => null,
+                    'caption_limit' => null,
+                    'note' => 'Pictures ride as image blocks, which means Slack fetches them from this install rather than being sent them — the same requirement Instagram has.',
+                ],
+                'credentials' => [
+                    'bot_token' => [
+                        'label' => 'Bot user OAuth token',
+                        'secret' => true,
+                        'placeholder' => 'xoxb-…',
+                        'hint' => 'Stored encrypted. It starts xoxb-; a user token starting xoxp- is a different, wider credential and is not what this wants.',
+                    ],
+                    'channel' => [
+                        'label' => 'Channel',
+                        'secret' => false,
+                        'placeholder' => '#build-log or C0123456789',
+                        'hint' => 'The channel name with its hash, or the channel ID. The app has to be a member of it.',
+                    ],
+                ],
+                'permissions' => [
+                    ['allowed' => true, 'text' => 'Post messages into the one channel you name above'],
+                    ['allowed' => false, 'text' => 'Read any message, channel or member of your workspace'],
+                    ['allowed' => false, 'text' => 'Read notifications — Kargah does not ask for the scope that would allow it'],
+                ],
+            ],
+            self::TUMBLR => [
+                'label' => 'Tumblr',
+                'icon' => 'ki-abstract-19',
+                'tone' => 'text-info',
+                'dot' => 'bg-info',
+                'colour' => '#36465d',
+                // Tumblr documents no ceiling on a text post's body. This number
+                // is Kargah's, not Tumblr's, and it exists because the composer's
+                // counter needs one and because a body past it is very likely a
+                // paste that went wrong.
+                'limit' => 10000,
+                'method' => 'token',
+                'summary' => 'Publish a text post to a blog you own.',
+                'requirement' => 'Register an application at tumblr.com/oauth/apps, then use the API console on the same page to generate an OAuth token and secret for your own account. All four values are on that screen; there is no callback to set up.',
+                'ingests' => false,
+                // OAuth 1.0a issues no expiry and no refresh token — the same
+                // reason X's stays null. See the class docblock.
+                'token_lifetime_days' => null,
+                'media' => [
+                    'max_count' => 10,
+                    'max_bytes' => 10 * 1024 * 1024,
+                    'mimes' => ['image/jpeg', 'image/png', 'image/gif'],
+                    'max_pixels' => null,
+                    'max_dimension_sum' => null,
+                    'max_aspect_ratio' => null,
+                    'caption_limit' => null,
+                    'note' => 'Attaching a picture makes this a photo post rather than a text post, which is a different call and puts the copy in the caption.',
+                ],
+                'credentials' => [
+                    'blog_identifier' => [
+                        'label' => 'Blog identifier',
+                        'secret' => false,
+                        'placeholder' => 'yourblog.tumblr.com',
+                        'hint' => 'The blog’s host name. A custom domain works here too, and one account can own several blogs.',
+                    ],
+                    'consumer_key' => [
+                        'label' => 'Consumer key',
+                        'secret' => false,
+                        'placeholder' => 'The application’s consumer key',
+                        'hint' => 'From your registered application. It identifies the application, not you.',
+                    ],
+                    'consumer_secret' => [
+                        'label' => 'Consumer secret',
+                        'secret' => true,
+                        'placeholder' => 'The application’s consumer secret',
+                        'hint' => 'Stored encrypted. Shown on the application’s own page and regenerable there.',
+                    ],
+                    'token' => [
+                        'label' => 'OAuth token',
+                        'secret' => false,
+                        'placeholder' => 'Generated in the API console',
+                        'hint' => 'Identifies your account to the application. Generated once and does not expire.',
+                    ],
+                    'token_secret' => [
+                        'label' => 'OAuth token secret',
+                        'secret' => true,
+                        'placeholder' => 'Paste the token secret',
+                        'hint' => 'Stored encrypted. Revoking the application on Tumblr invalidates it and cuts Kargah off.',
+                    ],
+                ],
+                'permissions' => [
+                    ['allowed' => true, 'text' => 'Create posts on the one blog you name above'],
+                    ['allowed' => false, 'text' => 'Edit or delete posts that were already there'],
+                    ['allowed' => false, 'text' => 'Read your dashboard, your messages or who follows you'],
+                ],
+            ],
+            self::VK => [
+                'label' => 'VK',
+                'icon' => 'ki-abstract-14',
+                'tone' => 'text-info',
+                'dot' => 'bg-info',
+                'colour' => '#0077ff',
+                'limit' => 16000,
+                'method' => 'token',
+                'summary' => 'Post to a wall — your own, or a community you administer.',
+                'requirement' => 'Create a standalone application at vk.com/apps?act=manage, then get a token for it with the wall, photos and offline scopes. The offline scope is the one that matters: without it the token dies within the day.',
+                'ingests' => false,
+                // Only with the `offline` scope, which the requirement text asks
+                // for by name. A token granted without it lasts about a day, and
+                // there is nothing on the pasted string that says which kind it
+                // is — so this stays null and a short-lived token fails loudly on
+                // its first post rather than being warned about on the wrong clock.
+                'token_lifetime_days' => null,
+                'media' => [
+                    'max_count' => 10,
+                    'max_bytes' => 50 * 1024 * 1024,
+                    'mimes' => ['image/jpeg', 'image/png', 'image/gif'],
+                    'max_pixels' => null,
+                    'max_dimension_sum' => null,
+                    'max_aspect_ratio' => null,
+                    'caption_limit' => null,
+                    'note' => 'Each picture is a three-step upload — ask for a server, send the bytes, save the photo — before the post itself is made.',
+                ],
+                'credentials' => [
+                    'access_token' => [
+                        'label' => 'Access token',
+                        'secret' => true,
+                        'placeholder' => 'vk1.a.…',
+                        'hint' => 'Stored encrypted. It must carry the wall, photos and offline scopes.',
+                    ],
+                    'owner_id' => [
+                        'label' => 'Wall owner ID',
+                        'secret' => false,
+                        'placeholder' => '12345678 or -87654321',
+                        'hint' => 'Your user ID for your own wall, or the community ID with a minus sign in front of it for a community wall.',
+                    ],
+                ],
+                'permissions' => [
+                    ['allowed' => true, 'text' => 'Post to the one wall you name above, with pictures'],
+                    ['allowed' => false, 'text' => 'Read your messages, your friends or anyone’s wall'],
+                    ['allowed' => false, 'text' => 'Delete or edit posts that were already there'],
+                ],
+            ],
+            self::REDDIT => [
+                'label' => 'Reddit',
+                'icon' => 'ki-abstract-39',
+                'tone' => 'text-warning',
+                'dot' => 'bg-warning',
+                'colour' => '#ff4500',
+                // A self post's body. The **title** is 300 and is a separate
+                // field this driver derives rather than counts — see
+                // RedditPublisher.
+                'limit' => 40000,
+                'method' => 'token',
+                'summary' => 'Submit a text post to one subreddit.',
+                // No 🔴 in this string, unlike the docblocks: `requirement` is
+                // rendered straight into the connect page, where a red circle
+                // reads as a decoration rather than as the warning it is. The
+                // sentence carries the weight instead, and the permissions panel
+                // below says the same thing a second way.
+                'requirement' => 'Reddit is the only credential Kargah asks for that is a real account password, because a script app’s password grant is its only flow that needs no callback URL. Create a script app at reddit.com/prefs/apps, and use a dedicated posting account rather than your own — this password can do everything that account can do.',
+                'ingests' => false,
+                // The access token Reddit issues lasts an hour, and this driver
+                // fetches a fresh one on every publish rather than storing it.
+                // What is stored is the password, and a password has no expiry.
+                'token_lifetime_days' => null,
+                'media' => [
+                    // Deliberately none. An image submission is a lease upload
+                    // against Reddit's own media host followed by a submit that
+                    // references it, and it fails in ways a text post does not.
+                    // Text posts work today; pictures are honest future work
+                    // rather than a half-built path.
+                    'max_count' => 0,
+                    'max_bytes' => 0,
+                    'mimes' => [],
+                    'max_pixels' => null,
+                    'max_dimension_sum' => null,
+                    'max_aspect_ratio' => null,
+                    'caption_limit' => null,
+                    'note' => 'Text posts only. An image submission needs a lease upload against Reddit’s media host, which is separate work.',
+                ],
+                'credentials' => [
+                    'client_id' => [
+                        'label' => 'App ID',
+                        'secret' => false,
+                        'placeholder' => 'The short string under the app’s name',
+                        'hint' => 'Shown under “personal use script” on your apps page, not labelled as an ID.',
+                    ],
+                    'client_secret' => [
+                        'label' => 'App secret',
+                        'secret' => true,
+                        'placeholder' => 'The app’s secret',
+                        'hint' => 'Stored encrypted. On the same page, next to the app ID.',
+                    ],
+                    'username' => [
+                        'label' => 'Username',
+                        'secret' => false,
+                        'placeholder' => 'the_posting_account',
+                        'hint' => 'Without the u/ prefix. It must be listed as a developer of the app above.',
+                    ],
+                    'password' => [
+                        'label' => 'Account password',
+                        'secret' => true,
+                        'placeholder' => 'The account’s own password',
+                        'hint' => 'Stored encrypted. This is the account’s real password and there is no scoped alternative — use a dedicated posting account.',
+                    ],
+                    'subreddit' => [
+                        'label' => 'Subreddit',
+                        'secret' => false,
+                        'placeholder' => 'r/somewhere or somewhere',
+                        'hint' => 'One subreddit per connection. It has to allow text posts from this account.',
+                    ],
+                ],
+                'permissions' => [
+                    ['allowed' => true, 'text' => 'Submit text posts to the one subreddit you name above'],
+                    ['allowed' => false, 'text' => 'Vote, comment, or read your inbox'],
+                    ['allowed' => false, 'text' => 'Anything else — but note the password itself is not scoped, so this is Kargah’s restraint rather than Reddit’s'],
+                ],
+            ],
+            self::LEMMY => [
+                'label' => 'Lemmy',
+                'icon' => 'ki-abstract-31',
+                'tone' => 'text-success',
+                'dot' => 'bg-success',
+                'colour' => '#14854f',
+                // A post's body. The **title** is 200 and is a separate field.
+                'limit' => 10000,
+                'method' => 'token',
+                'summary' => 'Post to a community on any Lemmy instance.',
+                'requirement' => 'Lemmy’s API has one way in and it is a username and password, so that is what this asks for — a dedicated posting account is the right way to use it. Two-factor must be off on that account, because the login endpoint has nowhere to put a code.',
+                'ingests' => false,
+                'token_lifetime_days' => null,
+                'media' => [
+                    'max_count' => 1,
+                    'max_bytes' => 10 * 1024 * 1024,
+                    'mimes' => ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
+                    'max_pixels' => null,
+                    'max_dimension_sum' => null,
+                    'max_aspect_ratio' => null,
+                    'caption_limit' => null,
+                    'note' => 'One picture, uploaded to the instance’s own image host and then set as the post’s URL — a Lemmy post carries one link, not a gallery.',
+                ],
+                'credentials' => [
+                    'instance' => [
+                        'label' => 'Instance URL',
+                        'secret' => false,
+                        'placeholder' => 'https://lemmy.world',
+                        'hint' => 'The server the account lives on, with the scheme.',
+                    ],
+                    'username' => [
+                        'label' => 'Username',
+                        'secret' => false,
+                        'placeholder' => 'the_posting_account',
+                        'hint' => 'The account name on that instance, or the email it signs in with.',
+                    ],
+                    'password' => [
+                        'label' => 'Password',
+                        'secret' => true,
+                        'placeholder' => 'The account’s own password',
+                        'hint' => 'Stored encrypted. Lemmy issues no scoped token, so this is the account’s real password — use a dedicated account.',
+                    ],
+                    'community' => [
+                        'label' => 'Community',
+                        'secret' => false,
+                        'placeholder' => 'buildinpublic',
+                        'hint' => 'The community name without the exclamation mark. Use name@instance for a community on another server.',
+                    ],
+                ],
+                'permissions' => [
+                    ['allowed' => true, 'text' => 'Create posts in the one community you name above'],
+                    ['allowed' => false, 'text' => 'Vote, comment, or read your inbox'],
+                    ['allowed' => false, 'text' => 'Anything else — but the password is not scoped, so this is Kargah’s restraint rather than Lemmy’s'],
+                ],
+            ],
+            self::DEVTO => [
+                'label' => 'DEV.to',
+                'icon' => 'ki-code',
+                'tone' => 'text-mono',
+                'dot' => 'bg-mono',
+                'colour' => '#0a0a0a',
+                'limit' => 100000,
+                'method' => 'token',
+                'summary' => 'Publish an article to your DEV profile.',
+                'requirement' => 'On DEV, open Settings → Extensions → DEV Community API Keys, generate a key named Kargah, and paste it here. It is revocable from the same screen and needs no application registration.',
+                'ingests' => false,
+                'token_lifetime_days' => null,
+                'media' => [
+                    // Nothing is uploaded. DEV takes a `main_image` URL and
+                    // renders markdown, so a picture reaches it as a link rather
+                    // than as bytes — the same shape Instagram needs, for a
+                    // different reason.
+                    'max_count' => 1,
+                    'max_bytes' => 8 * 1024 * 1024,
+                    'mimes' => ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
+                    'max_pixels' => null,
+                    'max_dimension_sum' => null,
+                    'max_aspect_ratio' => null,
+                    'caption_limit' => null,
+                    'note' => 'The first image becomes the article’s cover, as a URL DEV fetches — there is no upload endpoint.',
+                ],
+                'credentials' => [
+                    'api_key' => [
+                        'label' => 'API key',
+                        'secret' => true,
+                        'placeholder' => 'Paste the DEV API key',
+                        'hint' => 'Stored encrypted. Revoking it on DEV is enough to cut Kargah off.',
+                    ],
+                ],
+                'permissions' => [
+                    ['allowed' => true, 'text' => 'Create articles on your profile, as drafts or published'],
+                    ['allowed' => false, 'text' => 'Read your notifications or anyone’s reading list'],
+                    ['allowed' => false, 'text' => 'Delete articles — the API has no delete'],
+                ],
+            ],
+            self::HASHNODE => [
+                'label' => 'Hashnode',
+                'icon' => 'ki-abstract-45',
+                'tone' => 'text-primary',
+                'dot' => 'bg-primary',
+                'colour' => '#2962ff',
+                'limit' => 100000,
+                'method' => 'token',
+                'summary' => 'Publish an article to a Hashnode publication.',
+                'requirement' => 'Generate a personal access token at hashnode.com/settings/developer, then take the publication ID from your blog’s dashboard URL. Hashnode’s API is GraphQL and both values are on those two screens.',
+                'ingests' => false,
+                'token_lifetime_days' => null,
+                'media' => [
+                    'max_count' => 1,
+                    'max_bytes' => 8 * 1024 * 1024,
+                    'mimes' => ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
+                    'max_pixels' => null,
+                    'max_dimension_sum' => null,
+                    'max_aspect_ratio' => null,
+                    'caption_limit' => null,
+                    'note' => 'The first image becomes the cover, as a URL Hashnode fetches — its upload endpoint is not part of the public API.',
+                ],
+                'credentials' => [
+                    'api_key' => [
+                        'label' => 'Personal access token',
+                        'secret' => true,
+                        'placeholder' => 'Paste the Hashnode token',
+                        'hint' => 'Stored encrypted. Revocable from the developer settings page that issued it.',
+                    ],
+                    'publication_id' => [
+                        'label' => 'Publication ID',
+                        'secret' => false,
+                        'placeholder' => '65b1f0c8a1d2e3f4a5b6c7d8',
+                        'hint' => 'The identifier in your blog dashboard’s URL, not the blog’s host name.',
+                    ],
+                ],
+                'permissions' => [
+                    ['allowed' => true, 'text' => 'Create posts in the one publication you name above, as drafts or published'],
+                    ['allowed' => false, 'text' => 'Edit or delete anything already published'],
+                    ['allowed' => false, 'text' => 'Read your notifications or your followers'],
                 ],
             ],
         ];

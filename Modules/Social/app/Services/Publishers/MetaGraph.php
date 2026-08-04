@@ -65,6 +65,10 @@ use Modules\Social\Support\Networks;
  */
 trait MetaGraph
 {
+    use FetchesOwnMedia {
+        unreachableInstallReason as private fetchGuardReason;
+    }
+
     /**
      * The Graph version every URL built here carries.
      *
@@ -330,32 +334,16 @@ trait MetaGraph
      * The judgement is deliberately crude — a loopback address, a private range,
      * a development TLD, or a bare hostname with no dot in it. It cannot prove
      * an install *is* reachable (a public DNS name behind a firewall would pass
-     * and then fail at Meta), and it does not try to. It catches the case that
-     * is true on every developer machine and on every install somebody has just
-     * put up behind `php artisan serve`, and says so in a sentence.
+     * and then fail at Meta), and it does not try to.
+     *
+     * The host test itself now lives in `FetchesOwnMedia`, because Slack, DEV.to
+     * and Hashnode had each grown a verbatim copy of it — four copies of one
+     * rule is four chances for it to drift, and only the name in the sentence
+     * was ever Meta's.
      */
-    protected function unreachableInstallReason(): ?string
+    protected function unreachableInstallReason(string $who = 'Meta'): ?string
     {
-        $host = strtolower((string) parse_url(url('/'), PHP_URL_HOST));
-
-        $private = $host === ''
-            || $host === 'localhost'
-            || ! str_contains($host, '.')
-            || str_ends_with($host, '.localhost')
-            || str_ends_with($host, '.local')
-            || str_ends_with($host, '.test')
-            || str_ends_with($host, '.internal')
-            || (filter_var($host, FILTER_VALIDATE_IP) !== false
-                && filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false);
-
-        if (! $private) {
-            return null;
-        }
-
-        return 'Meta downloads the picture from this install rather than being sent it, and this install answers on “'
-            .($host === '' ? 'an address that is not set' : $host)
-            .'”, which Meta’s servers cannot reach. Nothing is wrong with the post or the token: set APP_URL to a public '
-            .'https address — a real domain, or a tunnel while you are developing — and it will publish';
+        return $this->fetchGuardReason($who);
     }
 
     /**

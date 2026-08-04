@@ -33,21 +33,40 @@ use Modules\Social\Support\Networks;
  *
  * ## The split between the body and the teaser
  *
- * The article body goes to WordPress. The teaser goes everywhere else, as
- * `post_targets.body_override`, because an eight-hundred-word article is not a
- * Bluesky post and pretending otherwise would fail three targets out of four on
- * a character limit. Left empty, the teaser falls back to the excerpt and then
- * to the title, so the common case — an article and a link-shaped announcement
- * — needs nothing typed twice.
+ * The article body goes to the article destinations. The teaser goes everywhere
+ * else, as `post_targets.body_override`, because an eight-hundred-word article
+ * is not a Bluesky post and pretending otherwise would fail three targets out of
+ * four on a character limit. Left empty, the teaser falls back to the excerpt and
+ * then to the title, so the common case — an article and a link-shaped
+ * announcement — needs nothing typed twice.
+ *
+ * ## What an article destination is
+ *
+ * WordPress, DEV.to and Hashnode: the three networks whose drivers implement
+ * `Publishers\TakesTargetOptions` and read an article out of
+ * `post_targets.options`. They are named in `articleNetworks()` below rather than
+ * compared against `Networks::WORDPRESS` inline, which is what this page used to
+ * do — and the symptom of leaving it that way was quiet rather than loud: a
+ * DEV.to target would have been written with `options` set to null, published the
+ * article body as a teaser, and derived its title from the body's first line
+ * while a perfectly good one sat in the form.
+ *
+ * The list is here rather than in `Networks` because it is this page's own
+ * question — "does this destination get the article or the teaser" — and Social's
+ * catalogue has no opinion about that. A driver is the authority on what it
+ * accepts; when the fourth arrives, this list is the one line that changes.
  *
  * ## What goes where
  *
  * The title, slug, excerpt, canonical link and cover image describe the article
- * and live on `blog_articles`. The WordPress status, categories and tags are
+ * and live on `blog_articles`. The status, categories and tags are
  * per-destination and go in `post_targets.options`, because the same article is
  * reasonably a draft on the client's site and published on your own — see the
  * migration that added that column, and `Publishers\TakesTargetOptions` for how
- * the driver is handed them.
+ * the driver is handed them. One bag is written and shared by every article
+ * destination on the post; each driver takes the keys that mean something on its
+ * own network and ignores the rest, which is why `categories` going to DEV.to
+ * costs nothing.
  *
  * ## Images
  *
@@ -130,6 +149,24 @@ class extends Component
         return $this->resolvedAccounts ??= SocialAccount::query()->inReadingOrder()->get();
     }
 
+    /**
+     * The destinations that receive the article rather than the teaser.
+     *
+     * See the class docblock. One line to change when a fourth arrives, and the
+     * three places below ask this rather than each remembering the list.
+     *
+     * @return list<string>
+     */
+    private function articleNetworks(): array
+    {
+        return [Networks::WORDPRESS, Networks::DEVTO, Networks::HASHNODE];
+    }
+
+    private function isArticleDestination(SocialAccount $account): bool
+    {
+        return in_array($account->network, $this->articleNetworks(), true);
+    }
+
     /** Form input arrives as strings. Compare ids as ids. */
     private function targetIds(): array
     {
@@ -153,11 +190,12 @@ class extends Component
         return [
             'accounts' => $this->accounts(),
             'destinations' => $this->destinations(),
-            'blogCount' => $selected->where('network', Networks::WORDPRESS)->count(),
-            'socialCount' => $selected->where('network', '!=', Networks::WORDPRESS)->count(),
+            'blogCount' => $selected->filter(fn (SocialAccount $a): bool => $this->isArticleDestination($a))->count(),
+            'socialCount' => $selected->reject(fn (SocialAccount $a): bool => $this->isArticleDestination($a))->count(),
             'connectedCount' => $selected->filter(fn (SocialAccount $a): bool => $a->isConnected())->count(),
             'socialCopy' => $this->teaserText(),
             'hasMedia' => $this->uploads !== [],
+            'mediaProblems' => $this->mediaProblems(),
             'statuses' => [
                 'publish' => 'Publish it',
                 'draft' => 'Leave it as a draft',
@@ -171,9 +209,10 @@ class extends Component
      * Every ticked destination with the copy and the limit that apply to it.
      *
      * Built here rather than in the template because two different strings are
-     * being counted against two different allowances: WordPress receives the
-     * article body, everything else receives the teaser, and Telegram's own
-     * allowance drops to a caption's 1,024 the moment a picture is attached.
+     * being counted against two different allowances: an article destination
+     * receives the article body, everything else receives the teaser, and
+     * Telegram's own allowance drops to a caption's 1,024 the moment a picture
+     * is attached.
      * `Networks::limitWithMedia()` is the one place that knows the last part and
      * `social::publish` already asks it the same way.
      *
@@ -185,7 +224,7 @@ class extends Component
         $rows = [];
 
         foreach ($this->selected() as $account) {
-            $isBlog = $account->network === Networks::WORDPRESS;
+            $isBlog = $this->isArticleDestination($account);
             $copy = $isBlog ? trim($this->body) : $this->teaserText();
             $limit = $account->characterLimitWith($hasMedia);
 
@@ -200,6 +239,70 @@ class extends Component
         }
 
         return $rows;
+    }
+
+    /**
+     * What the ticked destinations make of what is currently attached.
+     *
+     * **The three article destinations disagree about pictures and the gap is
+     * wide enough to lose a post in.** WordPress uploads bytes to its own media
+     * library and takes ten of them; DEV.to and Hashnode have no upload endpoint
+     * at all — each takes a single cover image as a URL it fetches — so the
+     * catalogue caps both at one. Attach two pictures to an article going to all
+     * three and WordPress publishes while the other two fail at send time with
+     * “it takes at most 1 image and this post has 2”, which is
+     * `HttpPublisher::acceptableMedia()` doing exactly the right thing far too
+     * late to be useful.
+     *
+     * `social::publish` has said this while a person is attaching since the
+     * media pipeline shipped, and this page did not — it checked MIME types and
+     * nothing else. Same idea, same wording, said in the place where it can
+     * still be acted on: a sentence under the picker beats a red target row an
+     * hour later. Deliberately a warning rather than a block, because the person
+     * may well mean it — the article gets its cover, the extras reach WordPress,
+     * and nothing is silently dropped without having been named first.
+     *
+     * @return list<string>
+     */
+    private function mediaProblems(): array
+    {
+        if ($this->uploads === []) {
+            return [];
+        }
+
+        $problems = [];
+
+        foreach ($this->selected() as $account) {
+            $rules = $account->mediaRules();
+            $label = $account->label();
+
+            if (count($this->uploads) > $rules['max_count']) {
+                $problems[] = $rules['max_count'] === 0
+                    ? $label.' takes no images at all, so this post would fail there.'
+                    : $label.' takes at most '.$rules['max_count'].' '
+                        .($rules['max_count'] === 1 ? 'image' : 'images').', and there are '.count($this->uploads).'.';
+            }
+
+            foreach ($this->uploads as $upload) {
+                $mime = (string) $upload->getMimeType();
+
+                if (! in_array($mime, $rules['mimes'], true)) {
+                    $problems[] = $label.' does not accept '.$mime.', so “'.$upload->getClientOriginalName().'” cannot go to it.';
+
+                    // Nothing further to say about a file this destination will
+                    // not take at all; its size is beside the point.
+                    continue;
+                }
+
+                if ($upload->getSize() > $rules['max_bytes']) {
+                    $problems[] = '“'.$upload->getClientOriginalName().'” is larger than '.$label.' accepts.';
+                }
+            }
+        }
+
+        // Keyed and re-listed: two destinations refusing the same WebP is one
+        // sentence worth reading, not two.
+        return array_keys(array_flip($problems));
     }
 
     /**
@@ -384,15 +487,15 @@ class extends Component
         $options = $this->optionsFor($featured);
 
         foreach ($accounts as $account) {
-            $isBlog = $account->network === Networks::WORDPRESS;
+            $isBlog = $this->isArticleDestination($account);
 
             PostTarget::query()->create([
                 'post_id' => $post->id,
                 'social_account_id' => $account->id,
-                // WordPress reads `posts.body`, which is the article. Everything
-                // else reads the teaser, and only when it genuinely differs, so
-                // an override never freezes a copy that was going to follow the
-                // post anyway.
+                // An article destination reads `posts.body`, which is the
+                // article. Everything else reads the teaser, and only when it
+                // genuinely differs, so an override never freezes a copy that
+                // was going to follow the post anyway.
                 'body_override' => $isBlog || $teaser === $body || $teaser === '' ? null : $teaser,
                 'options' => $isBlog ? $options : null,
                 'status' => PostTarget::PENDING,
@@ -438,13 +541,21 @@ class extends Component
     }
 
     /**
-     * The bag every WordPress destination is handed.
+     * The bag every article destination is handed.
      *
-     * Written once and shared by every WordPress target on this post, because
-     * the composer only offers one set of them. The column is per target so that
-     * a later edit can give one site a different status without touching the
+     * Written once and shared by every article target on this post, because the
+     * composer only offers one set of them. The column is per target so that a
+     * later edit can give one site a different status without touching the
      * other, which is exactly the case a single column on `posts` could not have
      * expressed.
+     *
+     * The keys are a union rather than a per-network shape, and that is the
+     * point of the design: `WordPressPublisher` reads `slug` and `categories`,
+     * `DevToPublisher` reads `excerpt` as a description and normalises the tags
+     * down to four lowercase ones, `HashnodePublisher` turns each tag into a
+     * `{slug, name}` object — and each of them ignores what it has no use for.
+     * Nothing here has to know which is which, which is why adding the third
+     * destination cost this method nothing.
      *
      * @return array<string, mixed>
      */
@@ -603,7 +714,7 @@ class extends Component
                                    placeholder="board-views-and-scope"
                                    wire:model="slug">
                             <span class="text-[11px] text-muted-foreground">
-                                Left empty, WordPress makes one from the title.
+                                WordPress only. Left empty it makes one from the title, and DEV.to and Hashnode always do.
                             </span>
                         </div>
                         <div class="flex flex-col gap-1">
@@ -686,7 +797,9 @@ class extends Component
                         <input type="file" multiple accept="image/jpeg,image/png,image/gif,image/webp"
                                class="hidden" wire:model="uploads">
                         <span class="text-[11px] text-muted-foreground">
-                            The featured one goes to WordPress as the cover; the rest are appended to the post as figures.
+                            The featured one becomes the cover everywhere. WordPress appends the rest to the post as
+                            figures; DEV.to and Hashnode take one picture each and fetch it from this install, so they
+                            publish without a cover when Kargah has no public address.
                         </span>
                     </label>
 
@@ -695,6 +808,24 @@ class extends Component
                     </div>
 
                     @error('uploads.*')<span class="text-xs text-destructive">{{ $message }}</span>@enderror
+
+                    {{--
+                        What the ticked destinations make of what is attached,
+                        said here rather than discovered from a red target row an
+                        hour later. A warning, not a block — see `mediaProblems()`
+                        for why. `social::publish` has done this since the media
+                        pipeline shipped; this page had only a MIME check.
+                    --}}
+                    @if ($mediaProblems !== [])
+                        <div class="flex flex-col gap-1.5 rounded-lg border border-warning/30 bg-warning/10 px-3.5 py-3">
+                            @foreach ($mediaProblems as $problem)
+                                <div class="flex items-start gap-2.5">
+                                    <i class="ki-filled ki-information-2 text-warning text-base mt-0.5 shrink-0"></i>
+                                    <span class="text-xs text-secondary-foreground">{{ $problem }}</span>
+                                </div>
+                            @endforeach
+                        </div>
+                    @endif
 
                 </div>
             </div>
@@ -715,7 +846,7 @@ class extends Component
                             Empty, so the {{ $socialCount }} social {{ $socialCount === 1 ? 'destination' : 'destinations' }}
                             will receive “{{ \Illuminate\Support\Str::limit($socialCopy, 80) }}”.
                         @else
-                            The article body goes to WordPress. This goes everywhere else.
+                            The article body goes to the blog destinations. This goes everywhere else.
                         @endif
                     </p>
                 </div>
@@ -789,12 +920,13 @@ class extends Component
                 </div>
             </div>
 
-            {{-- WordPress options --}}
+            {{-- Article destination options. One bag, shared by every blog destination
+                 on this post; each driver takes the keys that mean something to it. --}}
             <div class="kt-card">
                 <div class="kt-card-header">
                     <h3 class="kt-card-title">On the blog</h3>
                     <span class="text-xs text-muted-foreground">
-                        {{ $blogCount === 0 ? 'No WordPress site ticked' : $blogCount . ' ' . ($blogCount === 1 ? 'site' : 'sites') }}
+                        {{ $blogCount === 0 ? 'No blog destination ticked' : $blogCount . ' ' . ($blogCount === 1 ? 'destination' : 'destinations') }}
                     </span>
                 </div>
                 <div class="kt-card-content p-5 flex flex-col gap-4">
@@ -806,25 +938,37 @@ class extends Component
                                 <option value="{{ $value }}">{{ $label }}</option>
                             @endforeach
                         </select>
+                        <span class="text-[11px] text-muted-foreground">
+                            These are WordPress's four. DEV.to has only published or not, so anything except Publish it
+                            arrives there as an unpublished draft. Hashnode can only publish outright and records
+                            anything else as a failed destination rather than putting a draft on a public blog.
+                        </span>
                     </div>
 
                     <div class="flex flex-col gap-1">
                         <label class="kt-form-label text-xs" for="wp-categories">Categories</label>
                         <input id="wp-categories" type="text" class="kt-input"
                                placeholder="Build log, Tooling" wire:model="categories">
+                        <span class="text-[11px] text-muted-foreground">
+                            WordPress only. Neither DEV.to nor Hashnode has categories, and both ignore these.
+                        </span>
                     </div>
 
                     <div class="flex flex-col gap-1">
                         <label class="kt-form-label text-xs" for="wp-tags">Tags</label>
                         <input id="wp-tags" type="text" class="kt-input"
                                placeholder="laravel, livewire, scope" wire:model="tags">
+                        <span class="text-[11px] text-muted-foreground">
+                            DEV.to takes four at most and strips them to lowercase letters and digits, so “Build log”
+                            becomes “buildlog” and a fifth tag is dropped rather than failing the article.
+                        </span>
                     </div>
 
                     <label class="flex items-start gap-2 cursor-pointer">
                         <input type="checkbox" class="kt-checkbox mt-0.5" wire:model="createMissingTerms">
                         <span class="text-xs text-secondary-foreground">
                             Create a category or tag the site does not have yet. Unticked, a name nobody has made is skipped
-                            rather than added to somebody's site.
+                            rather than added to somebody's site. WordPress only.
                         </span>
                     </label>
 

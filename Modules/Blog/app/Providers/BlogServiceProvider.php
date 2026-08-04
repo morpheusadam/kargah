@@ -4,6 +4,8 @@ namespace Modules\Blog\Providers;
 
 use Livewire\Livewire;
 use Modules\Blog\Models\Article;
+use Modules\Blog\Services\DevToPublisher;
+use Modules\Blog\Services\HashnodePublisher;
 use Modules\Blog\Services\WordPressPublisher;
 use Modules\Core\Support\MorphMap;
 use Modules\Social\Services\Publishing;
@@ -26,15 +28,20 @@ use Nwidart\Modules\Support\ModuleServiceProvider;
  * - Blog may depend on Social.
  * - **Social may not depend on Blog.** There is no `Modules\Blog\…` import
  *   anywhere under `Modules/Social`, and there must never be one. Social's own
- *   provider registers five drivers and knows nothing about a sixth; this
- *   provider is what adds it, from the outside, through the extension point
- *   `Publishing::extend()` was built to be.
+ *   provider registers Social's own drivers and knows nothing about these three;
+ *   this provider is what adds them, from the outside, through the extension
+ *   point `Publishing::extend()` was built to be.
  *
- * That is why the driver lives here rather than beside the other five. A network
- * whose driver needs a title, a slug and a taxonomy is not a social network, and
- * putting `WordPressPublisher` in `Modules/Social/app/Services/Publishers` would
- * have meant Social importing Blog's idea of an article the first time the
- * driver wanted anything from it.
+ * That is why the drivers live here rather than beside the social ones. A
+ * destination whose driver needs a title, tags and a draft-or-publish decision
+ * is not a social network, and putting `WordPressPublisher` in
+ * `Modules/Social/app/Services/Publishers` would have meant Social importing
+ * Blog's idea of an article the first time the driver wanted anything from it.
+ *
+ * The extension point has now been spent three times — WordPress, DEV.to and
+ * Hashnode — and the second and third cost one line each in `register()` plus a
+ * class. That is the evidence that the shape is right: an article destination is
+ * added to Kargah without `Modules/Social` learning that it exists.
  */
 class BlogServiceProvider extends ModuleServiceProvider
 {
@@ -56,7 +63,7 @@ class BlogServiceProvider extends ModuleServiceProvider
         parent::register();
 
         /*
-         * Add the WordPress driver to Social's registry from outside Social.
+         * Add this module's drivers to Social's registry from outside Social.
          *
          * `callAfterResolving()` rather than a bare `$this->app->resolving()`,
          * and the difference is not cosmetic. `Publishing` is bound as a
@@ -74,9 +81,19 @@ class BlogServiceProvider extends ModuleServiceProvider
          * asserts this from the container rather than by constructing the
          * driver, because constructing it proves the class exists and nothing
          * about whether anything would ever find it.
+         * `BlogDestinationsTest` asserts the same thing for the other two, in
+         * the same way and for the same reason.
+         *
+         * All three go in **one** callback rather than three. `extend()` is
+         * keyed per network so three calls would work, but a second
+         * `callAfterResolving()` for the same abstract is a second chance to
+         * register it somewhere the first one is not — and the failure that
+         * costs is the one this comment exists to prevent.
          */
         $this->callAfterResolving(Publishing::class, function (Publishing $publishing): void {
             $publishing->extend(Networks::WORDPRESS, fn (): WordPressPublisher => new WordPressPublisher);
+            $publishing->extend(Networks::DEVTO, fn (): DevToPublisher => new DevToPublisher);
+            $publishing->extend(Networks::HASHNODE, fn (): HashnodePublisher => new HashnodePublisher);
         });
     }
 
