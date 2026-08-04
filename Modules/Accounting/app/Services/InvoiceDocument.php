@@ -38,15 +38,15 @@ class InvoiceDocument
             'company' => $invoice->company,
             'customer' => $invoice->customer,
 
-            'subtotal' => Money::format((string) $invoice->subtotal, $invoice->currency),
-            'taxAmount' => Money::format((string) $invoice->tax_amount, $invoice->currency),
-            'total' => Money::format((string) $invoice->total, $invoice->currency),
+            'subtotal' => $this->printed((string) $invoice->subtotal, $invoice->currency),
+            'taxAmount' => $this->printed((string) $invoice->tax_amount, $invoice->currency),
+            'total' => $this->printed((string) $invoice->total, $invoice->currency),
 
             'lineAmounts' => $invoice->lines->mapWithKeys(fn ($line) => [
-                $line->id => Money::format((string) $line->amount, $invoice->currency),
+                $line->id => $this->printed((string) $line->amount, $invoice->currency),
             ]),
             'lineUnitPrices' => $invoice->lines->mapWithKeys(fn ($line) => [
-                $line->id => Money::format((string) $line->unit_price, $invoice->currency),
+                $line->id => $this->printed((string) $line->unit_price, $invoice->currency),
             ]),
 
             // Shown only alongside the real figure, never instead of it — and
@@ -87,6 +87,28 @@ class InvoiceDocument
             'signature' => $this->signature($invoice),
             'footer' => (string) config('accounting.document.footer', ''),
         ];
+    }
+
+    /**
+     * A figure as the printed document shows it, which is not how a screen
+     * shows it.
+     *
+     * `Money::format()` pads to the currency's scale, so a round invoice reads
+     * "₺20,000.00" and a round tether invoice reads "₮2,750.000000". On screen
+     * that is right: the columns line up and a figure that could have had a
+     * fraction is visibly one that did not. On a printed invoice the padding is
+     * noise, and two zeros after a round total is the first thing the owner
+     * asked to lose.
+     *
+     * 🔴 Only a fraction that is entirely zero is dropped. ₺20,000.50 keeps its
+     * fifty kuruş; nothing here rounds, and nothing here decides how much of a
+     * fraction matters. The screen and the ledger are untouched: this is a
+     * presentation rule for the document, applied on the last step before the
+     * string reaches the template.
+     */
+    private function printed(string $amount, string $currency): string
+    {
+        return preg_replace('/\.0+$/', '', Money::format($amount, $currency)) ?? '';
     }
 
     /**

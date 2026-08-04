@@ -913,8 +913,11 @@ class InvoicePagesTest extends TestCase
         $this->assertStringContainsString('Keyword research and a mapped target list', $html);
         $this->assertStringContainsString('On-page fixes across every template', $html);
 
-        // Blank entries were typed and are not bullets. Two items, two bullets.
-        $this->assertSame(2, substr_count($html, '<td class="dot">'));
+        // Blank entries were typed and are not items. Two items, two ticks.
+        // The mark was a bullet until 4 August 2026 and the class said `dot`;
+        // it is a tick now, because every task under a priced line is work the
+        // invoice is billing for and therefore work already done.
+        $this->assertSame(2, substr_count($html, '<td class="tick">'));
 
         $this->assertSame(
             $figuresBefore,

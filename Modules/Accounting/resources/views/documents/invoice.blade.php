@@ -12,7 +12,18 @@
     <meta charset="utf-8">
     <title>{{ $invoice->number }}</title>
     <style>
-        @page { margin: 22mm 18mm; }
+        @page { margin: 20mm 20mm; }
+
+        /* The frame.
+           Fixed rather than a wrapping border, because a bordered block that
+           runs onto a second page draws three sides on one sheet and one on the
+           next. A fixed element is painted once per page at the same
+           coordinates, so a two-page invoice gets two whole frames. Two rules
+           rather than `border-style: double`, whose width dompdf splits into
+           thirds and rounds — at 1pt that can collapse to a single line. */
+        .frame-outer, .frame-inner { position: fixed; border: 0.9pt solid #1a1a1a; }
+        .frame-outer { top: -8mm; left: -8mm; right: -8mm; bottom: -8mm; }
+        .frame-inner { top: -6.4mm; left: -6.4mm; right: -6.4mm; bottom: -6.4mm; border-width: 0.4pt; }
         /* White, stated rather than inherited. dompdf defaults to white and so
            does every viewer, so this changes nothing today — but the signature
            is a transparent PNG of black ink, and a transparent image is only
@@ -21,11 +32,20 @@
            the signature disappearing into it. */
         html, body { background: #ffffff; }
         body { font-family: DejaVu Sans, sans-serif; font-size: 10pt; color: #1a1a1a; line-height: 1.45; }
-        h1 { font-size: 20pt; margin: 0 0 2mm; }
+
+        /* Serif on the wordmark and the section rules only. Every figure stays
+           in the sans face, because that is the one whose lira, tether and
+           dollar symbols are known to render here — a masthead is a safe place
+           to change type, a money column is not. */
+        h1 { font-family: DejaVu Serif, serif; font-size: 21pt; letter-spacing: .06em; margin: 0 0 1.5mm; }
         .muted { color: #6b7280; }
         .small { font-size: 8.5pt; }
         table { width: 100%; border-collapse: collapse; }
-        .head td { vertical-align: top; padding-bottom: 8mm; }
+        .head td { vertical-align: top; padding-bottom: 5mm; }
+
+        /* The rule under the masthead, and the one above the signature. Classic
+           double rule: a hair over a heavier line. */
+        .rule { border-top: 0.9pt solid #1a1a1a; border-bottom: 0.3pt solid #1a1a1a; height: 1.2mm; margin: 0 0 4mm; }
         .lines th { text-align: left; border-bottom: 1px solid #d1d5db; padding: 2mm 1mm; font-size: 8.5pt; text-transform: uppercase; letter-spacing: .04em; color: #6b7280; }
         /* Top, so that a line carrying a scope keeps its quantity and its
            amount level with the description's first line instead of drifting
@@ -41,8 +61,12 @@
            one construction that is certain to keep a wrapped task aligned
            under the first word rather than under the bullet. */
         .tasks { margin: 1.8mm 0 0.4mm; }
-        .lines .tasks td { border-bottom: none; padding: 0.5mm 0; vertical-align: top; color: #374151; font-size: 9pt; }
-        .lines .tasks .dot { width: 4mm; color: #9ca3af; }
+        .lines .tasks td { border-bottom: none; padding: 0.5mm 0; vertical-align: top; color: #374151; font-size: 9pt; line-height: 1.35; }
+        /* A tick, not a bullet. Every task under a priced line is work already
+           done — that is what an invoice is — so the mark says so. U+2713 is in
+           DejaVu Sans; a glyph the font lacks prints as a blank box here with
+           no error, so this one was checked by reading it back out of the PDF. */
+        .lines .tasks .tick { width: 5mm; color: #1a1a1a; }
 
         .totals { margin-top: 4mm; width: 62mm; float: right; }
         .totals td { padding: 1.5mm 1mm; }
@@ -61,7 +85,7 @@
            genuinely long enough to need a second page, the break has to fall
            *between* these blocks rather than through the middle of a signature
            or a provenance table. dompdf honours it on a block-level box. */
-        .sign { clear: both; margin-top: 6mm; page-break-inside: avoid; }
+        .sign { clear: both; margin-top: 3mm; page-break-inside: avoid; }
         .sign td { vertical-align: bottom; }
         .sign-block { width: 62mm; }
         .sign-img { height: 15mm; margin-bottom: 1mm; }
@@ -99,10 +123,13 @@
         : config('accounting.tax.kdv_exemptions.'.$exemptionCode.'.label');
 @endphp
 
+<div class="frame-outer"></div>
+<div class="frame-inner"></div>
+
 <table class="head">
     <tr>
         <td style="width: 55%">
-            <h1>Invoice</h1>
+            <h1>INVOICE</h1>
             <div class="muted">{{ $invoice->number }}</div>
         </td>
         {{-- Label above value rather than beside it. Measured, not preferred:
@@ -152,13 +179,15 @@
     </tr>
 </table>
 
+<div class="rule"></div>
+
 <table class="lines">
     <thead>
         <tr>
-            <th style="width: 54%">Description</th>
-            <th class="num" style="width: 12%">Quantity</th>
-            <th class="num" style="width: 17%">Unit price</th>
-            <th class="num" style="width: 17%">Amount</th>
+            <th style="width: 60%">Description</th>
+            <th class="num" style="width: 9%">Quantity</th>
+            <th class="num" style="width: 15%">Unit price</th>
+            <th class="num" style="width: 16%">Amount</th>
         </tr>
     </thead>
     <tbody>
@@ -178,7 +207,7 @@
                         <table class="tasks">
                             @foreach ($tasks as $task)
                                 <tr>
-                                    <td class="dot">·</td>
+                                    <td class="tick">&#10003;</td>
                                     <td>{{ $task }}</td>
                                 </tr>
                             @endforeach
@@ -294,7 +323,7 @@
 @endif
 
 @if ($invoice->notes)
-    <p class="small muted" style="margin-top: 8mm; white-space: pre-line">{{ $invoice->notes }}</p>
+    <p class="small muted" style="margin-top: 5mm; white-space: pre-line">{{ $invoice->notes }}</p>
 @endif
 
 @if ($invoice->terms)
