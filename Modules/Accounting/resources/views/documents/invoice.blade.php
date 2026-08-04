@@ -48,7 +48,20 @@
         .totals td { padding: 1.5mm 1mm; }
         .totals .grand td { border-top: 1.5px solid #1a1a1a; font-weight: bold; font-size: 12pt; padding-top: 2.5mm; }
 
-        .sign { clear: both; margin-top: 12mm; }
+        /* 🔴 The two gaps below used to be 12mm and 14mm, and together they were
+           what tipped an ordinary one-line invoice onto a second page: measured
+           on 5 August 2026, `INV-0042` — one line, a three-line address and a
+           tax number — ran to two pages while `INV-0041` with a shorter address
+           ran to one. 26mm of fixed whitespace on a 253mm content area is the
+           difference between those two, not the content. Reduced to 8mm and
+           6mm, which still reads as a separated block and buys back most of a
+           line each.
+
+           `page-break-inside: avoid` is the other half: when an invoice is
+           genuinely long enough to need a second page, the break has to fall
+           *between* these blocks rather than through the middle of a signature
+           or a provenance table. dompdf honours it on a block-level box. */
+        .sign { clear: both; margin-top: 6mm; page-break-inside: avoid; }
         .sign td { vertical-align: bottom; }
         .sign-block { width: 62mm; }
         .sign-img { height: 15mm; margin-bottom: 1mm; }
@@ -61,7 +74,7 @@
            where it lands. */
         .footer { position: fixed; bottom: 0; left: 0; right: 0; text-align: center; color: #9ca3af; font-size: 8pt; letter-spacing: .06em; }
 
-        .provenance { clear: both; margin-top: 14mm; border: 1px solid #e5e7eb; padding: 4mm; font-size: 8.5pt; }
+        .provenance { clear: both; margin-top: 8mm; border: 1px solid #e5e7eb; padding: 4mm; font-size: 8.5pt; page-break-inside: avoid; }
         .provenance h3 { margin: 0 0 2mm; font-size: 9pt; text-transform: uppercase; letter-spacing: .04em; color: #6b7280; }
         .provenance dt { float: left; width: 42mm; color: #6b7280; }
         .provenance dd { margin: 0 0 1.2mm 42mm; }
