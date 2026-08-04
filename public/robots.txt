@@ -1,2 +1,15 @@
+# Kargah is a private workspace. There is no public page here: every route
+# behind the login is an invoice, a client, a mailbox or a vault, and the login
+# itself is not something anybody should arrive at from a search result.
+#
+# This is the outer fence and not the only one. The layouts carry
+# `<meta name="robots" content="noindex, nofollow">`, and the deployment sets
+# `X-Robots-Tag: noindex` on every response — which is the part that covers what
+# a meta tag cannot, the invoice PDFs above all.
+#
+# ⚠️ If a URL here has already been indexed, this file is the wrong tool for
+# removing it: a crawler that is not allowed to fetch a page never reads the
+# noindex telling it to drop that page. Allow the crawl, let the header do the
+# work, and put this back once the URL is gone.
 User-agent: *
-Disallow:
+Disallow: /

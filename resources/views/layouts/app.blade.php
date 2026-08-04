@@ -5,6 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
     <meta name="csrf-token" content="{{ csrf_token() }}">
 
+    {{-- Every page in this layout is behind the login, and none of them belongs
+         in a search index. `guest.blade.php` and the error layout have carried
+         this since they were written; this one did not, which meant the only
+         pages a crawler could never reach were marked and the ones holding the
+         invoices were not. --}}
+    <meta name="robots" content="noindex, nofollow, noarchive, nosnippet">
+
     <title>{{ $title ?? 'Kargah' }}</title>
     @include('partials.head-icons')
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
