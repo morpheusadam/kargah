@@ -14,7 +14,21 @@ use Illuminate\Support\Facades\Route;
 | RouteServiceProvider, not here.
 */
 
-Route::redirect('/', '/login')->name('home');
+/*
+ * 🔴 A named redirect, not `Route::redirect('/', '/login')`.
+ *
+ * `Route::redirect()` hands its target to `RedirectController` as a literal
+ * string and Laravel emits it unchanged, so an install served from a
+ * subdirectory answers `Location: /login` — the site root, not the panel's.
+ * Measured on 5 August 2026 deploying to `lavzen.com/panel`: the root URL sent
+ * the browser to the WordPress login page one level up, while every other route
+ * redirected correctly, because every other route builds its URL through
+ * `route()` and `route()` knows the base path.
+ *
+ * `redirect()->route()` resolves against the request, so this works at a domain
+ * root and in a subdirectory without either of them being configured.
+ */
+Route::get('/', fn () => redirect()->route('login'))->name('home');
 
 Route::middleware('guest')->group(function () {
     Route::livewire('/login', 'pages::login')->name('login');
@@ -34,7 +48,8 @@ Route::middleware('auth')->group(function () {
     Route::livewire('/dashboard', 'pages::dashboard')->name('dashboard');
 
     Route::prefix('settings')->name('settings.')->group(function () {
-        Route::redirect('/', '/settings/profile');
+        // Named, for the reason the root route above gives at length.
+        Route::get('/', fn () => redirect()->route('settings.profile'));
         Route::livewire('/profile', 'pages::settings.profile')->name('profile');
         Route::livewire('/security', 'pages::settings.security')->name('security');
         Route::livewire('/appearance', 'pages::settings.appearance')->name('appearance');
