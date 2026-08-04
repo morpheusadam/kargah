@@ -8,7 +8,11 @@
     which is otherwise one of the stickier caches there is.
 --}}
 @php
-    $v = static fn (string $path) => '/'.$path.'?v='.(@filemtime(public_path($path)) ?: 1);
+    // Through `asset()` so the URL carries the application's own root. Written
+    // as '/'.$path until 5 August 2026, which made every icon a request to the
+    // domain root: on an install under a subdirectory the browser asked the
+    // site upstairs for five files it has never heard of and got five 404s.
+    $v = static fn (string $path) => asset($path).'?v='.(@filemtime(public_path($path)) ?: 1);
 @endphp
 
 <link rel="icon" href="{{ $v('favicon.ico') }}" sizes="any">
@@ -26,6 +30,6 @@
 <meta property="og:site_name" content="Kargah">
 <meta property="og:title" content="{{ $title ?? 'Kargah' }}">
 <meta property="og:description" content="Self-hosted freelance workspace: inbox, boards, invoices and a vault.">
-<meta property="og:image" content="{{ url($v('img/og-image.png')) }}">
+<meta property="og:image" content="{{ $v('img/og-image.png') }}">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:image" content="{{ url($v('img/og-image.png')) }}">
+<meta name="twitter:image" content="{{ $v('img/og-image.png') }}">

@@ -15,10 +15,15 @@
      */
     $candidates = ['img/kargah-logo.svg', 'img/kargah-logo.png', 'img/kargah-logo.webp'];
 
+    // `asset()`, not '/'.$candidate: the leading slash is the document root,
+    // which is only the same thing as the application root when the install
+    // sits at a domain root. Under a subdirectory the mark 404s and the page
+    // falls back to nothing, which looks like a missing file rather than a
+    // wrong URL.
     $logo = null;
     foreach ($candidates as $candidate) {
         if (is_file(public_path($candidate))) {
-            $logo = '/'.$candidate;
+            $logo = asset($candidate);
             break;
         }
     }
