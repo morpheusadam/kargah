@@ -11,7 +11,17 @@
             <a href="{{ route('dashboard') }}">
                 <x-brand-mark :size="8" name-class="text-base font-semibold text-mono" />
             </a>
-            <button class="kt-btn kt-btn-icon kt-btn-ghost -ms-2" data-kt-drawer-toggle="#sidebar">
+            {{--
+                The only way to reach the sidebar below `lg`, and it had no
+                accessible name at all — so on every page of the application, at
+                every mobile width, a screen reader announced the one control
+                that opens the navigation as "button". `title` as well as
+                `aria-label` because a pointer user gets nothing from the first.
+            --}}
+            <button class="kt-btn kt-btn-icon kt-btn-ghost -ms-2"
+                    data-kt-drawer-toggle="#sidebar"
+                    title="Open the menu"
+                    aria-label="Open the menu">
                 <i class="ki-filled ki-menu text-lg"></i>
             </button>
         </div>

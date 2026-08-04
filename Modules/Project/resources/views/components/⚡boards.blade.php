@@ -1324,9 +1324,17 @@ class extends Component
             @endif
         </div>
 
-        <div class="flex items-center gap-2">
+        {{--
+            `flex-wrap` on both rows, because five view links plus a search box,
+            a filter, a settings button and New board are about 750px of toolbar
+            and a phone is 360. Without it the whole page scrolled sideways at
+            that width — the one thing docs/frontend-conventions.md says a page
+            must never do — and the last two buttons sat off the edge where
+            nobody would find them.
+        --}}
+        <div class="flex flex-wrap items-center gap-2">
             {{-- Views. Table, Calendar and Dashboard already carry the matching switcher back to Board. --}}
-            <div class="flex items-center gap-1">
+            <div class="flex flex-wrap items-center gap-1">
                 <span class="kt-btn kt-btn-sm kt-btn-primary gap-1.5">
                     <i class="ki-filled ki-row-horizontal text-sm"></i> Board
                 </span>

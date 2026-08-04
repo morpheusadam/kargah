@@ -570,7 +570,7 @@ class extends Component
         </div>
 
         {{-- Views. The four sibling views need the matching Activity link added by whoever owns them. --}}
-        <div class="flex items-center gap-1">
+        <div class="flex flex-wrap items-center gap-1">
             <a href="{{ route('projects.boards', ['board' => $activeBoard]) }}" wire:navigate class="kt-btn kt-btn-sm kt-btn-ghost gap-1.5">
                 <i class="ki-filled ki-row-horizontal text-sm"></i> Board
             </a>
@@ -598,7 +598,7 @@ class extends Component
                 can see it, and in `aria-pressed`, for anyone who cannot. A
                 colour on its own is not a state a screen reader can read out.
             --}}
-            <div class="flex items-center gap-1" role="group" aria-label="Filter activity by what it happened to">
+            <div class="flex flex-wrap items-center gap-1" role="group" aria-label="Filter activity by what it happened to">
                 <button wire:click="filterByLog('')" aria-pressed="{{ $logName === '' ? 'true' : 'false' }}"
                         wire:loading.attr="disabled" wire:target="filterByLog"
                         class="kt-btn kt-btn-sm {{ $logName === '' ? 'kt-btn-primary' : 'kt-btn-ghost' }}">

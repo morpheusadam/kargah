@@ -545,7 +545,7 @@ class extends Component
         {{-- Nothing here can be saved without a board to hang it on: `save()`
              returns early when `board()` is null, and a form that swallows the
              save is worse than a button that says it cannot be pressed. --}}
-        <div class="flex items-center gap-1">
+        <div class="flex flex-wrap items-center gap-1">
             <button wire:click="create('{{ \Modules\Project\Butler\Kind::RULE }}')" class="kt-btn kt-btn-sm kt-btn-primary gap-1.5"
                     @disabled($boards->isEmpty())>
                 <i class="ki-filled ki-flash-circle text-sm"></i> New rule
