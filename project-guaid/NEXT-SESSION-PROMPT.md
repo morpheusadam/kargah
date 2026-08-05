@@ -29,7 +29,26 @@ ssh -p <port> -o BatchMode=yes <user>@<host> "<command>"
 ```
 
 🔴 **`/opt/alt/php83/usr/bin/php`, never bare `php`** — the account's default is 8.2 and Kargah needs
-8.3. Deploy is a `git pull` on the server followed by `artisan optimize:clear`.
+8.3.
+
+## 🔴 Work on the server, over SSH. The owner has asked for this directly.
+
+**Do not edit locally, commit, push, and pull to see whether it worked.** That loop is slow and the
+owner dislikes it. Open an SSH session, change the thing where it runs, and look at the result on the
+live site. `sed`, `cat > file`, and `artisan tinker --execute` are all available, and `scp` puts a
+file there in one call when an edit is too long to type.
+
+Two things follow from that and both matter:
+
+- **Server-only files stay server-only.** `.htaccess`, `.env` and anything under
+  `~/domains/…/public_html/panel/` are not in the repository and never should be. Edit them in place.
+- 🔴 **Application code that you change on the server must end up in git**, or the next `git pull`
+  silently reverts it. Fix it there, prove it on the live site, then bring the same change back into
+  the repository in one commit that says what it fixed. The clone on the server is a real clone —
+  `git diff` there tells you exactly what you have changed and not yet carried back.
+
+The full suite still runs here, not there. Run it once at the end, against the repository, after the
+change has come back.
 
 `project-guaid/HANDOVER-DEPLOY-2026-08-05.md` is the full account of how it is put together and what
 it cost. **Read it before changing anything that touches URLs, assets or class imports** — four bugs
