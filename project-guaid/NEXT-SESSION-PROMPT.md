@@ -279,8 +279,20 @@ named `⚡<name>.blade.php` under `Modules/<X>/resources/views/components/`. Rea
 5. **The first real post.** Instagram is connected and the install is publicly reachable, so this is
    finally possible — and it needs a JPEG, because Instagram has no text-only post. **Not one
    publishing driver has ever been called for real.**
-6. **Nothing refreshes any token.** All of them expire in about 60 days and the first warning will be
-   a red target row.
+6. 🔴 **Run `social:refresh-tokens --force` on the server once, and watch what comes back.** Instagram
+   and Threads now renew themselves — `social:refresh-tokens` is built, tested, deployed and on the
+   live scheduler at 08:05, ten minutes ahead of the expiry warning. It asks halfway through a
+   token's life, so it will do nothing until about 5 September and everything after it. **The one
+   thing never proved is a refresh against the real credential**: the endpoint was measured with a
+   bogus token, the tests cover the rest, and `--force` was blocked by the tool sandbox rather than
+   skipped. That single command is the whole remaining risk, and it is cheap — a refusal costs
+   nothing, because the stored token is only replaced once a replacement is in hand. Backup at
+   `~/kargah/database/database.sqlite.before-token-refresh-2026-08-06`. `.data/meta-app.txt` has the
+   detail. LinkedIn still has to be re-pasted by hand every 60 days; a Facebook Page token does not
+   expire at all. ⚠️ **The connect page deliberately still does not promise any of this.** Telling
+   somebody Kargah renews their token, on the strength of a round trip nobody has watched, is the
+   kind of copy trap §"Permissions are a promise" is about. Prove it first, then add the sentence to
+   `Networks::INSTAGRAM['requirement']` and `THREADS` in the same commit.
 7. **The four invoices read `Billed to: Nima Fazlipour`.** The owner later said Nima is the person
    who gave them the Claude account. **Ask before those documents go anywhere** — correcting the name
    means void and reissue, not an edit.
