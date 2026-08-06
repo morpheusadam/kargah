@@ -104,15 +104,26 @@ is wrong. Commit `7ea444e`; the argument lives in `InstagramPublisher`'s `HOST` 
 ⚠️ **Do not click "switch to API setup with Facebook login"** on the Meta app dashboard. It breaks
 the connection and the error says only "Invalid OAuth access token".
 
-## ⏳ Threads — one step from done
+## ✅ Threads is connected and live
 
-Use case added to the same app, `threads_basic` + `threads_content_publish` ready, `lavzencom`
-invited as Threads Tester **and accepted** from `threads.com/settings/website_permissions`. All that
-remains is "Generate Access Token" on the Threads Settings page, which opens a consent popup in a
-separate window the owner must approve.
+`threads_user_id=28237233189213576`, handle `lavzencom`, expires 5 October. Verified on the server
+with the **stored** credential: `verify()` → `@lavzencom`, `unavailableReason()` → `NULL`.
 
 🔴 A Threads token is not an Instagram token even though the account is the same, and
 `ThreadsPublisher` is on `graph.threads.net/v1.0` — its own host, its own version.
+
+🔴 **The id came from `/me` and was then proved on `/{id}/threads`**, the edge `publish()` POSTs to.
+Instagram had two ids that both answered on `/me`, so one endpoint accepting an id is not evidence
+about another. Ask the edge that matters.
+
+⚠️ **The connect page asks for an id that no Meta screen shows.** Only `GET /v1.0/me` has it, so a
+person following the `requirement` copy to the letter cannot finish the form. The honest fix is for
+`ThreadsPublisher` to resolve it from `/me` when the field is blank — not more copy explaining curl.
+
+🔴 **Chrome autofilled that form and nearly poisoned it.** "Threads user ID" arrived holding the
+panel's login email and "Access token" a stored password. Saved unchanged, Kargah would have
+encrypted the panel password as a Threads credential and shown the account as connected. Clear every
+field on the connect page before typing, and refuse Chrome's offer to save anything from it.
 
 ## ⏳ Facebook Page — created, not connected
 
@@ -305,7 +316,22 @@ named `⚡<name>.blade.php` under `Modules/<X>/resources/views/components/`. Rea
 12. **The double-entry build**, when the owner asks. `project-guaid/DOUBLE-ENTRY-PLAN.md`.
 13. **`⚡card-detail`'s `openCard()`** and the same shape on `⚡calendar` and `⚡table`: public `#[On]`
     listeners doing a bare `Card::find()`. Kargah has **no per-user visibility model at all**.
-14. Older debts: `CustomerReader` returning Eloquent models where every sibling returns arrays ·
+14. 🔴 **Reddit cannot be connected at all any more, and it is not Kargah's fault.** Measured on
+    6 August 2026 on a real account: the captcha on `reddit.com/prefs/apps` was solved and `create
+    app` answered with a link to the Responsible Builder Policy instead of making an app. Reddit's
+    own wiki (`reddit.com/r/reddit.com/wiki/api/`) says why — the **legacy Data API**, which is the
+    one `RedditPublisher` speaks and the only one that has a password grant, now takes new app
+    requests **only with "a valid moderation use case"**, through a support ticket
+    (`support.reddithelp.com/hc/requests/new?ticket_form_id=14868593862164`, "I'm a Developer" →
+    "I want to register to use the Reddit API"). The route Reddit now calls official is its
+    **Developer Platform**, where apps run on Reddit's own infrastructure — it gives an external
+    server no way to submit a post at all, so it is not a substitute for the driver.
+    ⚠️ **So the five credentials `Networks::REDDIT` asks for are no longer issued for this purpose**,
+    and `requirement`'s "create a script app at reddit.com/prefs/apps" is now advice that cannot be
+    followed. The driver is fine; the door closed. The only path left: create a subreddit, become
+    its moderator, and cite that in the ticket. Do not spend a session on this before the ticket is
+    answered.
+15. Older debts: `CustomerReader` returning Eloquent models where every sibling returns arrays ·
     `has:stickers` · Butler's calendar and branching · uncursored `/api/v1/customers` · card writes
     and mail sending absent from `/api/v1` · no permalink for Instagram, Threads or Slack · Reddit
     takes no pictures · Tumblr on the legacy endpoint.
