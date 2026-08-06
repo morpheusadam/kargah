@@ -58,9 +58,61 @@ class InstagramPublisher extends HttpPublisher
 {
     use MetaGraph;
 
+    /**
+     * Instagram's own host, which is not the one the rest of this family uses.
+     *
+     * 🔴 **A token minted by Instagram Login is refused by `graph.facebook.com`,
+     * and the refusal does not mention the host.** Measured against the live
+     * hosts on 6 August 2026 with a real credential for `@lavzencom`:
+     *
+     * ```
+     * graph.instagram.com/v23.0/me?fields=id,username,account_type
+     *   → {"id":"27848143088180376","username":"lavzencom","account_type":"BUSINESS"}
+     * graph.facebook.com/v23.0/me?fields=id,username
+     *   → {"error":{"message":"Invalid OAuth access token - Cannot parse access
+     *      token","type":"OAuthException","code":190}}
+     * ```
+     *
+     * Code 190 is the code `MetaGraph::graphRefusal()` turns into “the access
+     * token has expired or been invalidated… exchange it for a long-lived one”.
+     * That sentence is exactly right for a Page token and exactly wrong here: the
+     * token is fine, the *host* is wrong, and anybody following the advice would
+     * mint a second token and watch it fail identically. One constant prevents a
+     * debugging session that has no way to end well.
+     *
+     * **Why Instagram Login rather than the Facebook-login variant**, which would
+     * have kept this driver on `graph.facebook.com`: that route needs a Facebook
+     * Page linked to the Instagram account, and Meta's documentation says this one
+     * does not — *“This API setup does not require a Facebook Page to be linked to
+     * the Instagram professional account.”* The owner has no Page and no Facebook
+     * profile attached to the Instagram account at all, so the Page route was not
+     * a preference to weigh, it was closed. `.data/meta-app.txt` records the app
+     * this depends on and warns against switching it back.
+     *
+     * `ThreadsPublisher` reaches the same conclusion for `graph.threads.net` and
+     * writes its own builder rather than overriding this one. Overriding is right
+     * here and not there: every URL in this class already goes through
+     * `graphUrl()`, so the override changes four call sites by changing none of
+     * them, while Threads also disagrees about the *version* and would have needed
+     * a second override to say so.
+     */
+    private const HOST = 'https://graph.instagram.com';
+
     public function network(): string
     {
         return Networks::INSTAGRAM;
+    }
+
+    /**
+     * `https://graph.instagram.com/v23.0/<path>`.
+     *
+     * The version stays `MetaGraph::GRAPH_VERSION` on purpose — unlike Threads,
+     * Instagram moves on Graph's clock, so there is one number to change when
+     * Meta retires it rather than two that can drift apart.
+     */
+    protected function graphUrl(string $path): string
+    {
+        return self::HOST.'/'.self::GRAPH_VERSION.'/'.ltrim($path, '/');
     }
 
     /**

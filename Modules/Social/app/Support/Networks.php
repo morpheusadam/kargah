@@ -641,7 +641,16 @@ final class Networks
                 'limit' => 2200,
                 'method' => 'token',
                 'summary' => 'Publish to a Business or Creator account linked to a Page.',
-                'requirement' => 'Instagram publishing goes through the same Meta app as the Page. The account must be a Business or Creator account and it must be linked to a Facebook Page; a personal account cannot be published to by any API. Add instagram_basic and instagram_content_publish, then take the account id from /me/accounts?fields=instagram_business_account.',
+                // 🔴 This describes **Instagram Login**, not the Facebook-login
+                // variant of the same API, and the difference is not cosmetic:
+                // the other route needs a Facebook Page linked to the account and
+                // this one needs no Facebook anything. Meta offers to switch a
+                // Meta app between the two with one link on the app dashboard,
+                // and switching breaks a working connection with an error that
+                // says only "Invalid OAuth access token". If this copy is ever
+                // rewritten to mention Pages again, `InstagramPublisher::HOST`
+                // has to move back to graph.facebook.com in the same commit.
+                'requirement' => 'Instagram publishing uses Instagram Login, so no Facebook Page is involved and none has to exist. The account must be a Business or Creator account; a personal account cannot be published to by any API. In your Meta app, add the Instagram use case and choose API setup with Instagram login, request instagram_business_basic and instagram_business_content_publish, then give your account the Instagram Tester role and accept that invitation from Instagram under Settings → Apps and websites. Generating the token on that screen gives you both values below at once.',
                 'ingests' => false,
                 'token_lifetime_days' => 60,
                 'media' => [
@@ -667,13 +676,16 @@ final class Networks
                         'label' => 'Instagram account ID',
                         'secret' => false,
                         'placeholder' => '17841400000000000',
-                        'hint' => 'The instagram_business_account id from /me/accounts, not your @handle and not the Page id.',
+                        'hint' => 'The number shown under your handle on the token screen in your Meta app. It is not your @handle, and it is not an email address.',
                     ],
                     'access_token' => [
                         'label' => 'Access token',
                         'secret' => true,
-                        'placeholder' => 'EAAG…',
-                        'hint' => 'Stored encrypted. The Page token for the Page this account is linked to.',
+                        // Not `EAAG…`. That is a Page token, which is what the
+                        // Facebook-login route issues and what this driver is
+                        // refused by — see the note on `requirement` above.
+                        'placeholder' => 'IGAA…',
+                        'hint' => 'Stored encrypted. An Instagram Login token, which starts IGAA. A Page token starting EAA is a different credential and is refused with an error that does not explain why.',
                     ],
                 ],
                 'permissions' => [

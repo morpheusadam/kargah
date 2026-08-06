@@ -315,8 +315,14 @@ class MetaPublishersTest extends TestCase
     public function test_a_single_instagram_image_creates_a_container_then_publishes_it(): void
     {
         Http::fake([
-            'graph.facebook.com/*/media_publish' => Http::response(['id' => '17900000000000001']),
-            'graph.facebook.com/*/media' => Http::response(['id' => '17800000000000002']),
+            // 🔴 `graph.instagram.com`, not `graph.facebook.com`. The host is
+            // the assertion here as much as the paths below are: an Instagram
+            // Login token is refused by Graph's host outright, so a driver that
+            // drifts back would match no pattern, receive an empty body and fail
+            // on "the response carried no container id" — which is the failure
+            // this fake exists to produce rather than hide.
+            'graph.instagram.com/*/media_publish' => Http::response(['id' => '17900000000000001']),
+            'graph.instagram.com/*/media' => Http::response(['id' => '17800000000000002']),
         ]);
 
         $images = $this->images(1);
@@ -354,8 +360,8 @@ class MetaPublishersTest extends TestCase
     public function test_three_instagram_images_become_three_children_a_carousel_parent_and_one_publish(): void
     {
         Http::fake([
-            'graph.facebook.com/*/media_publish' => Http::response(['id' => '17900000000000009']),
-            'graph.facebook.com/*/media' => Http::sequence()
+            'graph.instagram.com/*/media_publish' => Http::response(['id' => '17900000000000009']),
+            'graph.instagram.com/*/media' => Http::sequence()
                 ->push(['id' => 'child-one'])
                 ->push(['id' => 'child-two'])
                 ->push(['id' => 'child-three'])
@@ -493,7 +499,7 @@ class MetaPublishersTest extends TestCase
                 'name' => 'Kargah Workshop',
                 'username' => 'kargahworkshop',
             ]),
-            'graph.facebook.com/'.self::V.'/'.self::IG_USER_ID.'*' => Http::response([
+            'graph.instagram.com/'.self::V.'/'.self::IG_USER_ID.'*' => Http::response([
                 'id' => self::IG_USER_ID,
                 'username' => 'kargah.workshop',
             ]),

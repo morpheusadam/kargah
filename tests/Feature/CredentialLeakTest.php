@@ -208,7 +208,7 @@ class CredentialLeakTest extends TestCase
 
         // The token where Guzzle actually puts it on a GET — the query string.
         Http::fake(fn () => throw $this->timeout(
-            'https://graph.facebook.com/v23.0/17841400000000000?fields=id%2Cusername&access_token='.$token
+            'https://graph.instagram.com/v23.0/17841400000000000?fields=id%2Cusername&access_token='.$token
         ));
 
         try {
@@ -219,7 +219,7 @@ class CredentialLeakTest extends TestCase
             $this->assertStringNotContainsString($token, $e->getMessage());
             $this->assertStringNotContainsString('access_token', $e->getMessage());
 
-            $this->assertStringContainsString('graph.facebook.com', $e->getMessage());
+            $this->assertStringContainsString('graph.instagram.com', $e->getMessage());
             $this->assertStringContainsString('cURL error 28', $e->getMessage());
         }
     }
