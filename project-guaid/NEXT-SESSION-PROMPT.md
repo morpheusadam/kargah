@@ -357,7 +357,35 @@ named `⚡<name>.blade.php` under `Modules/<X>/resources/views/components/`. Rea
     ticket become the story. `r/lavzencom` answering `is banned` is the one finding that stands on
     its own — it is a property of the name, not the account, and `r/lavzen` and `r/lavzencomstudio`
     were both free.
-15. Older debts: `CustomerReader` returning Eloquent models where every sibling returns arrays ·
+15. 🔴 **X cannot be connected either: the owner's account is suspended.** `@morpheus_a36176`.
+    Changing its username silently does nothing — no error in the UI at all — and the reason is only
+    visible in the network tab:
+
+    ```
+    POST api.x.com/1.1/account/settings.json              → 403
+    ApiError … permissionsState HTTP-403 codes:[64]
+    POST …/GetUsernameAvailabilityAndSuggestions          → 200   (the handle was free)
+    ```
+
+    **X error code 64 is "your account is suspended and is not permitted to access this feature."**
+    A suspended account gets no developer app and publishes nothing, so `XPublisher` has nothing to
+    connect to. Appeal at `help.x.com/en/forms/account-access/appeals` first. The Developer Program
+    form was filled in but never submitted — the three agreement checkboxes are the owner's to tick,
+    and there is no point until the suspension is lifted.
+
+    ⚠️ **Two independent platforms, one afternoon, both accounts restricted** — Reddit shadowbanned
+    and X suspended. Worth asking what those two signups have in common before assuming they are
+    unrelated.
+
+    ✅ **The lesson that generalises past both of them:** when a page's Save does nothing and shows
+    no error, read the network tab before touching anything else. Three attempts were spent on
+    Reddit's display name and three more on X's username, all guessing at clicks, when one look at
+    the failing request named the cause immediately. Same rule this project already has for the
+    server, one layer further out.
+16. **Telegram is the one worth connecting next**, and the only one left with no gate: no app
+    review, no developer account, no captcha — a bot token from `@BotFather` and a chat id. For a
+    Persian-speaking client base it is also plausibly the highest-yield of the lot.
+17. Older debts: `CustomerReader` returning Eloquent models where every sibling returns arrays ·
     `has:stickers` · Butler's calendar and branching · uncursored `/api/v1/customers` · card writes
     and mail sending absent from `/api/v1` · no permalink for Instagram, Threads or Slack · Reddit
     takes no pictures · Tumblr on the legacy endpoint.
