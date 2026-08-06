@@ -331,6 +331,14 @@ named `⚡<name>.blade.php` under `Modules/<X>/resources/views/components/`. Rea
     followed. The driver is fine; the door closed. The only path left: create a subreddit, become
     its moderator, and cite that in the ticket. Do not spend a session on this before the ticket is
     answered.
+    ⚠️ **And the account itself looks restricted.** `Embarrassed-Duty-511` — two years old, 1 karma,
+    moderating nothing but its own profile. Three different actions were refused on it in one
+    sitting: the app, then `r/lavzencom` which answers **`is banned`** (a burned name Reddit never
+    releases — `r/lavzen` and `r/lavzencomstudio` are free, so this was not a lookup error), then a
+    plain **display-name change**, which answered *"We had some issues saving your changes"* three
+    times running. Any one of those is unremarkable; all three on one account is worth knowing
+    before somebody spends an afternoon assuming their clicks are missing. Nothing here was
+    diagnosed further, because none of it would have connected Reddit anyway.
 15. Older debts: `CustomerReader` returning Eloquent models where every sibling returns arrays ·
     `has:stickers` · Butler's calendar and branching · uncursored `/api/v1/customers` · card writes
     and mail sending absent from `/api/v1` · no permalink for Instagram, Threads or Slack · Reddit
