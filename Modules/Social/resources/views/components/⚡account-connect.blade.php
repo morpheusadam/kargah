@@ -426,8 +426,21 @@ class extends Component
 
                         <div class="flex flex-col gap-1.5">
                             <label class="kt-form-label" for="account-handle">Handle</label>
+                            {{--
+                                🔴 Every input on this form refuses autofill, and this is not tidiness.
+                                Chrome matched a saved password-manager entry for panel.lavzen.com against
+                                these fields three times in one afternoon: it put the panel's login email in
+                                "Threads user ID", a stored password in "Access token", and a Telegram chat id
+                                in "OAuth client ID". Saved unchanged, the first of those would have encrypted
+                                the panel password as a Threads credential and reported the account connected.
+
+                                The secret inputs already carried `autocomplete="off"` and it was not enough:
+                                Chrome ignores `off` on `type=password` and honours `new-password`, which is
+                                why the two differ below rather than being the same string.
+                            --}}
                             <input id="account-handle" type="text" class="kt-input"
                                    placeholder="How this account is named in Kargah"
+                                   autocomplete="off"
                                    wire:model="handle">
                             <span class="text-xs text-muted-foreground">
                                 @if ($existing)
@@ -448,7 +461,8 @@ class extends Component
                                                type="{{ $shown ? 'text' : 'password' }}"
                                                class="kt-input grow"
                                                placeholder="{{ $meta['placeholder'] }}"
-                                               autocomplete="off"
+                                               autocomplete="new-password"
+                                               data-1p-ignore data-lpignore="true" data-bwignore
                                                wire:model="fields.{{ $field }}">
                                         <button wire:click="toggleReveal('{{ $field }}')"
                                                 class="kt-btn kt-btn-icon kt-btn-outline shrink-0"
@@ -460,6 +474,8 @@ class extends Component
                                 @else
                                     <input id="cred-{{ $field }}" type="text" class="kt-input"
                                            placeholder="{{ $meta['placeholder'] }}"
+                                           autocomplete="off"
+                                           data-1p-ignore data-lpignore="true" data-bwignore
                                            wire:model="fields.{{ $field }}">
                                 @endif
                                 <span class="text-xs text-muted-foreground">{{ $meta['hint'] }}</span>
