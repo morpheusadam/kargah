@@ -4,6 +4,7 @@ namespace Modules\Social\Services;
 
 use Modules\Social\Services\Publishers\IngestsNotifications;
 use Modules\Social\Services\Publishers\Publisher;
+use Modules\Social\Services\Publishers\RefreshesToken;
 
 /**
  * Which driver handles which network.
@@ -74,6 +75,14 @@ class Publishing
         $driver = $this->driverFor($network);
 
         return $driver instanceof IngestsNotifications ? $driver : null;
+    }
+
+    /** The driver for a network, but only if it can renew its own credential. */
+    public function refresherFor(string $network): ?RefreshesToken
+    {
+        $driver = $this->driverFor($network);
+
+        return $driver instanceof RefreshesToken ? $driver : null;
     }
 
     /** @return list<string> Networks with a driver registered. */

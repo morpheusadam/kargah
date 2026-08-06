@@ -14,10 +14,20 @@ use Modules\Social\Support\Networks;
  * read. `social_accounts.token_expires_at` is a real column with a real
  * `datetime` cast; nothing consulted it before this command.
  *
- * Kargah pastes tokens rather than minting its own, so there is no refresh to
- * automate here — see `account-connect`'s own docblock and `DECISIONS.md`,
- * phase 7. The only thing a schedule can genuinely do is notice the clock
+ * Kargah pastes tokens rather than minting its own, so for most networks there
+ * is no refresh to automate — see `account-connect`'s own docblock and
+ * `DECISIONS.md`, phase 7. What a schedule can do for those is notice the clock
  * running out and say so before publishing starts failing silently.
+ *
+ * ⚠️ **That was once true of every network and is no longer true of two.**
+ * Instagram and Threads publish an edge that trades a living token for a fresh
+ * sixty days, and `social:refresh-tokens` — scheduled ten minutes before this
+ * command, deliberately — spends it. So a warning about either of those two is
+ * a warning that thirty days of daily renewals have all failed, which makes it
+ * more urgent than the same words about LinkedIn rather than less. The two
+ * commands are not alternatives: this one is the backstop that fires when the
+ * other could not do its job. `RefreshesToken` lists the twelve drivers with
+ * nothing to renew, and why.
  *
  * **The dedupe key carries the expiry it is warning about, not just the
  * account.** `token_expires_at` is recomputed every time a credential is

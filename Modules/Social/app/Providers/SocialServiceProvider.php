@@ -6,6 +6,7 @@ use Illuminate\Console\Scheduling\Schedule;
 use Modules\Core\Support\MorphMap;
 use Modules\Social\Console\CheckTokenExpiry;
 use Modules\Social\Console\PublishDue;
+use Modules\Social\Console\RefreshTokens;
 use Modules\Social\Console\SyncNotifications;
 use Modules\Social\Models\Post;
 use Modules\Social\Models\PostTarget;
@@ -40,6 +41,7 @@ class SocialServiceProvider extends ModuleServiceProvider
         PublishDue::class,
         SyncNotifications::class,
         CheckTokenExpiry::class,
+        RefreshTokens::class,
     ];
 
     /** @var string[] */
@@ -100,33 +102,49 @@ class SocialServiceProvider extends ModuleServiceProvider
             'social_notification' => SocialNotification::class,
         ]);
 
-        $this->bootTokenExpiryCheck();
+        $this->bootTokenUpkeep();
     }
 
     /**
-     * The token-expiry sweep: one command, dispatched from cron, never doing
-     * the work inline in the scheduler itself — same pattern as
+     * Keeping connected accounts connected: renew what can be renewed, then warn
+     * about what is left.
+     *
+     * Two commands, both dispatched from cron, neither doing the work inline in
+     * the scheduler itself — same pattern as
      * `Modules\Core\Providers\CoreServiceProvider::bootNotifications()` and
      * `Modules\Project\Providers\ProjectServiceProvider::bootDueCardSweep()`.
      * Scheduled here rather than in `routes/console.php` for the same reason
      * those two are: that file is shared across every module working today,
-     * and this entry needs nothing from it. `withoutOverlapping()` because a
-     * lookup this cheap has no business running twice at once, and because
-     * two overlapping ticks would otherwise race the same dedupe key that
+     * and these entries need nothing from it. `withoutOverlapping()` on both
+     * because two ticks of either would race — the check over the dedupe key
      * `Notifier::notifyMany()` is built to survive but there is no reason to
-     * invite.
+     * invite, and the refresh over the credential itself, where a second run
+     * arriving mid-write would be trading a token that has already been traded.
+     *
+     * 🔴 **The refresh runs first, and the ten minutes between them are the
+     * point.** `social:refresh-tokens` renews Instagram and Threads around the
+     * thirty-day mark, so on an install whose cron has just been repaired the
+     * same morning can hold both a refreshable token and a warning about it.
+     * Refreshing first means the warning that follows is only ever about a
+     * credential that genuinely could not be saved. Reversed, the owner would be
+     * told to go and paste a new token ten minutes before Kargah quietly fetched
+     * one.
      *
      * Daily, not per-minute like `social:publish-due`: `token_expires_at`
      * moves in units of days for every network that has one at all, so a
      * tighter tick would only mean checking a clock that has not moved.
      */
-    private function bootTokenExpiryCheck(): void
+    private function bootTokenUpkeep(): void
     {
         if (! $this->app->runningInConsole()) {
             return;
         }
 
         $this->callAfterResolving(Schedule::class, function (Schedule $schedule): void {
+            $schedule->command('social:refresh-tokens')
+                ->dailyAt('08:05')
+                ->withoutOverlapping();
+
             $schedule->command('social:check-token-expiry')
                 ->dailyAt('08:15')
                 ->withoutOverlapping();

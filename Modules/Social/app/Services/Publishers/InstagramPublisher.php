@@ -54,7 +54,7 @@ use Modules\Social\Support\Networks;
  * Deliberately does **not** implement `IngestsNotifications`: reading comments
  * or mentions needs permissions Kargah does not ask for.
  */
-class InstagramPublisher extends HttpPublisher
+class InstagramPublisher extends HttpPublisher implements RefreshesToken
 {
     use MetaGraph;
 
@@ -191,6 +191,31 @@ class InstagramPublisher extends HttpPublisher
         }
 
         return '@'.$username;
+    }
+
+    /**
+     * Sixty more days, for the price of the token already stored.
+     *
+     * `ig_refresh_token` is the grant, and `instagram_business_basic` — already
+     * granted, already needed by `verify()` — is the only permission it wants.
+     * Meta refuses a token younger than twenty-four hours and one that has
+     * already expired; `social:refresh-tokens` asks around the thirty-day mark,
+     * so neither is reachable in ordinary use, and both come back as a plain
+     * refusal recorded on the account rather than as anything this driver has to
+     * anticipate.
+     *
+     * 🔴 **`ig_user_id` is not sent and must not be.** The edge identifies the
+     * account from the token itself, and this is the one Instagram call in the
+     * driver that does not name a user in its path — which is also why it is the
+     * only one that keeps working when the stored id is wrong.
+     */
+    public function refreshToken(SocialAccount $account): RefreshedToken
+    {
+        return $this->refreshedGraphToken(
+            self::HOST.'/refresh_access_token',
+            'ig_refresh_token',
+            $this->require($account, 'access_token'),
+        );
     }
 
     /** One image: the container carries the picture and the caption together. */

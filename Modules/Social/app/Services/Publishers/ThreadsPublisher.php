@@ -44,7 +44,7 @@ use Modules\Social\Support\Networks;
  *
  * Deliberately does **not** implement `IngestsNotifications`.
  */
-class ThreadsPublisher extends HttpPublisher
+class ThreadsPublisher extends HttpPublisher implements RefreshesToken
 {
     use MetaGraph;
 
@@ -113,6 +113,29 @@ class ThreadsPublisher extends HttpPublisher
         }
 
         return '@'.$username;
+    }
+
+    /**
+     * The same trade Instagram makes, under Threads' own name for it.
+     *
+     * `th_refresh_token`, not `ig_refresh_token`. The two hosts each refuse the
+     * other's grant name, which is the same lesson this driver's class docblock
+     * teaches about tokens: the accounts can be the same account and none of the
+     * strings are interchangeable. `threads_basic` covers it, and that is the
+     * permission `verify()` already spends.
+     *
+     * Built from `self::HOST` rather than `threadsUrl()` because the refresh edge
+     * is deliberately unversioned — the argument is on
+     * `MetaGraph::refreshedGraphToken()`, and it is the one place this family
+     * leaves a version off on purpose.
+     */
+    public function refreshToken(SocialAccount $account): RefreshedToken
+    {
+        return $this->refreshedGraphToken(
+            self::HOST.'/refresh_access_token',
+            'th_refresh_token',
+            $this->require($account, 'access_token'),
+        );
     }
 
     /** No picture: the container is the text. */

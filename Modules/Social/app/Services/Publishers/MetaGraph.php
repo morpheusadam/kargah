@@ -305,6 +305,65 @@ trait MetaGraph
     }
 
     /**
+     * A living token traded for a longer-lived one.
+     *
+     * Instagram and Threads publish the same edge under two names — Instagram
+     * calls the grant `ig_refresh_token` and Threads calls it `th_refresh_token`
+     * — and answer with the same three keys: `access_token`, `token_type` and
+     * `expires_in` in seconds. Facebook Pages has no equivalent, which is why
+     * this lives here as a helper the two callers reach for rather than as
+     * something `MetaGraph` forces on everything that uses it.
+     *
+     * 🔴 **The expiry is read from `expires_in`, not from
+     * `Networks::tokenLifetimeDays()`.** The catalogue's sixty days is an
+     * estimate Kargah applies to a *pasted* string, because a pasted string says
+     * nothing about itself. A refresh answers with the real number, and taking
+     * the estimate over an answer would mean the one moment Kargah is told the
+     * truth is the moment it writes down its guess. See `RefreshedToken`.
+     *
+     * **The URL is deliberately unversioned**, and this is the one place in the
+     * family that departs from `GRAPH_VERSION`. Both hosts accept the versioned
+     * and the unversioned form — measured on 6 August 2026, a bogus token to
+     * `graph.instagram.com/refresh_access_token`,
+     * `graph.instagram.com/v23.0/refresh_access_token`,
+     * `graph.threads.net/refresh_access_token` and
+     * `graph.threads.net/v1.0/refresh_access_token` all answered the same
+     * `code: 190` "cannot parse access token" rather than the "Unknown path
+     * components" a missing edge produces. Given the choice, unversioned wins
+     * here and only here: the day Meta retires `v23.0`, a versioned publish
+     * failing is a red row somebody reads within the hour, while a versioned
+     * *refresh* failing is silent for as long as the current token has left, and
+     * the first symptom is a dead connection weeks later. Meta's own
+     * documentation writes this edge without a version, which is the second
+     * reason and not the first.
+     *
+     * @throws PublishFailed
+     */
+    protected function refreshedGraphToken(string $url, string $grantType, string $token): RefreshedToken
+    {
+        $body = $this->graphSend('get', $url, [
+            'grant_type' => $grantType,
+            'access_token' => $token,
+        ]);
+
+        $fresh = $body['access_token'] ?? null;
+        $seconds = $body['expires_in'] ?? null;
+
+        // Neither value is echoed into the message. This one reaches
+        // `social_accounts.last_error` and the accounts page, and the thing that
+        // would be most useful to print is the replacement credential.
+        if (! is_string($fresh) || trim($fresh) === '') {
+            throw PublishFailed::malformed($this->graphName(), 'the refresh was accepted but no replacement token came back');
+        }
+
+        if (! is_numeric($seconds) || (int) $seconds <= 0) {
+            throw PublishFailed::malformed($this->graphName(), 'the replacement token came back without a usable lifetime');
+        }
+
+        return new RefreshedToken($fresh, now()->addSeconds((int) $seconds));
+    }
+
+    /**
      * A URL for one image that Meta's own servers can fetch.
      *
      * 🔴 **This is the requirement that decides whether Instagram and Threads
