@@ -400,13 +400,35 @@ named `⚡<name>.blade.php` under `Modules/<X>/resources/views/components/`. Rea
 
     ⚠️ The bot token was pasted into a chat transcript, so it must be `/revoke`d in `@BotFather`
     before the connection is saved; the numeric chat id above survives the revoke.
-17. **YouTube was asked for and deliberately deferred.** It is not one of the seventeen networks,
-    so this is a driver to write rather than an account to connect — and it cuts against a decision
-    already made: `Publisher::publish()` excludes video because *"a chunked, resumable upload can
-    span minutes and this runs inside one PHP request's `max_execution_time`"*. A YouTube post **is**
-    a video upload, so it needs its own job and its own upload lifecycle rather than a fifteenth
-    driver shaped like the others. (Community posts are text, but there is no public API to create
-    one.) Worth doing when the owner actually produces video; not before.
+17. **YouTube is built. It has never been connected, and connecting it is not a paste.**
+    `YouTubePublisher`, `PublishesVideo`, `VideoItem` and `Networks::YOUTUBE` all exist, with
+    eighteen tests. What is missing is a credential, and YouTube is the only entry here that cannot
+    be satisfied from a settings screen: Google issues no long-lived upload key, so it takes a
+    Google Cloud project, the **YouTube Data API v3** enabled, an OAuth client of type *Desktop
+    app*, and one run of the consent flow to get a refresh token. Then client id, client secret and
+    refresh token go on the connect page like any other credential.
+
+    🔴 **Set the OAuth consent screen to *In production* before running the consent.** While it is
+    in Testing, Google expires every refresh token after seven days — silently, with nothing on the
+    pasted string to say which kind it is. That is why `token_lifetime_days` is null rather than 7,
+    and why `invalid_grant` gets its own sentence in the driver.
+
+    **What the build had to decide, so nobody re-opens it:**
+    - Video does **not** join `Publisher::publish()`. That method's exclusion of video is still
+      true and still right; YouTube gets a second operation instead. `PostPublisher` routes on
+      `instanceof PublishesVideo`, checked before `TakesTargetOptions`.
+    - `VideoItem` streams and `MediaItem` buffers, and they are siblings rather than one class with
+      a flag. This needed a new `AttachmentService::readStream()` in **Data** — the first time
+      Social has asked that contract for a handle rather than a string.
+    - ⚠️ **`max_bytes` is 25 MB, and that number is `config/livewire.php`, not YouTube.**
+      `temporary_file_upload.rules` is `max:25600`, and the composer is the only way a video becomes
+      an attachment — so a larger catalogue number would be a promise the attach step cannot keep.
+      Raising it means raising that config, which is app-wide and affects every upload form.
+    - The file picker's `accept` is now built from the catalogue instead of a hardcoded image list.
+      That list was already a second copy of `Networks`' mimes and it went wrong the moment YouTube
+      arrived: the picker refused every video while the validation beside it allowed one.
+    - Privacy defaults to `public`, overridable per target with `privacy_status`. A video that
+      uploads and cannot be seen would mark the target published while achieving nothing.
 18. Older debts: `CustomerReader` returning Eloquent models where every sibling returns arrays ·
     `has:stickers` · Butler's calendar and branching · uncursored `/api/v1/customers` · card writes
     and mail sending absent from `/api/v1` · no permalink for Instagram, Threads or Slack · Reddit
