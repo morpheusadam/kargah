@@ -382,10 +382,32 @@ named `⚡<name>.blade.php` under `Modules/<X>/resources/views/components/`. Rea
     Reddit's display name and three more on X's username, all guessing at clicks, when one look at
     the failing request named the cause immediately. Same rule this project already has for the
     server, one layer further out.
-16. **Telegram is the one worth connecting next**, and the only one left with no gate: no app
-    review, no developer account, no captcha — a bot token from `@BotFather` and a chat id. For a
-    Persian-speaking client base it is also plausibly the highest-yield of the lot.
-17. Older debts: `CustomerReader` returning Eloquent models where every sibling returns arrays ·
+16. **Telegram — everything is resolved except two clicks the owner has to make.**
+    Bot `@lavzenbot` (id 8771041037) exists; channel `@lavzencom` resolves to
+    **`chat_id = -1002842134425`**, title "Lavzen". The connect form is filled with the handle and
+    that numeric id and is waiting for a token.
+
+    🔴 **The bot is not an admin of the channel yet**, and that is the failure this would otherwise
+    hide. `getChat` answers happily for any public channel regardless of permission — it is
+    `getChatMember` for the bot's own id that tells the truth, and it answers
+    *"member list is inaccessible"*, which is what a non-admin bot gets. A connection saved in this
+    state verifies fine and fails on the first real post.
+
+    ⚠️ **The numeric id is stored deliberately, not `@lavzencom`.** `Networks::TELEGRAM` accepts
+    either, and a Telegram channel's public link can be changed at any time — at which point a
+    connection holding `@username` breaks with an error that never mentions the rename. The numeric
+    id never moves.
+
+    ⚠️ The bot token was pasted into a chat transcript, so it must be `/revoke`d in `@BotFather`
+    before the connection is saved; the numeric chat id above survives the revoke.
+17. **YouTube was asked for and deliberately deferred.** It is not one of the seventeen networks,
+    so this is a driver to write rather than an account to connect — and it cuts against a decision
+    already made: `Publisher::publish()` excludes video because *"a chunked, resumable upload can
+    span minutes and this runs inside one PHP request's `max_execution_time`"*. A YouTube post **is**
+    a video upload, so it needs its own job and its own upload lifecycle rather than a fifteenth
+    driver shaped like the others. (Community posts are text, but there is no public API to create
+    one.) Worth doing when the owner actually produces video; not before.
+18. Older debts: `CustomerReader` returning Eloquent models where every sibling returns arrays ·
     `has:stickers` · Butler's calendar and branching · uncursored `/api/v1/customers` · card writes
     and mail sending absent from `/api/v1` · no permalink for Instagram, Threads or Slack · Reddit
     takes no pictures · Tumblr on the legacy endpoint.
