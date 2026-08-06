@@ -331,14 +331,32 @@ named `⚡<name>.blade.php` under `Modules/<X>/resources/views/components/`. Rea
     followed. The driver is fine; the door closed. The only path left: create a subreddit, become
     its moderator, and cite that in the ticket. Do not spend a session on this before the ticket is
     answered.
-    ⚠️ **And the account itself looks restricted.** `Embarrassed-Duty-511` — two years old, 1 karma,
-    moderating nothing but its own profile. Three different actions were refused on it in one
-    sitting: the app, then `r/lavzencom` which answers **`is banned`** (a burned name Reddit never
-    releases — `r/lavzen` and `r/lavzencomstudio` are free, so this was not a lookup error), then a
-    plain **display-name change**, which answered *"We had some issues saving your changes"* three
-    times running. Any one of those is unremarkable; all three on one account is worth knowing
-    before somebody spends an afternoon assuming their clicks are missing. Nothing here was
-    diagnosed further, because none of it would have connected Reddit anyway.
+    🔴 **Read the next paragraph before believing the one above.** Every measurement behind it was
+    taken through `Embarrassed-Duty-511`, and that account turns out to be **shadowbanned** —
+    so the finding is contaminated and the door may not be shut at all.
+
+    🔴 **The account is shadowbanned, and that alone explains the whole afternoon.** Three unrelated
+    actions were refused on it in one sitting: creating the app, creating `r/lavzencom`, and saving
+    a **display name** (*"We had some issues saving your changes"*, three times). The test that
+    settled it costs one request, needs no login, and is worth reaching for the moment an account
+    behaves like this:
+
+    ```
+    old.reddit.com/user/Embarrassed-Duty-511  → HTTP 404
+    old.reddit.com/user/spez                  → HTTP 200   (control)
+    ```
+
+    Invisible from outside, entirely normal from inside — no banner, no notice, which is exactly how
+    a shadowban differs from a suspension. Two years old with 1 karma fits it.
+
+    ⚠️ **So "the Data API is closed" is not established.** That conclusion came from one account's
+    refusal, and a shadowbanned account is refused everything. The gate may be universal or it may
+    apply only to flagged accounts; nobody has looked through a clean one. The order to work in is
+    therefore: **appeal the shadowban first** (r/ShadowBan, or Reddit support), then retry
+    `/prefs/apps`, and only if a healthy account is *also* refused does the moderation-use-case
+    ticket become the story. `r/lavzencom` answering `is banned` is the one finding that stands on
+    its own — it is a property of the name, not the account, and `r/lavzen` and `r/lavzencomstudio`
+    were both free.
 15. Older debts: `CustomerReader` returning Eloquent models where every sibling returns arrays ·
     `has:stickers` · Butler's calendar and branching · uncursored `/api/v1/customers` · card writes
     and mail sending absent from `/api/v1` · no permalink for Instagram, Threads or Slack · Reddit
