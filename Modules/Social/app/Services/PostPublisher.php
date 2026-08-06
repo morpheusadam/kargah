@@ -5,6 +5,10 @@ namespace Modules\Social\Services;
 use Illuminate\Support\Facades\Log;
 use Modules\Social\Models\Post;
 use Modules\Social\Models\PostTarget;
+use Modules\Social\Models\SocialAccount;
+use Modules\Social\Services\Publishers\MediaItem;
+use Modules\Social\Services\Publishers\PublishedPost;
+use Modules\Social\Services\Publishers\PublishesVideo;
 use Modules\Social\Services\Publishers\PublishFailed;
 use Modules\Social\Services\Publishers\TakesTargetOptions;
 
@@ -46,7 +50,7 @@ class PostPublisher
      * `publishTarget()` is public and the posts page calls it directly for a
      * single retry.
      *
-     * @var array<int, list<\Modules\Social\Services\Publishers\MediaItem>>
+     * @var array<int, list<MediaItem>>
      */
     private array $mediaByPost = [];
 
@@ -124,23 +128,35 @@ class PostPublisher
         }
 
         try {
-            // Two calls rather than one, decided by what the driver implements.
+            $options = is_array($target->options) ? $target->options : [];
+
+            // Three calls rather than one, decided by what the driver
+            // implements — the same `instanceof` shape `Publishing::ingesterFor()`
+            // uses on the read side.
+            //
             // Most destinations take a string and some pictures and nothing
-            // else; WordPress needs a title, categories and a draft-or-publish
-            // decision, none of which are copy. A driver that has not asked for
-            // options never sees them even when the target carries some — which
-            // is right: a post going to a blog and to X carries a title for the
-            // first, and the title is not X's business. See
-            // `Publishers\TakesTargetOptions`, and `Publishing::ingesterFor()`
-            // for the same `instanceof` shape on the read side.
-            $result = $driver instanceof TakesTargetOptions
-                ? $driver->publishWithOptions(
+            // else. WordPress needs a title, categories and a draft-or-publish
+            // decision, none of which are copy; a driver that has not asked for
+            // options never sees them even when the target carries some, which
+            // is right, because a post going to a blog and to X carries a title
+            // for the first and the title is not X's business. See
+            // `Publishers\TakesTargetOptions`.
+            //
+            // **Video is checked first, and is a different operation rather than
+            // a longer version of the same one.** It takes one video and no
+            // pictures and cannot promise to finish in seconds, and a driver
+            // that uploads video has nothing useful to do with `publish()` at
+            // all — see `Publishers\PublishesVideo`.
+            $result = match (true) {
+                $driver instanceof PublishesVideo => $this->publishVideoTo($driver, $account, $target, $options),
+                $driver instanceof TakesTargetOptions => $driver->publishWithOptions(
                     $account,
                     $target->text(),
                     $this->mediaFor($target),
-                    is_array($target->options) ? $target->options : [],
-                )
-                : $driver->publish($account, $target->text(), $this->mediaFor($target));
+                    $options,
+                ),
+                default => $driver->publish($account, $target->text(), $this->mediaFor($target)),
+            };
         } catch (PublishFailed $e) {
             return $this->fail($target, $report, $e->getMessage());
         } catch (\Throwable $e) {
@@ -170,6 +186,44 @@ class PostPublisher
     }
 
     /**
+     * Send a target to a driver whose post is a video.
+     *
+     * **The missing-video case is answered here rather than in the driver**, and
+     * that is deliberate: `PostPublisher` is the only thing that knows what is
+     * attached to the post, and a driver told "publish nothing" can only guess
+     * why. `YouTubePublisher::publish()` still refuses by name for the path that
+     * reaches it another way, so the sentence exists in both places and neither
+     * depends on the other.
+     *
+     * The video is **not** memoised the way `mediaFor()` memoises pictures.
+     * There is no saving to be had: one post has at most one video target today,
+     * and a `VideoItem` holds no bytes to share — it opens a fresh handle per
+     * upload on purpose. See `Publishers\VideoItem`.
+     *
+     * @param  array<string, mixed>  $options
+     *
+     * @throws PublishFailed
+     */
+    private function publishVideoTo(
+        PublishesVideo $driver,
+        SocialAccount $account,
+        PostTarget $target,
+        array $options,
+    ): PublishedPost {
+        $post = $target->post;
+        $video = $post === null ? null : $this->media->videoForPost($post);
+
+        if ($video === null) {
+            throw PublishFailed::rejected(
+                $account->network,
+                'this post has no video attached, and '.$account->label().' has no other kind of post',
+            );
+        }
+
+        return $driver->publishVideo($account, $target->text(), $video, $options);
+    }
+
+    /**
      * The pictures this target should carry.
      *
      * **Resolved from the attachment rows, never from `posts.media`.** That
@@ -181,7 +235,7 @@ class PostPublisher
      * whichever the publisher happens to read decides what the world sees.
      * There is one source and it is the one the delete button writes to.
      *
-     * @return list<\Modules\Social\Services\Publishers\MediaItem>
+     * @return list<MediaItem>
      */
     private function mediaFor(PostTarget $target): array
     {

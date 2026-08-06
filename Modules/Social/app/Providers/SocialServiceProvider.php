@@ -26,6 +26,7 @@ use Modules\Social\Services\Publishers\ThreadsPublisher;
 use Modules\Social\Services\Publishers\TumblrPublisher;
 use Modules\Social\Services\Publishers\VkPublisher;
 use Modules\Social\Services\Publishers\XPublisher;
+use Modules\Social\Services\Publishers\YouTubePublisher;
 use Modules\Social\Services\Publishing;
 use Modules\Social\Support\Networks;
 use Nwidart\Modules\Support\ModuleServiceProvider;
@@ -77,6 +78,7 @@ class SocialServiceProvider extends ModuleServiceProvider
             $publishing->extend(Networks::FACEBOOK_PAGE, fn () => new FacebookPagePublisher);
             $publishing->extend(Networks::INSTAGRAM, fn () => new InstagramPublisher);
             $publishing->extend(Networks::THREADS, fn () => new ThreadsPublisher);
+            $publishing->extend(Networks::YOUTUBE, fn () => new YouTubePublisher);
             $publishing->extend(Networks::SLACK, fn () => new SlackPublisher);
             $publishing->extend(Networks::TUMBLR, fn () => new TumblrPublisher);
             $publishing->extend(Networks::VK, fn () => new VkPublisher);

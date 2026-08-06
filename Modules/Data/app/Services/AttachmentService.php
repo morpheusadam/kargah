@@ -139,6 +139,35 @@ class AttachmentService implements AttachmentServiceContract
         return $disk->exists($attachment->path) ? $disk->get($attachment->path) : null;
     }
 
+    /**
+     * The same bytes as `contents()`, without ever holding them all at once.
+     *
+     * `exists()` is checked first for the same reason it is there — `readStream()`
+     * on a missing path answers null on one driver and throws on another, and the
+     * caller needs one answer. The handle is the caller's to close; see the
+     * contract.
+     *
+     * @return resource|null
+     */
+    public function readStream(int $attachmentId)
+    {
+        $attachment = Attachment::query()->find($attachmentId);
+
+        if ($attachment === null) {
+            return null;
+        }
+
+        $disk = Storage::disk($attachment->disk);
+
+        if (! $disk->exists($attachment->path)) {
+            return null;
+        }
+
+        $stream = $disk->readStream($attachment->path);
+
+        return is_resource($stream) ? $stream : null;
+    }
+
     public function publicUrl(int $attachmentId, int $minutes = 30): ?string
     {
         $attachment = Attachment::query()->find($attachmentId);

@@ -54,14 +54,22 @@ use Nwidart\Modules\Facades\Module;
  * every selected network's entry **before** a post row exists, so an oversized
  * file is a sentence on the page rather than a red target row later.
  *
- * **Images only, deliberately.** Every `mimes` list here is a still-image list,
- * and nothing in Kargah uploads video. That is not an omission: X's 1 MB
- * chunks, LinkedIn's 2 MB and YouTube's 8 MB resumable protocol all describe an
- * upload that can span minutes, and a Kargah publish is one HTTP job bounded by
- * `max_execution_time` on shared hosting. An image fits in that budget; a
- * chunked video does not, and pretending otherwise would produce a job that is
- * killed halfway with the post half-sent. Video is real, separate future work —
- * see `project-guaid/spec/08-postiz-parity.md`, *Media*.
+ * **Images only, with exactly one exception.** Every `mimes` list here is a
+ * still-image list but YouTube's, and that asymmetry is the honest shape rather
+ * than an oversight. X's 1 MB chunks and LinkedIn's 2 MB describe an upload that
+ * can span minutes, and a Kargah publish is one HTTP job bounded by
+ * `max_execution_time` on shared hosting; an image fits in that budget and a
+ * chunked video does not. So video was left out of `Publisher::publish()`
+ * entirely and stays out.
+ *
+ * 🔴 **YouTube does not get an exemption from that reasoning — it gets a
+ * different door.** A YouTube post *is* a video, so there was no version of
+ * supporting it that kept video out. What it must not do is smuggle a
+ * minutes-long upload into the call every other network answers in seconds, and
+ * it does not: `Publishers\PublishesVideo` is a separate operation, `VideoItem`
+ * streams where `MediaItem` buffers, and `YOUTUBE['media']['max_bytes']` is set
+ * from **this install's** budget rather than from Google's 256 GB ceiling. The
+ * limit that actually bites is the worker's clock, not the API's.
  *
  * The numbers are the network's, not Kargah's, and they are deliberately the
  * conservative reading where a network's own documentation and its running
@@ -138,6 +146,26 @@ final class Networks
     public const INSTAGRAM = 'instagram';
 
     public const THREADS = 'threads';
+
+    /**
+     * 🔴 **The only entry here whose post is a video, and the only one that
+     * cannot be published by `Publisher::publish()` at all.**
+     *
+     * Every other destination in this catalogue takes copy and optionally some
+     * pictures. YouTube has no text post and no photo post — `videos.insert` is
+     * the only way to put anything on a channel — so its driver implements
+     * `Publishers\PublishesVideo` and its `publish()` refuses by name. That is
+     * also why `VideoItem` exists beside `MediaItem`: an image is a string that
+     * fits in memory, and a video is a stream that must not be turned into one.
+     *
+     * It is also the only credential here that Kargah cannot obtain by asking a
+     * person to paste something a settings screen shows them. Google issues no
+     * long-lived API key for uploads; the only route is an OAuth consent that
+     * hands back a refresh token, which is then exchanged for a one-hour access
+     * token on every publish — the same shape `RedditPublisher` already uses,
+     * and the reason that driver's pattern was worth keeping.
+     */
+    public const YOUTUBE = 'youtube';
 
     /**
      * A WordPress site, which is a network here for one reason: everything
@@ -735,6 +763,95 @@ final class Networks
                     ['allowed' => true, 'text' => 'Post to the Threads account named above, with or without images'],
                     ['allowed' => false, 'text' => 'Reply on your behalf, or read your timeline'],
                     ['allowed' => false, 'text' => 'Read notifications — Kargah does not ask for the permission that would allow it'],
+                ],
+            ],
+            self::YOUTUBE => [
+                'label' => 'YouTube',
+                'module' => self::MODULE_SOCIAL,
+                'icon' => 'ki-youtube',
+                'tone' => 'text-danger',
+                'dot' => 'bg-danger',
+                'colour' => '#ff0000',
+                // The **description's** ceiling. A video also has a title, which
+                // is 100 characters and is a separate field this driver derives
+                // from the first line rather than counts — the same split
+                // `RedditPublisher` makes, so somebody composing for both learns
+                // the rule once.
+                'limit' => 5000,
+                'method' => 'token',
+                'summary' => 'Upload a video to a channel you own.',
+                'requirement' => 'YouTube is the one destination here with no pasteable API key: Google only issues upload access through an OAuth consent. In Google Cloud, create a project, enable the YouTube Data API v3, create an OAuth client of type Desktop app, then run its consent once to get a refresh token and paste it with the client id and secret. 🔴 Set the OAuth consent screen to In production before you do — while it is in Testing, Google expires every refresh token after seven days and the connection dies without warning.',
+                'ingests' => false,
+                // A Google refresh token issued by an app **in production** does
+                // not expire on a clock at all; it dies when it is revoked, or
+                // after six months of not being used. That is the same shape as
+                // Mastodon's and Telegram's, so it is null here for the same
+                // reason.
+                //
+                // ⚠️ A token issued while the consent screen is still in Testing
+                // expires in seven days, and there is nothing on the pasted
+                // string that says which kind it is. Setting this to 7 would
+                // warn every correctly-configured install every week; leaving it
+                // null and putting the sentence in `requirement`, where somebody
+                // reads it *before* pasting, is the trade that costs less.
+                'token_lifetime_days' => null,
+                'media' => [
+                    // One. A YouTube post is a video, singular, and
+                    // `PostMedia::videoForPost()` answers with the first one
+                    // attached rather than a list.
+                    'max_count' => 1,
+                    // 🔴 **Kargah's number, and specifically this install's.**
+                    // Google accepts 256 GB. Two things here accept far less, and
+                    // the smaller of them is the one that decides:
+                    //
+                    // 1. `config/livewire.php`'s `temporary_file_upload.rules`
+                    //    is `max:25600` — **25 MB**, and the composer is the only
+                    //    way a video ever becomes an attachment. A larger number
+                    //    here would be a promise the attach step cannot keep, and
+                    //    the person would meet Livewire's validation error rather
+                    //    than this catalogue's sentence.
+                    // 2. the upload has to finish inside one queue job; cron
+                    //    starts the worker as
+                    //    `queue:work --stop-when-empty --max-time=50` on shared
+                    //    hosting.
+                    //
+                    // So this matches the Livewire ceiling exactly rather than
+                    // guessing a friendlier number. **Raising it means raising
+                    // that config first** — it is app-wide and affects every
+                    // upload form in Kargah, which is a decision for the person
+                    // running the install and not for this file.
+                    'max_bytes' => 25 * 1024 * 1024,
+                    'mimes' => ['video/mp4', 'video/quicktime', 'video/webm', 'video/x-msvideo', 'video/mpeg'],
+                    'max_pixels' => null,
+                    'max_dimension_sum' => null,
+                    'max_aspect_ratio' => null,
+                    'caption_limit' => null,
+                    'note' => 'One video, and a video is required — YouTube has no text post. MP4 is the safest container. The 25 MB ceiling is this install’s upload limit rather than YouTube’s, which is far larger.',
+                ],
+                'credentials' => [
+                    'client_id' => [
+                        'label' => 'OAuth client ID',
+                        'secret' => false,
+                        'placeholder' => '1234567890-abc.apps.googleusercontent.com',
+                        'hint' => 'From the OAuth client you created in Google Cloud. It identifies the application, not the channel.',
+                    ],
+                    'client_secret' => [
+                        'label' => 'OAuth client secret',
+                        'secret' => true,
+                        'placeholder' => 'The client secret',
+                        'hint' => 'Stored encrypted. Shown when the client is created and re-downloadable from the same screen.',
+                    ],
+                    'refresh_token' => [
+                        'label' => 'Refresh token',
+                        'secret' => true,
+                        'placeholder' => '1//0g…',
+                        'hint' => 'Stored encrypted. Obtained once by running the consent flow; Kargah exchanges it for a short-lived token on every upload and never stores that.',
+                    ],
+                ],
+                'permissions' => [
+                    ['allowed' => true, 'text' => 'Upload a video to the channel this credential belongs to, and publish it'],
+                    ['allowed' => true, 'text' => 'Read that channel’s own name, so the connect page can show you which one it reached'],
+                    ['allowed' => false, 'text' => 'Read or reply to comments, see your subscribers, or touch a video it did not upload'],
                 ],
             ],
             self::WORDPRESS => [

@@ -133,6 +133,31 @@ interface AttachmentService
      */
     public function contents(int $attachmentId): ?string;
 
+    /**
+     * A readable handle on one attachment's bytes, or null when it is gone.
+     *
+     * 🔴 **The whole point is that this never puts the file in a string.**
+     * `contents()` is right for a picture — a few megabytes, handed to a
+     * multipart body, gone at the end of the request. It is exactly wrong for a
+     * video: a hundred-megabyte upload read with `contents()` needs a hundred
+     * megabytes of `memory_limit`, on shared hosting, inside a queue worker that
+     * is also holding a post and its targets. `YouTubePublisher` hands this
+     * resource straight to the HTTP client, which reads it in chunks, so the
+     * memory cost is the chunk rather than the file.
+     *
+     * Returns a stream rather than a path for the same reason every other method
+     * here returns arrays: the caller must not learn which disk the file is on.
+     * A path only exists on a local disk, and answering with one would work
+     * today and break the day this install moves to S3 — which is the migration
+     * this whole contract exists to keep to one config change.
+     *
+     * **The caller closes it.** Nothing here holds the handle, because nothing
+     * here knows when the upload finishes.
+     *
+     * @return resource|null
+     */
+    public function readStream(int $attachmentId);
+
     /** One attachment, or null when it does not exist or has been deleted. */
     public function find(int $attachmentId): ?array;
 

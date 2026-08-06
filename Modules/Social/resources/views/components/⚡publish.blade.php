@@ -264,6 +264,35 @@ class extends Component
     }
 
     /**
+     * Every MIME type any connected network here will take, for the file
+     * picker's `accept`.
+     *
+     * The union rather than the intersection, and rather than the selected
+     * accounts' types: the picker is one control shared by every target, so
+     * narrowing it to what today's selection allows would hide a file the person
+     * is about to tick a network for. Attaching something a *selected* network
+     * refuses is already answered — `problemsFor()` says which network and why,
+     * in a sentence, before anything is queued.
+     *
+     * Deliberately read from `all()` rather than `available()`: an account
+     * connected before its module was switched off still appears on this page,
+     * and a picker that stopped offering its file types would be confusing in a
+     * way nothing here explains.
+     */
+    public function acceptedMimes(): string
+    {
+        $mimes = [];
+
+        foreach (Networks::all() as $entry) {
+            foreach ($entry['media']['mimes'] as $mime) {
+                $mimes[$mime] = true;
+            }
+        }
+
+        return implode(',', array_keys($mimes));
+    }
+
+    /**
      * What one network makes of what is currently attached.
      *
      * @return list<string>
@@ -749,12 +778,20 @@ class extends Component
                         <label class="rounded-lg border border-dashed border-border bg-accent/60 px-5 py-4 flex flex-col items-center gap-1 text-center cursor-pointer">
                             <i class="ki-filled ki-picture text-xl text-muted-foreground"></i>
                             <span class="text-sm text-secondary-foreground">
-                                {{ count($uploads) > 0 ? 'Add another image' : 'Attach an image' }}
+                                {{ count($uploads) > 0 ? 'Add another file' : 'Attach an image or video' }}
                             </span>
-                            <input type="file" multiple accept="image/jpeg,image/png,image/gif,image/webp"
+                            {{--
+                                🔴 Built from the catalogue, never typed out here. This attribute used to be a
+                                hardcoded image list, which was already a second copy of `Networks`' `mimes` and
+                                went wrong the moment YouTube arrived: the picker refused every video while the
+                                validation a few lines up cheerfully allowed one. A browser filter that disagrees
+                                with the rules is the worse half of the pair, because it makes a supported file
+                                look impossible rather than merely rejected.
+                            --}}
+                            <input type="file" multiple accept="{{ $this->acceptedMimes() }}"
                                    class="hidden" wire:model="uploads">
                             <span class="text-[11px] text-muted-foreground">
-                                JPEG, PNG, GIF or WebP. Each network has its own ceiling and Kargah checks against the ones you have ticked.
+                                Images for most networks; YouTube takes one video and nothing else. Each network has its own ceiling and Kargah checks against the ones you have ticked.
                             </span>
                         </label>
 
