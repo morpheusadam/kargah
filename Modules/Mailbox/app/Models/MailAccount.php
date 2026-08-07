@@ -36,6 +36,12 @@ class MailAccount extends Model
     use HasFactory;
     use SoftDeletes;
 
+    /** Polled by `mailbox:sync-imap` over a socket this application opens. */
+    public const KIND_IMAP = 'imap';
+
+    /** Written by the Email Worker's POST; nothing is ever connected to. */
+    public const KIND_INBOUND = 'inbound';
+
     /**
      * `imap_password_encrypted` is deliberately absent.
      *
@@ -45,6 +51,7 @@ class MailAccount extends Model
     protected $fillable = [
         'name',
         'email',
+        'kind',
         'imap_host',
         'imap_port',
         'imap_encryption',
@@ -123,10 +130,28 @@ class MailAccount extends Model
      *
      * A mailbox that has never been synced sorts ahead of one that has, so a
      * newly added account is not starved by a busy one.
+     *
+     * Inbound accounts are excluded rather than merely failing later. They have
+     * no `imap_host` to open, so a tick that picked one up would spend a
+     * connection attempt to learn what `kind` already says, then write the
+     * refusal to `last_error` — where the owner would read it as a mailbox that
+     * has broken rather than one that was never polled in the first place.
      */
     public function scopeDueForSync(Builder $query): Builder
     {
-        return $query->active()->orderByRaw('last_synced_at is null desc')->orderBy('last_synced_at');
+        return $query->active()->polled()->orderByRaw('last_synced_at is null desc')->orderBy('last_synced_at');
+    }
+
+    /** Accounts Kargah connects out to, as opposed to ones that are posted in. */
+    public function scopePolled(Builder $query): Builder
+    {
+        return $query->where('kind', self::KIND_IMAP);
+    }
+
+    /** Whether messages reach this account by being pushed at it. */
+    public function isInbound(): bool
+    {
+        return $this->kind === self::KIND_INBOUND;
     }
 
     /** Whether the last sync ended in an error rather than a cursor. */

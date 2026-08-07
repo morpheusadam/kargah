@@ -4,17 +4,12 @@ namespace Modules\Mailbox\Jobs;
 
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
-use Modules\Mailbox\Models\Email;
-use Modules\Mailbox\Models\EmailAttachment;
-use Modules\Mailbox\Models\EmailThread;
 use Modules\Mailbox\Models\MailAccount;
-use Modules\Mailbox\Services\CustomerResolver;
 use Modules\Mailbox\Services\Imap\MailboxConnector;
 use Modules\Mailbox\Services\Imap\MailboxUnavailable;
-use Modules\Mailbox\Services\Imap\RemoteMessage;
+use Modules\Mailbox\Services\MessageStore;
 
 /**
  * Store one window of UIDs from one folder.
@@ -25,7 +20,9 @@ use Modules\Mailbox\Services\Imap\RemoteMessage;
  * So the job holds no state between messages that a kill could lose, and it
  * derives everything it can rather than counting.
  *
- * Three properties make that work, in the order they matter:
+ * Three properties make that work, in the order they matter. The first and third
+ * belong to `MessageStore`, which is where a message is actually written down —
+ * this job decides *which* messages to ask for, not what storing one means.
  *
  * 1. **`emails.message_id` is unique**, and every write is keyed on it. A
  *    message that is already stored is found, not inserted, so re-running a
@@ -74,7 +71,7 @@ class SyncMailAccount implements ShouldQueue
         public int $uidValidity,
     ) {}
 
-    public function handle(CustomerResolver $customers): void
+    public function handle(MessageStore $store): void
     {
         $account = $this->account;
 
@@ -102,7 +99,7 @@ class SyncMailAccount implements ShouldQueue
             $threads = [];
 
             foreach ($connection->fetch($this->fromUid, $this->toUid) as $message) {
-                $threads[$this->store($account, $message, $customers)] = true;
+                $threads[$store->store($account, $message, $this->folder)] = true;
             }
         } catch (MailboxUnavailable $e) {
             $this->recordFailure($account, $e);
@@ -110,149 +107,9 @@ class SyncMailAccount implements ShouldQueue
             return;
         }
 
-        /*
-         * Once per thread at the end of the window, not once per message.
-         * A chunk of a hundred messages in one conversation would otherwise
-         * recount that conversation a hundred times, and the last count is the
-         * only one anybody sees.
-         */
-        EmailThread::query()->whereKey(array_keys($threads))->get()->each->refreshCounters();
+        $store->refreshThreads(array_keys($threads));
 
         $this->advance($account);
-    }
-
-    /**
-     * Store one message, and say which thread it landed in.
-     *
-     * Per message rather than per chunk, on purpose. A transaction around the
-     * whole window would make a kill lose the window's work, which is safe but
-     * wasteful; per message, a kill costs at most the message in flight and
-     * everything already committed stays committed. That is also the state the
-     * restart test reproduces.
-     */
-    private function store(MailAccount $account, RemoteMessage $message, CustomerResolver $customers): int
-    {
-        return DB::transaction(function () use ($account, $message, $customers): int {
-            $threadId = $this->threadFor($message);
-
-            $attributes = [
-                'mail_account_id' => $account->getKey(),
-                'email_thread_id' => $threadId,
-                'in_reply_to' => $message->inReplyTo,
-                'uid' => $message->uid,
-                'subject' => $message->subject,
-                'from_name' => $message->fromName,
-                'from_email' => $message->fromEmail,
-                'to' => $message->to,
-                'cc' => $message->cc,
-                'body_text' => $message->textBody,
-                'body_html' => $message->htmlBody,
-                'has_attachments' => $message->attachments !== [],
-                'folder' => $this->folder,
-                'received_at' => $message->receivedAt,
-            ];
-
-            /*
-             * `withTrashed()`, because a message the owner deleted locally is
-             * still on the server and will be offered again. Without it the
-             * lookup misses the soft-deleted row and the insert hits the unique
-             * index instead. The row is updated in place and left deleted —
-             * re-syncing must not resurrect something someone threw away.
-             *
-             * `is_read` and `is_starred` are set only at creation. After that
-             * they are local state: marking a message read in the inbox must
-             * not be undone by the next tick. Writing flags back to the server
-             * is phase 5's problem.
-             */
-            $email = Email::withTrashed()->firstOrCreate(
-                ['message_id' => $message->messageId],
-                $attributes + ['is_read' => $message->seen, 'is_starred' => $message->flagged],
-            );
-
-            if (! $email->wasRecentlyCreated) {
-                // A no-op when nothing changed: Eloquent skips the UPDATE and
-                // leaves `updated_at` alone, which is what makes a second run
-                // of the same chunk observably do nothing.
-                $email->fill($attributes)->save();
-            }
-
-            $customers->resolveAndAttach($email);
-
-            $this->storeAttachments($email, $message);
-
-            return $threadId;
-        });
-    }
-
-    /**
-     * Find the conversation this message belongs to, or start one.
-     *
-     * Threading is by `Message-ID` and `In-Reply-To` rather than by subject,
-     * because subjects are not identifiers — two people writing "Invoice" in
-     * the same week are not in a conversation, and a reply that drops "Re:" is.
-     *
-     * The second lookup exists because mail does not arrive in order. A reply
-     * can be synced before the message it answers, either because the parent is
-     * in an older UID window or because it lives in another folder; when the
-     * parent finally arrives it must join the thread its reply already started,
-     * not open a second one.
-     *
-     * The third is what keeps a re-sync inert: a message already stored is
-     * returned to its own thread rather than given a new one.
-     */
-    private function threadFor(RemoteMessage $message): int
-    {
-        if ($message->inReplyTo !== null) {
-            $parent = Email::withTrashed()->where('message_id', $message->inReplyTo)->value('email_thread_id');
-
-            if ($parent !== null) {
-                return (int) $parent;
-            }
-        }
-
-        $child = Email::withTrashed()->where('in_reply_to', $message->messageId)->value('email_thread_id');
-
-        if ($child !== null) {
-            return (int) $child;
-        }
-
-        $own = Email::withTrashed()->where('message_id', $message->messageId)->value('email_thread_id');
-
-        if ($own !== null) {
-            return (int) $own;
-        }
-
-        return EmailThread::create([
-            'subject' => $message->subject,
-            'participants' => [],
-            'message_count' => 0,
-            'last_message_at' => $message->receivedAt,
-        ])->getKey();
-    }
-
-    /**
-     * Metadata only — Data owns the disk and phase 6 fetches the bytes.
-     *
-     * Keyed on the part number as well as the filename because a message can
-     * carry two files of the same name in different parts, and because the part
-     * number is what phase 6 will use to go and get exactly this one.
-     */
-    private function storeAttachments(Email $email, RemoteMessage $message): void
-    {
-        foreach ($message->attachments as $attachment) {
-            EmailAttachment::updateOrCreate(
-                [
-                    'email_id' => $email->getKey(),
-                    'filename' => $attachment->filename,
-                    'part_number' => $attachment->partNumber,
-                ],
-                [
-                    'mime' => $attachment->mime,
-                    'size_bytes' => $attachment->sizeBytes,
-                    'content_id' => $attachment->contentId,
-                ],
-            );
-        }
     }
 
     /**

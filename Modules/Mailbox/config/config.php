@@ -68,6 +68,52 @@ return [
     ],
 
     /*
+     * Receiving mail the other way: pushed, not polled.
+     *
+     * A Cloudflare Email Worker bound to the domain's routing rules posts each
+     * message here the moment it arrives. Nothing above applies — there is no
+     * connection to open, no cursor to resume and no chunk to bound, because the
+     * unit of work is one message and it is already in the request body.
+     */
+    'inbound' => [
+
+        /*
+         * The shared secret the Worker sends in `X-Inbound-Secret`.
+         *
+         * Null disables the endpoint outright rather than leaving it open: an
+         * install that has not set this has not deployed a Worker either, and a
+         * route that accepts anything would let anyone write rows into someone
+         * else's inbox. Compared with `hash_equals`, so a wrong secret costs the
+         * same time as a right one and cannot be guessed a byte at a time.
+         *
+         * Not the application key, and not reused from anything else. It is
+         * handed to a third party — Cloudflare — and a secret one service holds
+         * should never be a secret another service also relies on.
+         */
+        'secret' => env('MAILBOX_INBOUND_SECRET'),
+
+        /*
+         * The size past which a posted message is refused, in kilobytes.
+         *
+         * Cloudflare will not hand a Worker more than about 25 MB, but this
+         * endpoint is reachable by anyone who has the secret and the body is
+         * read into memory to be parsed. 30 MB leaves room above the real
+         * ceiling while still being a number PHP can hold on a 128 MB shared
+         * host without the parse itself becoming the outage.
+         */
+        'max_size_kb' => (int) env('MAILBOX_INBOUND_MAX_SIZE_KB', 30720),
+
+        /*
+         * The folder pushed messages are filed under.
+         *
+         * 'INBOX' because that is what every other part of Mailbox already
+         * spells — the inbox filters on it, and a pushed message that landed
+         * somewhere else would be stored correctly and then be invisible.
+         */
+        'folder' => env('MAILBOX_INBOUND_FOLDER', 'INBOX'),
+    ],
+
+    /*
      * Sending mail.
      *
      * The same hosting constraint as above, from the other direction. The

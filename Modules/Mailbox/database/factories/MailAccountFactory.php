@@ -40,6 +40,26 @@ class MailAccountFactory extends Factory
         return $this->state(fn () => ['is_active' => false]);
     }
 
+    /**
+     * An account messages are pushed to by the Email Worker.
+     *
+     * Every IMAP column is nulled rather than left at the definition's default.
+     * A row that names a host it is never going to connect to is a row someone
+     * will eventually try to connect to, and the point of `kind` is that there
+     * is nothing there to connect to at all.
+     */
+    public function inbound(): static
+    {
+        return $this->state(fn () => [
+            'kind' => MailAccount::KIND_INBOUND,
+            'imap_host' => null,
+            'imap_username' => null,
+            'password' => null,
+            'sync_cursor' => null,
+            'uid_validity' => null,
+        ]);
+    }
+
     /** An account the sync has already run against and can resume. */
     public function synced(): static
     {
