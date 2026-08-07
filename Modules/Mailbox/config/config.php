@@ -171,6 +171,46 @@ return [
     ],
 
     /*
+     * What comes back from a message after it has been read.
+     *
+     * Both are on by default and both are a single switch rather than a
+     * per-campaign column, because the decision they encode is one an install
+     * makes once. Turning either off stops the message being changed at all —
+     * no pixel is added and no link is rewritten — rather than merely stopping
+     * the recording, so a campaign sent with tracking off carries nothing that
+     * has to be explained to anybody who reads its source.
+     *
+     * The rows already written are left alone, which is what makes turning it
+     * off safe: a report from last month still shows what happened last month.
+     */
+    'tracking' => [
+
+        /*
+         * The pixel appended to every HTML body.
+         *
+         * Worth knowing before trusting the number: most clients block remote
+         * images by default and Gmail loads them through a proxy that caches, so
+         * an open is evidence that a message was rendered somewhere and nothing
+         * stronger. Corporate security gateways render messages too. The figure
+         * is a floor with noise on top, which is why the report puts clicks
+         * beside it rather than on their own page.
+         */
+        'opens' => (bool) env('MAILBOX_TRACK_OPENS', true),
+
+        /*
+         * Rewriting each link in an HTML body to a redirect that records it.
+         *
+         * Off is a real choice and not only a privacy one: a rewritten link
+         * means the destination a person sees on hover is panel.lavzen.com
+         * rather than where they are going, which some recipients — and a few
+         * filters — read as a warning sign. On is the default because a campaign
+         * report with no click rate cannot tell a subject line that got opened
+         * from one that got acted on.
+         */
+        'clicks' => (bool) env('MAILBOX_TRACK_CLICKS', true),
+    ],
+
+    /*
      * What a provider's report is allowed to conclude.
      *
      * Hard bounces and complaints suppress on the first one and always have —

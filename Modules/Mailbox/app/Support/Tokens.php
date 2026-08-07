@@ -5,11 +5,12 @@ namespace Modules\Mailbox\Support;
 use Illuminate\Support\Facades\Log;
 
 /**
- * The two tokens a sent message carries back to Kargah.
+ * The tokens a sent message carries back to Kargah.
  *
- * One goes in the unsubscribe URL, the other in the `Reply-To` local part, and
- * both have to survive a round trip through somebody else's mail system and
- * come back identifying exactly one recipient row.
+ * One goes in the unsubscribe URL, one in the `Reply-To` local part, and two
+ * more in the tracking pixel and the rewritten links. All of them have to
+ * survive a round trip through somebody else's mail system and come back
+ * identifying exactly one row.
  *
  * They are **derived and signed** rather than random. Two reasons:
  *
@@ -37,6 +38,24 @@ final class Tokens
 
     public const REPLY = 'reply';
 
+    /** The tracking pixel. Names a recipient. */
+    public const OPEN = 'open';
+
+    /** The recipient half of a rewritten link. */
+    public const CLICK = 'click';
+
+    /**
+     * The link half of a rewritten link, and the one token here that does not
+     * name a recipient row.
+     *
+     * It names a `campaign_links` row instead, so that the two halves of a click
+     * URL are independently verifiable and neither can be lifted out of one
+     * message and pasted into another's place. The purpose in the hash is what
+     * keeps them apart: a link token cannot be replayed as a recipient token
+     * even though both are a base36 id and a signature.
+     */
+    public const LINK = 'link';
+
     /**
      * How much of the HMAC travels with the token.
      *
@@ -48,10 +67,10 @@ final class Tokens
      */
     private const SIGNATURE_LENGTH = 20;
 
-    /** Mint the token for one recipient row. Deterministic: the same row always gives the same token. */
-    public static function for(string $purpose, int $recipientId): string
+    /** Mint the token for one row. Deterministic: the same row always gives the same token. */
+    public static function for(string $purpose, int $rowId): string
     {
-        $id = base_convert((string) $recipientId, 10, 36);
+        $id = base_convert((string) $rowId, 10, 36);
 
         return $id.'-'.self::signature($purpose, $id);
     }
@@ -59,13 +78,26 @@ final class Tokens
     /**
      * The recipient a token names, or null when it was not issued here.
      *
+     * The same check as `idFrom`, under the name three of the four purposes
+     * actually mean. Kept because 'which recipient is this' is what the
+     * unsubscribe route and the IMAP side are asking, and reading that at the
+     * call site is worth one line of delegation.
+     */
+    public static function recipientFrom(string $purpose, string $token): ?int
+    {
+        return self::idFrom($purpose, $token);
+    }
+
+    /**
+     * The row a token names, or null when it was not issued here.
+     *
      * Verified before it is decoded, and compared with `hash_equals` so the
      * comparison does not leak how much of a forged signature was right. Null
      * covers both 'wrong shape' and 'wrong signature', because the caller's
      * response to either is the same and telling them apart only helps whoever
      * is probing.
      */
-    public static function recipientFrom(string $purpose, string $token): ?int
+    public static function idFrom(string $purpose, string $token): ?int
     {
         $parts = explode('-', trim($token));
 
@@ -79,9 +111,9 @@ final class Tokens
             return null;
         }
 
-        $recipientId = (int) base_convert($id, 36, 10);
+        $rowId = (int) base_convert($id, 36, 10);
 
-        return $recipientId > 0 ? $recipientId : null;
+        return $rowId > 0 ? $rowId : null;
     }
 
     /**

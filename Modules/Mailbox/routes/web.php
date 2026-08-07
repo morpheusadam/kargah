@@ -4,6 +4,7 @@ use Illuminate\Foundation\Http\Middleware\PreventRequestForgery;
 use Illuminate\Support\Facades\Route;
 use Modules\Mailbox\Http\Controllers\DeliveryWebhookController;
 use Modules\Mailbox\Http\Controllers\InboundMailController;
+use Modules\Mailbox\Http\Controllers\TrackingController;
 use Modules\Mailbox\Http\Controllers\UnsubscribeController;
 
 /*
@@ -74,6 +75,32 @@ Route::prefix('mail')->name('mail.')->group(function () {
     Route::post('/webhooks/{provider}', DeliveryWebhookController::class)
         ->withoutMiddleware(PreventRequestForgery::class)
         ->name('webhook');
+
+    /*
+     * What a message reports about itself once somebody has it.
+     *
+     * Both are signed and both carry an HMAC, exactly as the unsubscribe link
+     * does. Neither drops CSRF, because both are GETs — a mail client fetching
+     * an image and a browser following a link, neither of which has a token or
+     * needs one.
+     *
+     * The token pattern is what keeps `.gif` out of `{token}`: the default
+     * placeholder would swallow the extension, and the extension is there
+     * because a few clients and proxies decide what they are fetching from the
+     * path rather than from the `Content-Type` that comes back.
+     */
+    Route::get('/o/{token}.gif', [TrackingController::class, 'open'])
+        ->middleware('signed')
+        ->where('token', '[A-Za-z0-9\-]+')
+        ->name('open');
+
+    // The redirect. Its destination is a `campaign_links` row and never a
+    // parameter — see the controller for why that distinction is the whole
+    // point of the endpoint.
+    Route::get('/c/{token}/{link}', [TrackingController::class, 'click'])
+        ->middleware('signed')
+        ->where(['token' => '[A-Za-z0-9\-]+', 'link' => '[A-Za-z0-9\-]+'])
+        ->name('click');
 
     // Every message the domain receives, handed over by the Email Worker the
     // moment it arrives. One route for all of them: which account a message

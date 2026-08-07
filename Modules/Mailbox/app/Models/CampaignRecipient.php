@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Facades\DB;
 use Modules\Mailbox\Database\Factories\CampaignRecipientFactory;
 use Modules\Mailbox\Support\Tokens;
 
@@ -73,6 +74,12 @@ class CampaignRecipient extends Model
         'claimed_at',
         'sent_at',
         'failed_at',
+        'opened_at',
+        'last_opened_at',
+        'open_count',
+        'clicked_at',
+        'last_clicked_at',
+        'click_count',
     ];
 
     protected function casts(): array
@@ -82,6 +89,12 @@ class CampaignRecipient extends Model
             'claimed_at' => 'datetime',
             'sent_at' => 'datetime',
             'failed_at' => 'datetime',
+            'opened_at' => 'datetime',
+            'last_opened_at' => 'datetime',
+            'open_count' => 'integer',
+            'clicked_at' => 'datetime',
+            'last_clicked_at' => 'datetime',
+            'click_count' => 'integer',
         ];
     }
 
@@ -161,6 +174,71 @@ class CampaignRecipient extends Model
     public function label(): string
     {
         return $this->name ?: (string) $this->email;
+    }
+
+    public function hasOpened(): bool
+    {
+        return $this->opened_at !== null;
+    }
+
+    public function hasClicked(): bool
+    {
+        return $this->clicked_at !== null;
+    }
+
+    /**
+     * Note that this recipient loaded the tracking pixel.
+     *
+     * By id and by query rather than through a loaded model, because the caller
+     * is a public HTTP endpoint that a mail client may hit for a message sent
+     * months ago, and the whole of what it has to do is add one to a number. Two
+     * statements, and each is atomic on its own:
+     *
+     * - The first stamps the *first* open, and only for a row that has none. A
+     *   read-modify-write here would let a second pixel load overwrite the time
+     *   the message was actually first read, which is the one figure a
+     *   unique-open rate is counted from.
+     * - The second increments, in the database rather than in PHP, so two
+     *   requests arriving together cannot both write one more than the same
+     *   number they both read.
+     *
+     * A row in any status is recorded, including `failed`. That is deliberate:
+     * the one status that lies is the claim written off by
+     * `CampaignSender::releaseStaleClaims()`, where the worker died without
+     * knowing whether the provider had already accepted the message — and a
+     * pixel loading from that message is the only evidence Kargah will ever get
+     * that it did go out.
+     */
+    public static function recordOpen(int $recipientId): void
+    {
+        self::query()->whereKey($recipientId)->whereNull('opened_at')->update(['opened_at' => now()]);
+
+        self::query()->whereKey($recipientId)->update([
+            'open_count' => DB::raw('open_count + 1'),
+            'last_opened_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
+    /**
+     * Note that this recipient followed one of the campaign's links.
+     *
+     * The same shape as `recordOpen`, and deliberately separate from it: a click
+     * does not stamp an open. Most mail clients block images by default, so a
+     * campaign can honestly have more clicks than opens, and quietly counting
+     * clicks as opens would turn the open rate into a number that cannot be
+     * compared with anything — including this campaign's own figure from before
+     * tracking existed. Which link was followed is `CampaignLinkClick`'s.
+     */
+    public static function recordClick(int $recipientId): void
+    {
+        self::query()->whereKey($recipientId)->whereNull('clicked_at')->update(['clicked_at' => now()]);
+
+        self::query()->whereKey($recipientId)->update([
+            'click_count' => DB::raw('click_count + 1'),
+            'last_clicked_at' => now(),
+            'updated_at' => now(),
+        ]);
     }
 
     /**

@@ -35,9 +35,17 @@ use Modules\Mailbox\Support\Tokens;
  * an HMAC. Belt and braces on purpose: the signature stops the URL being edited
  * to name a different recipient, and the token means the route can still say
  * whose it was even if the signature middleware is ever relaxed.
+ *
+ * The HTML body additionally has its links rewritten and a tracking pixel
+ * appended — see `Tracking`, which is where the rules about registering a link
+ * before rewriting it live. It runs *before* the placeholders are substituted,
+ * so the one-click unsubscribe URL is never put behind a redirect of Kargah's:
+ * at that point it is still `{{unsubscribe_url}}` and not a link at all.
  */
 class MessageBuilder
 {
+    public function __construct(private readonly Tracking $tracking) {}
+
     /**
      * Build the message for one recipient.
      *
@@ -61,7 +69,15 @@ class MessageBuilder
             fromName: $provider->from_name,
             replyTo: Tokens::replyAddress((int) $recipient->id, $fromEmail),
             subject: (string) $campaign->subject,
-            html: $this->render($campaign->body_html, $recipient, $unsubscribeUrl),
+            // The HTML goes through tracking first and the text does not. A
+            // rewritten link is invisible in HTML and glaring in plain text,
+            // where a person would read a signed redirect in place of the
+            // address they were promised.
+            html: $this->render(
+                $this->tracking->apply($campaign, $recipient, $campaign->body_html),
+                $recipient,
+                $unsubscribeUrl,
+            ),
             text: $this->render($campaign->body_text, $recipient, $unsubscribeUrl),
             messageId: $this->messageId($campaign, $recipient, $provider),
             headers: $this->headers($unsubscribeUrl, $fromEmail, $recipient),

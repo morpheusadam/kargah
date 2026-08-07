@@ -78,6 +78,8 @@ class extends Component
                 'recipients' => CampaignRecipient::query()->whereRaw('1 = 0')->paginate(25),
                 'statuses' => ['all' => 'All'] + CampaignRecipient::statuses(),
                 'problems' => [],
+                'linkRows' => [],
+                'reading' => ['opened' => 0, 'clicked' => 0, 'opens' => 0, 'clicks' => 0],
             ];
         }
 
@@ -95,6 +97,13 @@ class extends Component
         $outstanding = (int) $counts->get(CampaignRecipient::PENDING, 0) + (int) $counts->get(CampaignRecipient::CLAIMED, 0);
 
         $rate = fn (int $n): string => number_format($n / $total * 100, 2).'%';
+
+        // Opens and clicks are rated against what actually left, not against
+        // everyone on the list. A campaign half of whose recipients are still
+        // pending has not been ignored by them.
+        $reading = $campaign->trackingCounts();
+        $delivered = max(1, $sent + $bounced + $complained);
+        $ofSent = fn (int $n): string => number_format($n / $delivered * 100, 2).'%';
 
         return [
             'campaign' => $campaign,
@@ -114,7 +123,11 @@ class extends Component
                 ['label' => 'Complaints', 'value' => (string) $complained, 'rate' => $rate($complained), 'icon' => 'ki-shield-cross', 'tone' => 'text-destructive'],
                 ['label' => 'Suppressed', 'value' => (string) $suppressed, 'rate' => $rate($suppressed), 'icon' => 'ki-minus-circle', 'tone' => 'text-warning'],
                 ['label' => 'Failed', 'value' => (string) $failed, 'rate' => $rate($failed), 'icon' => 'ki-information-2', 'tone' => 'text-destructive'],
+                ['label' => 'Opened', 'value' => (string) $reading['opened'], 'rate' => $ofSent($reading['opened']).' of sent', 'icon' => 'ki-eye', 'tone' => 'text-primary'],
+                ['label' => 'Clicked', 'value' => (string) $reading['clicked'], 'rate' => $ofSent($reading['clicked']).' of sent', 'icon' => 'ki-cursor', 'tone' => 'text-primary'],
             ],
+            'reading' => $reading,
+            'linkRows' => $campaign->linkBreakdown(),
             'providerRows' => $campaign->providerBreakdown(),
             'statuses' => ['all' => 'All'] + CampaignRecipient::statuses(),
             'recipients' => $campaign->recipients()
@@ -225,7 +238,10 @@ class extends Component
         return response()->streamDownload(function () use ($rows): void {
             $handle = fopen('php://output', 'w');
 
-            fputcsv($handle, ['email', 'name', 'status', 'carried_by', 'message_id', 'sent_at', 'error']);
+            fputcsv($handle, [
+                'email', 'name', 'status', 'carried_by', 'message_id', 'sent_at',
+                'opened_at', 'opens', 'clicked_at', 'clicks', 'error',
+            ]);
 
             foreach ($rows as $row) {
                 fputcsv($handle, [
@@ -235,6 +251,10 @@ class extends Component
                     $row->provider?->label(),
                     $row->message_id,
                     $row->sent_at?->toDateTimeString(),
+                    $row->opened_at?->toDateTimeString(),
+                    $row->open_count,
+                    $row->clicked_at?->toDateTimeString(),
+                    $row->click_count,
                     $row->error,
                 ]);
             }
@@ -326,7 +346,7 @@ class extends Component
     @endif
 
     {{-- Headline metrics --}}
-    <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-4">
+    <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-9 gap-4">
         @foreach ($metrics as $m)
             <div class="kt-card">
                 <div class="kt-card-content p-4">
@@ -398,6 +418,70 @@ class extends Component
         </div>
     </div>
 
+    {{-- What people did with the links --}}
+    <div class="kt-card">
+        <div class="kt-card-header">
+            <h3 class="kt-card-title">Links followed</h3>
+            <span class="text-xs text-muted-foreground">
+                {{ $reading['opens'] }} {{ str('open')->plural($reading['opens']) }} and
+                {{ $reading['clicks'] }} {{ str('click')->plural($reading['clicks']) }} in total, by
+                {{ $reading['opened'] }} and {{ $reading['clicked'] }} people
+            </span>
+        </div>
+        <div class="kt-card-table">
+            <div class="kt-scrollable-x-auto">
+                <table class="kt-table align-middle text-sm">
+                    <thead>
+                        <tr>
+                            <th class="min-w-[280px]">Destination</th>
+                            <th class="w-[150px]">Share</th>
+                            <th class="w-[110px] text-end">People</th>
+                            <th class="w-[110px] text-end">Clicks</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @forelse ($linkRows as $l)
+                            <tr wire:key="link-{{ $l['id'] }}">
+                                <td>
+                                    <a href="{{ $l['url'] }}" target="_blank" rel="noopener noreferrer"
+                                       class="font-medium text-mono hover:text-primary cursor-pointer break-all"
+                                       title="{{ $l['url'] }}">{{ $l['label'] }}</a>
+                                </td>
+                                <td>
+                                    <div class="flex items-center gap-2">
+                                        <div class="h-1.5 w-full max-w-[80px] rounded-full bg-muted overflow-hidden">
+                                            <div class="h-full bg-primary rounded-full" style="width: {{ $l['share'] }}%"></div>
+                                        </div>
+                                        <span class="text-xs text-muted-foreground shrink-0">{{ $l['share'] }}%</span>
+                                    </div>
+                                </td>
+                                <td class="text-end">{{ $l['people'] }}</td>
+                                <td class="text-end">{{ $l['clicks'] }}</td>
+                            </tr>
+                        @empty
+                            <tr>
+                                <td colspan="4">
+                                    <div class="flex flex-col items-center justify-center text-center py-10">
+                                        <i class="ki-filled ki-cursor text-4xl text-muted-foreground mb-3"></i>
+                                        <p class="text-sm text-secondary-foreground">
+                                            No link in this campaign has been registered yet. They are registered as
+                                            each message is built, so this fills in once sending starts.
+                                        </p>
+                                    </div>
+                                </td>
+                            </tr>
+                        @endforelse
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="kt-card-footer text-xs text-muted-foreground">
+            Most mail clients block images until the person allows them, so opens are a floor rather than a count —
+            a campaign can honestly show more clicks than opens. A click is only ever recorded against a destination
+            registered when the message was built, which is what keeps this domain from being a redirect anyone can aim.
+        </div>
+    </div>
+
     <div class="grid grid-cols-1 xl:grid-cols-3 gap-5 items-start">
         {{-- Campaign facts --}}
         <div class="kt-card">
@@ -457,7 +541,19 @@ class extends Component
                                         @endif
                                     </td>
                                     <td class="text-secondary-foreground">{{ $r->provider?->label() ?? '—' }}</td>
-                                    <td><span class="kt-badge kt-badge-sm {{ $r->badge() }}">{{ $r->statusLabel() }}</span></td>
+                                    <td>
+                                        <div class="flex items-center gap-1.5">
+                                            <span class="kt-badge kt-badge-sm {{ $r->badge() }}">{{ $r->statusLabel() }}</span>
+                                            @if ($r->hasOpened())
+                                                <i class="ki-filled ki-eye text-primary text-sm"
+                                                   title="Opened {{ $r->open_count }} {{ str('time')->plural($r->open_count) }}, first on {{ $r->opened_at?->format('j M, H:i') }}"></i>
+                                            @endif
+                                            @if ($r->hasClicked())
+                                                <i class="ki-filled ki-cursor text-primary text-sm"
+                                                   title="Clicked {{ $r->click_count }} {{ str('time')->plural($r->click_count) }}, first on {{ $r->clicked_at?->format('j M, H:i') }}"></i>
+                                            @endif
+                                        </div>
+                                    </td>
                                     <td class="text-secondary-foreground">
                                         {{ ($r->sent_at ?? $r->failed_at ?? $r->claimed_at)?->format('j M, H:i') ?? '—' }}
                                     </td>

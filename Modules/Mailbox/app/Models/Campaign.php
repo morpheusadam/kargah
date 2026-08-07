@@ -121,6 +121,12 @@ class Campaign extends Model
         return $this->hasMany(CampaignRecipient::class);
     }
 
+    /** The destinations this campaign's rewritten links are allowed to reach. */
+    public function links(): HasMany
+    {
+        return $this->hasMany(CampaignLink::class);
+    }
+
     public function creator(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
@@ -293,6 +299,75 @@ class Campaign extends Model
         usort($out, fn (array $a, array $b): int => $b['carried'] <=> $a['carried']);
 
         return $out;
+    }
+
+    /**
+     * How this campaign was read, counted from the recipient rows.
+     *
+     * Four numbers rather than two, because 'people' and 'times' answer
+     * different questions and reporting only one of them is how an open rate
+     * ends up above 100%. `opened`/`clicked` count rows that have ever done it
+     * — which is what a rate is a rate of — and `opens`/`clicks` are the totals.
+     *
+     * Counted here rather than kept as columns on this table, for the reason
+     * the class docblock gives about counters: an open can arrive months after
+     * the campaign reached `sent` and nothing recomputes it after that, so a
+     * stored figure would be permanently a little wrong in a way nothing would
+     * ever heal.
+     *
+     * @return array{opened: int, clicked: int, opens: int, clicks: int}
+     */
+    public function trackingCounts(): array
+    {
+        $row = $this->recipients()
+            ->selectRaw('count(opened_at) as opened, count(clicked_at) as clicked')
+            ->selectRaw('coalesce(sum(open_count), 0) as opens, coalesce(sum(click_count), 0) as clicks')
+            ->first();
+
+        return [
+            'opened' => (int) ($row->opened ?? 0),
+            'clicked' => (int) ($row->clicked ?? 0),
+            'opens' => (int) ($row->opens ?? 0),
+            'clicks' => (int) ($row->clicks ?? 0),
+        ];
+    }
+
+    /**
+     * Which links this campaign offered, and how they did.
+     *
+     * One grouped query with a left join, so a link nobody has followed is still
+     * a row with a zero on it. That is the row worth having: a link that got no
+     * clicks at all is usually a link that was never visible, and a report that
+     * only listed the links people used could not show it.
+     *
+     * @return list<array{id: int, url: string, label: string, people: int, clicks: int, share: int}>
+     */
+    public function linkBreakdown(): array
+    {
+        $rows = CampaignLink::query()
+            ->leftJoin('campaign_link_clicks', 'campaign_link_clicks.campaign_link_id', '=', 'campaign_links.id')
+            ->where('campaign_links.campaign_id', $this->getKey())
+            ->groupBy('campaign_links.id', 'campaign_links.url')
+            ->selectRaw('campaign_links.id, campaign_links.url')
+            ->selectRaw('count(campaign_link_clicks.id) as people')
+            ->selectRaw('coalesce(sum(campaign_link_clicks.clicks), 0) as clicks')
+            ->orderByDesc('clicks')
+            ->orderBy('campaign_links.id')
+            ->get();
+
+        $mostClicked = max(1, (int) $rows->max('clicks'));
+
+        return $rows->map(fn (CampaignLink $link): array => [
+            'id' => (int) $link->id,
+            'url' => (string) $link->url,
+            'label' => $link->label(),
+            'people' => (int) $link->people,
+            'clicks' => (int) $link->clicks,
+            // Against the busiest link rather than against the total, because
+            // the question this bar answers is which link took the attention,
+            // and one person may follow several.
+            'share' => (int) round((int) $link->clicks / $mostClicked * 100),
+        ])->all();
     }
 
     /** How many recipients are still waiting for their turn. */
