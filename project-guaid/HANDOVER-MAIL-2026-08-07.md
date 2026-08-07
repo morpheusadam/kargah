@@ -116,21 +116,55 @@ key have been cleaned up.
 Immediate sends never needed this — the compose window sends synchronously.
 Campaigns and scheduled sends did, and now have it.
 
+## Open and click tracking — built, later the same day
+
+The endpoints are `GET /mail/o/{token}.gif` and `GET /mail/c/{token}/{link}`,
+both `signed` and both carrying an HMAC token, exactly as the unsubscribe link
+is. `Services/Delivery/Tracking.php` is the whole of the message side and its
+docblock is the design; `Http/Controllers/TrackingController.php` is the two
+answers.
+
+**The redirect takes an id, never a URL.** Its destination is a `campaign_links`
+row written when the message was built, so there is no `?url=` to edit and the
+endpoint cannot be pointed anywhere the campaign has not already agreed to. A
+link that could not be registered is left in the body untracked rather than
+rewritten into a redirect with nowhere to go, and only `http`/`https` is ever
+registered — which is what stops a `javascript:` href becoming a destination.
+`CampaignTrackingTest` is fifteen assertions about exactly this and would fail
+the moment somebody added a parameter.
+
+Three more decisions worth keeping:
+
+- **Nothing logs one row per event.** `DeliveryEvent`'s objection to modelling
+  opens at all was volume, and it still stands. An open is a counter and two
+  timestamps on the recipient row; a click is one row per (link, recipient) pair
+  with a counter on it. A 500-recipient campaign with four links is bounded at
+  2,000 rows however often it is read.
+- **HTML only.** The plain-text alternative is never rewritten — a signed
+  redirect is invisible in HTML and glaring in text, where it reads as the thing
+  a phishing message does — and the pixel is inserted inside `</body>` because a
+  few clients drop what follows the closing tag.
+- **A click does not stamp an open.** Images are blocked by default in most
+  clients, so a campaign can honestly show more clicks than opens. Counting one
+  as the other would make the open rate incomparable with anything.
+
+The campaign report grew two metric cards, a *Links followed* table (people vs
+times, and links nobody followed still listed), open/click markers on each
+recipient row, and four more CSV columns. `mailbox.tracking.opens` and
+`.clicks` turn each off; off means the message is not changed at all rather than
+merely not recorded.
+
+`Tokens` gained `OPEN`, `CLICK` and `LINK`, and `idFrom()` beside
+`recipientFrom()` — a link token names a `campaign_links` row rather than a
+recipient, and the purpose in the hash is what stops either being replayed as
+the other.
+
 ## Open
 
-1. **Open and click tracking.** The big remaining feature, planned from reading
-   listmonk. Two techniques are worth copying exactly:
-   - **Register every link before rewriting it**, and redirect only to
-     registered URLs. A naive `?url=` is an open redirect, which is both a
-     vulnerability and a spam signal on your own domain.
-   - The pixel's CSS is `display:none;max-height:0;max-width:0;opacity:0` — that
-     combination is for filter compatibility, not decoration.
-
-   Use Kargah's **signed routes with an HMAC**, not listmonk's UUIDs: a leaked
-   UUID is reusable, a signed URL cannot be forged.
-
-   Still missing after that: double opt-in, and sliding-window pacing (the
-   hourly quota covers some of it).
+1. **Still missing on the sending side:** double opt-in, and sliding-window
+   pacing (the hourly quota covers some of it). A per-campaign tracking toggle
+   is a column and a checkbox away if one campaign ever needs to differ from the
+   install.
 
 2. **Catch-all still forwards to Gmail.** Deliberate — it is the safety net
    while the new path beds in. Move it to the Worker once the panel inbox has
@@ -139,6 +173,53 @@ Campaigns and scheduled sends did, and now have it.
 3. **Volume.** 100/day today. `Router` already fails over by remaining quota,
    then health, then priority, so adding Brevo (300/day) and Mailjet (200/day)
    is one row each and reaches about 600/day free. Both drivers already exist.
+
+## The panel, same day
+
+Three complaints, all from using it rather than reading it.
+
+**New mail did not appear without a reload.** It cannot: cron and the Worker
+write rows and neither can tell a browser. `⚡inbox` now polls
+`checkForNewMail()` every 20 seconds, which compares `max(emails.id)` with a
+`watermark` property and calls `skipRender()` when nothing has arrived. That
+early return is the whole design — without it a quiet tick rebuilds the folder
+rail, the header and the toolbar, runs every query behind them, and morphs the
+result over an identical DOM, once per open tab, for ever. With it the quiet
+case is one lookup on a primary key and an empty response.
+
+**Nothing looked clickable.** Tailwind v4 dropped the `cursor: pointer` its
+preflight used to give a button, Metronic's bundle does not restore it, and a
+`wire:click` on a div never had one — so the whole panel showed an arrow. Fixed
+at the source sheet
+(`admin-panel-ui/veltrix-tailwind-html-starter-kit/src/css/kargah.css`) as
+element and attribute selectors, plus `not-allowed` for the disabled half.
+🔴 **`public/assets` is gitignored**, so the rebuilt `kargah.css` has to be
+uploaded by hand — `git pull` on the server will not carry it.
+
+**The mail pages felt laggy.** Two causes found by counting queries rather than
+guessing, both in `⚡inbox`:
+
+- `with()` computed the rows, their customers, the conversation, the
+  attachments and the cards on *every* request, including the ones that name no
+  island and draw none of it. Each is now asked for from inside its own island,
+  which a skipped island never runs. Ticking a checkbox went from 12 queries
+  to 6.
+- **`with()` does not run once per request.** Livewire re-runs it for every
+  island it renders, so `accountSummary()` asked its two questions three times
+  over. Memoised. Starring a message went 18 → 14 queries, opening one 12 → 10.
+
+Both are covered by tests that count queries, so a return to eager `with()`
+fails rather than merely slows.
+
+⚠️ **Still worth doing on the server, and not done here:** the documented deploy
+ends at `artisan optimize:clear`, which *clears* the caches and rebuilds none of
+them, so every request on shared hosting re-parses ~30 config files and
+re-registers every route — paid again on each Livewire round trip, which is one
+per click. `route:cache` and `view:cache` were verified to build cleanly on this
+codebase. `config:cache` should be safe on the server but must **not** be run on
+the dev machine: the browser-audit harness points `DB_DATABASE` at the audit
+copy through the environment, and a cached config would silently send it back to
+the owner's real book.
 
 ---
 
@@ -150,19 +231,15 @@ Campaigns and scheduled sends did, and now have it.
 > Mail is finished and verified on production: Resend over SMTP for sending, a
 > Cloudflare Email Worker posting into `panel.lavzen.com/mail/inbound` for
 > `info@`, `support@` and `send@`, and the scheduler running every minute so
-> campaigns and scheduled sends work too.
->
-> Next job: **build open and click tracking** in `Modules/Mailbox`. Register
-> each link before rewriting it and redirect only to registered URLs — a bare
-> `?url=` would make lavzen.com an open redirect, which is both a vulnerability
-> and a spam signal. Use signed routes with an HMAC rather than UUIDs, matching
-> how unsubscribe already works. The open pixel's CSS is
-> `display:none;max-height:0;max-width:0;opacity:0`, which is for filter
-> compatibility rather than decoration.
+> campaigns and scheduled sends work too. Open and click tracking is built on
+> top of it: signed routes carrying an HMAC, every link registered in
+> `campaign_links` before it is rewritten, and the redirect taking an id so
+> there is no URL in the request to point anywhere.
 >
 > Deploy is `git pull --ff-only` on the server, then `artisan migrate --force`
 > and `artisan optimize:clear`. PHP is `/opt/alt/php83/usr/bin/php` — plain
-> `php` is 8.2 and wrong.
+> `php` is 8.2 and wrong. `public/assets` is gitignored, so a rebuilt
+> `kargah.css` has to be uploaded by hand.
 >
 > Note when reading this module: `Mail::fake()` never calls `envelope()` and
 > Laravel skips CSRF under `runningUnitTests()`, so two real bugs lived behind
