@@ -132,6 +132,21 @@ class extends Component
     public string $replyBody = '';
 
     /**
+     * The id of the newest message this page has been told about.
+     *
+     * Public because it has to survive the round trip. A private memo would be
+     * empty on every request, so the poll below would conclude that everything
+     * is new every twenty seconds and redraw the list for ever.
+     *
+     * An id rather than a timestamp: ids are handed out in arrival order by the
+     * same insert that writes the row, so "is there anything past this" is one
+     * lookup on the primary key. A timestamp would have to be
+     * `coalesce(received_at, created_at)`, which no index covers, and a message
+     * that arrived without a date would never be noticed at all.
+     */
+    public ?int $watermark = null;
+
+    /**
      * Per-request memos. Private, so Livewire neither ships nor rehydrates
      * them, and a new component instance starts empty — no code here may assume
      * either a fresh process or a persistent one.
@@ -151,12 +166,17 @@ class extends Component
 
     private bool $openWasResolved = false;
 
+    /** @var array{total: int, last_synced_at: ?Carbon, failing: int}|null */
+    private ?array $resolvedAccounts = null;
+
     /**
      * A folder in the address bar may be one this mailbox does not have, and a
      * message id may be one that was deleted while a link sat in a chat.
      */
     public function mount(): void
     {
+        $this->watermark = $this->newestMessageId();
+
         if (! $this->folderExists($this->folder)) {
             $this->folder = 'INBOX';
         }
@@ -220,8 +240,24 @@ class extends Component
      * body exists. `body_html` is never selected as a column — a newsletter is
      * routinely a hundred kilobytes of markup and twenty-five of them is a
      * megabyte of nothing anyone will read.
+     *
+     * ── Why this and the four below are public ──
+     *
+     * They are called from inside the islands rather than handed over by
+     * `with()`, and a Blade view cannot reach a private method even though
+     * `$this` is the component. That is the point: a skipped island never
+     * renders its body, so on an action that names no island — ticking a
+     * checkbox, opening the convert modal — this query is never made at all.
+     * Before, `with()` ran every one of them on every request and threw the
+     * result away, which cost six queries and twenty-five preview slices to
+     * change a checkbox.
+     *
+     * Public also means callable from the client, as every public method on a
+     * Livewire component is. All five are reads with no side effects, behind
+     * `auth`, returning what this same page already shows the same person, so
+     * there is nothing there to reach that a render does not already give.
      */
-    private function rows(): CursorPaginator
+    public function rows(): CursorPaginator
     {
         return $this->resolvedRows ??= $this->baseQuery()
             ->select([
@@ -316,7 +352,7 @@ class extends Component
      *
      * @return Collection<int, Customer>
      */
-    private function customersOnPage(): Collection
+    public function customersOnPage(): Collection
     {
         if ($this->resolvedCustomers !== null) {
             return $this->resolvedCustomers;
@@ -350,10 +386,17 @@ class extends Component
     /**
      * The other messages in the open message's conversation, oldest first.
      *
+     * Takes no argument, though it only ever had one caller passing the open
+     * message: a public method on a Livewire component is reachable from the
+     * client, and a parameter is a parameter the client chooses. With none,
+     * the only conversation it can read is the one already on screen.
+     *
      * @return Collection<int, Email>
      */
-    private function threadMessages(?Email $email): Collection
+    public function threadMessages(): Collection
     {
+        $email = $this->openEmail();
+
         if ($email === null || $email->email_thread_id === null) {
             return collect();
         }
@@ -374,8 +417,10 @@ class extends Component
      *
      * @return Collection<int, Card>
      */
-    private function cardsFor(?Email $email): Collection
+    public function openCards(): Collection
     {
+        $email = $this->openEmail();
+
         if ($email === null) {
             return collect();
         }
@@ -383,6 +428,23 @@ class extends Component
         $cards = $email->linked($this->cardAlias(), 'converted_to');
 
         return $cards->isEmpty() ? $cards : $cards->load('list.board');
+    }
+
+    /**
+     * The files hanging off the open message.
+     *
+     * `content_id` is null for a real attachment and set for an image the body
+     * embeds, which belongs to the message rather than to the person reading it.
+     *
+     * @return Collection<int, \Modules\Mailbox\Models\EmailAttachment>
+     */
+    public function openAttachments(): Collection
+    {
+        $email = $this->openEmail();
+
+        return $email === null
+            ? collect()
+            : $email->attachments()->whereNull('content_id')->orderBy('id')->get();
     }
 
     /** Board lists a message can be dropped into. Only read when the modal is open. */
@@ -401,9 +463,23 @@ class extends Component
             ->get();
     }
 
-    /** What the header can honestly say about the sync. */
+    /**
+     * What the header can honestly say about the sync.
+     *
+     * Memoised, and the memo earns more than it looks. `with()` does not run
+     * once per request: Livewire re-runs it for every island it renders, so a
+     * single starred message used to ask these two questions three times over —
+     * once for the page, once for the list island and once for the pane. The
+     * answer cannot change between them, because they are the same request.
+     *
+     * @return array{total: int, last_synced_at: ?Carbon, failing: int}
+     */
     private function accountSummary(): array
     {
+        if ($this->resolvedAccounts !== null) {
+            return $this->resolvedAccounts;
+        }
+
         $row = MailAccount::query()
             ->active()
             ->selectRaw('count(*) as total, max(last_synced_at) as last_synced_at')
@@ -412,29 +488,36 @@ class extends Component
         $total = (int) ($row->total ?? 0);
         $last = $row?->last_synced_at;
 
-        return [
+        return $this->resolvedAccounts = [
             'total' => $total,
             'last_synced_at' => $last === null ? null : Carbon::parse($last),
             'failing' => $total === 0 ? 0 : MailAccount::query()->active()->whereNotNull('last_error')->count(),
         ];
     }
 
+    /**
+     * What the page outside the islands needs, and nothing else.
+     *
+     * Everything an island draws — the rows, their customers, the conversation,
+     * the attachments, the cards — is asked for from inside that island
+     * instead, because a skipped island never runs its body and therefore never
+     * makes those queries. This method runs on every request, so anything in it
+     * is paid for even when the answer is thrown away.
+     *
+     * `open` stays because it is not island-only: the two `<section>` elements
+     * outside both islands size themselves from it, so the width follows the
+     * selection on every render. It is one indexed lookup.
+     *
+     * `boardLists()` stays because it already refuses to do anything unless the
+     * convert modal is open, and the modal lives outside both islands.
+     */
     public function with(): array
     {
-        $open = $this->openEmail();
-
         return [
             'folders' => $this->folders(),
-            'emails' => $this->rows(),
-            'customers' => $this->customersOnPage(),
             'unreadTotal' => $this->unreadTotal(),
             'accounts' => $this->accountSummary(),
-            'open' => $open,
-            'openAttachments' => $open === null
-                ? collect()
-                : $open->attachments()->whereNull('content_id')->orderBy('id')->get(),
-            'threadMessages' => $this->threadMessages($open),
-            'openCards' => $this->cardsFor($open),
+            'open' => $this->openEmail(),
             'boardLists' => $this->boardLists(),
         ];
     }
@@ -628,6 +711,60 @@ class extends Component
         $this->openWasResolved = false;
 
         $this->renderIsland('pane');
+    }
+
+    /* New mail ---------------------------------------------------------------- */
+
+    /**
+     * Ask whether anything has arrived, and redraw only if it has.
+     *
+     * Mail reaches this page two ways and neither of them can tell a browser:
+     * `mailbox:sync-imap` writes rows from cron, and the Cloudflare Email Worker
+     * posts a message to `/mail/inbound` the moment it is received. Until this
+     * existed the only way to see either was to reload the page by hand.
+     *
+     * **The early return is the whole design.** Without `skipRender()` Livewire
+     * still renders the component on a poll that found nothing — the folder
+     * rail, the header, the filter buttons and the toolbar all sit outside both
+     * islands and are rebuilt and morphed over an identical DOM — and `with()`
+     * still runs every query behind them. That is ten queries and about 19 KB
+     * of HTML, every twenty seconds, per open tab, to change nothing. With it,
+     * the quiet case is one lookup on a primary key and an empty response.
+     *
+     * When something has arrived only the list island is named. The pane keeps
+     * whatever is open, and a half-written reply in it is not touched — the
+     * island the textarea lives in is skipped, so the morph never reaches it.
+     */
+    public function checkForNewMail(): void
+    {
+        $newest = $this->newestMessageId();
+
+        if ($newest === $this->watermark) {
+            $this->skipRender();
+
+            return;
+        }
+
+        $this->watermark = $newest;
+
+        // The folder rail is outside the islands and is therefore redrawn by
+        // this render anyway, so the unread counts move with the list.
+        $this->refreshList();
+    }
+
+    /**
+     * The highest message id in the store, or null for an empty one.
+     *
+     * Across every folder rather than the open one. A message that lands in
+     * Junk still changes a number in the sidebar, and asking one question about
+     * the whole table is cheaper than asking a narrower one that needs an index
+     * on the folder.
+     */
+    private function newestMessageId(): ?int
+    {
+        $newest = Email::query()->max('id');
+
+        return $newest === null ? null : (int) $newest;
     }
 
     /* Opening a message -------------------------------------------------------- */
@@ -1139,7 +1276,22 @@ class extends Component
 
 ?>
 
-<div class="flex flex-col gap-5">
+{{--
+    The poll is what makes new mail appear without a reload.
+
+    Twenty seconds because the two things that write messages here are a cron
+    that runs every minute and a Worker that posts the instant a message
+    arrives, so anything faster asks a question whose answer cannot have changed
+    and anything slower makes a mail client feel broken. Livewire stops polling
+    while the tab is in the background, so a window left open all afternoon is
+    not asking at all.
+
+    It is cheap because of what `checkForNewMail()` does when nothing has
+    arrived, which is one query and no render — read its docblock before
+    changing the interval, because the cost of a poll is not what the interval
+    suggests.
+--}}
+<div class="flex flex-col gap-5" wire:poll.20s="checkForNewMail">
 
     {{-- Page header --}}
     <div class="flex flex-wrap items-center justify-between gap-3">
@@ -1379,8 +1531,20 @@ class extends Component
                     view. It is an inline style rather than a utility because
                     neither stylesheet has one, and inventing a design token for
                     a single rule is worse than saying it here.
+
+                    The two queries behind these rows are asked for *here*
+                    rather than in `with()`, and that is the whole reason they
+                    are cheap: this body does not run when the island is
+                    skipped, so an action that changes nothing on this side of
+                    the page — a checkbox, the convert modal — no longer pays
+                    for one page of rows and their customers to throw both away.
+                    See the note on `rows()`.
                 --}}
                 @island(name: 'list')
+                @php
+                    $emails = $this->rows();
+                    $customers = $this->customersOnPage();
+                @endphp
                 <div>
                     <div class="kt-card-content p-0 divide-y divide-border max-h-[640px] overflow-y-auto kt-scrollable-y">
                         @forelse ($emails as $email)
@@ -1514,6 +1678,15 @@ class extends Component
             for the rest of the page's life.
         --}}
         @island(name: 'pane')
+        @php
+            // Asked for inside the island for the same reason the rows are, and
+            // it saves more here: a conversation, its attachments and the cards
+            // a message became are four queries that an action naming only the
+            // list — starring a row, moving folder — used to make and discard.
+            $threadMessages = $this->threadMessages();
+            $openAttachments = $this->openAttachments();
+            $openCards = $this->openCards();
+        @endphp
         <section class="{{ $open ? 'w-full min-w-0 grow' : 'hidden' }}">
             @if ($open)
                 {{--

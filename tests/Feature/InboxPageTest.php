@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\User;
+use Illuminate\Contracts\Pagination\CursorPaginator;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Livewire\Livewire;
@@ -61,6 +62,28 @@ class InboxPageTest extends TestCase
         return Customer::factory()
             ->for(Company::factory()->create(['name' => 'Northwind Ltd']))
             ->create(['name' => $name, 'email' => $email]);
+    }
+
+    /**
+     * The page of rows the list island would draw.
+     *
+     * Read off the component rather than out of the view's data, because that
+     * is where it now comes from. The rows, their customers, the conversation
+     * and the attachments are asked for from *inside* their island, so that a
+     * request which skips that island never makes those queries — see the note
+     * on `rows()` in the component. `assertViewHas('emails', …)` therefore has
+     * nothing to find, and would have gone on passing only if the page had gone
+     * back to paying for rows nobody was going to look at.
+     */
+    private function listed(mixed $component): CursorPaginator
+    {
+        return $component->instance()->rows();
+    }
+
+    /** @return list<string> The subjects on the page, in the order they are drawn. */
+    private function subjectsListed(mixed $component): array
+    {
+        return collect($this->listed($component)->items())->pluck('subject')->all();
     }
 
     private function boardList(string $board = 'Client Work', string $list = 'To Do'): BoardList
@@ -252,10 +275,11 @@ class InboxPageTest extends TestCase
         $list = $this->boardList();
         $email = $this->email(['subject' => 'Retainer renewal — September onwards']);
 
-        Livewire::test('mailbox::inbox')
+        $component = Livewire::test('mailbox::inbox')
             ->call('selectEmail', $email->id)
-            ->call('convertToCard', $list->id)
-            ->assertViewHas('openCards', fn ($cards): bool => $cards->count() === 1);
+            ->call('convertToCard', $list->id);
+
+        $this->assertCount(1, $component->instance()->openCards());
     }
 
     public function test_converting_without_a_message_open_says_so_rather_than_throwing(): void
@@ -276,14 +300,14 @@ class InboxPageTest extends TestCase
         $this->email(['subject' => 'Still in the inbox', 'folder' => 'INBOX']);
         $this->email(['subject' => 'Filed away last week', 'folder' => 'Archive']);
 
-        $subjects = fn ($paginator): array => collect($paginator->items())->pluck('subject')->all();
+        $component = Livewire::test('mailbox::inbox');
 
-        Livewire::test('mailbox::inbox')
-            ->assertViewHas('emails', fn ($emails): bool => $subjects($emails) === ['Still in the inbox'])
-            ->call('setFolder', 'Archive')
-            // The list under the folder is the answer, so switching says nothing.
-            ->assertNotDispatched('toast')
-            ->assertViewHas('emails', fn ($emails): bool => $subjects($emails) === ['Filed away last week']);
+        $this->assertSame(['Still in the inbox'], $this->subjectsListed($component));
+
+        // The list under the folder is the answer, so switching says nothing.
+        $component->call('setFolder', 'Archive')->assertNotDispatched('toast');
+
+        $this->assertSame(['Filed away last week'], $this->subjectsListed($component));
     }
 
     public function test_the_unread_and_starred_filters_narrow_the_list(): void
@@ -291,14 +315,13 @@ class InboxPageTest extends TestCase
         $this->email(['subject' => 'Unread and plain', 'is_read' => false, 'is_starred' => false]);
         $this->email(['subject' => 'Read and starred', 'is_read' => true, 'is_starred' => true]);
 
-        $subjects = fn ($paginator): array => collect($paginator->items())->pluck('subject')->all();
+        $component = Livewire::test('mailbox::inbox')->call('toggleUnreadOnly');
 
-        Livewire::test('mailbox::inbox')
-            ->call('toggleUnreadOnly')
-            ->assertViewHas('emails', fn ($emails): bool => $subjects($emails) === ['Unread and plain'])
-            ->call('toggleUnreadOnly')
-            ->call('toggleStarredOnly')
-            ->assertViewHas('emails', fn ($emails): bool => $subjects($emails) === ['Read and starred']);
+        $this->assertSame(['Unread and plain'], $this->subjectsListed($component));
+
+        $component->call('toggleUnreadOnly')->call('toggleStarredOnly');
+
+        $this->assertSame(['Read and starred'], $this->subjectsListed($component));
     }
 
     public function test_the_search_reaches_the_subject_the_sender_and_the_body(): void
@@ -322,17 +345,18 @@ class InboxPageTest extends TestCase
             'body_text' => 'Nothing useful here either.',
         ]);
 
-        $count = fn ($paginator): int => count($paginator->items());
+        $component = Livewire::test('mailbox::inbox');
 
-        Livewire::test('mailbox::inbox')
-            ->set('search', 'purchase order')
-            ->assertViewHas('emails', fn ($emails): bool => $count($emails) === 1)
-            ->set('search', 'PO number')
-            ->assertViewHas('emails', fn ($emails): bool => $count($emails) === 1)
-            ->set('search', 'Marta')
-            ->assertViewHas('emails', fn ($emails): bool => $count($emails) === 1)
-            ->set('search', 'nothing at all like this')
-            ->assertViewHas('emails', fn ($emails): bool => $count($emails) === 0);
+        $found = function (string $term) use ($component): int {
+            $component->set('search', $term);
+
+            return count($this->listed($component)->items());
+        };
+
+        $this->assertSame(1, $found('purchase order'), 'The subject was not searched.');
+        $this->assertSame(1, $found('PO number'), 'The body was not searched.');
+        $this->assertSame(1, $found('Marta'), 'The sender was not searched.');
+        $this->assertSame(0, $found('nothing at all like this'));
     }
 
     public function test_a_folder_the_sync_has_never_seen_falls_back_to_the_inbox(): void
@@ -625,7 +649,7 @@ class InboxPageTest extends TestCase
         for ($page = 0; $page < 3; $page++) {
             $component->call('goToCursor', $cursor);
 
-            $paginator = $component->viewData('emails');
+            $paginator = $this->listed($component);
             $ids = [...$ids, ...collect($paginator->items())->pluck('id')->all()];
             $cursor = (string) $paginator->nextCursor()?->encode();
         }
@@ -639,9 +663,9 @@ class InboxPageTest extends TestCase
     {
         Email::factory()->count(3)->for($this->account, 'account')->create();
 
-        Livewire::withQueryParams(['cursor' => 'not-a-real-cursor'])
-            ->test('mailbox::inbox')
-            ->assertViewHas('emails', fn ($emails): bool => count($emails->items()) === 3);
+        $component = Livewire::withQueryParams(['cursor' => 'not-a-real-cursor'])->test('mailbox::inbox');
+
+        $this->assertCount(3, $this->listed($component)->items());
     }
 
     /* The message itself -------------------------------------------------------------------- */
@@ -717,9 +741,116 @@ class InboxPageTest extends TestCase
             'received_at' => now()->subDays(1),
         ]);
 
-        Livewire::test('mailbox::inbox')
-            ->call('selectEmail', $first->id)
-            ->assertViewHas('threadMessages', fn ($messages): bool => $messages->count() === 2);
+        $component = Livewire::test('mailbox::inbox')->call('selectEmail', $first->id);
+
+        $this->assertCount(2, $component->instance()->threadMessages());
+    }
+
+    /* New mail arriving while the page is open ----------------------------------------------- */
+
+    /**
+     * Mail is written here by cron and by the Cloudflare Worker, and neither can
+     * tell a browser. Until the poll existed the only way to see a message that
+     * had arrived was to reload the page by hand.
+     */
+    public function test_a_message_that_arrives_while_the_page_is_open_appears_without_a_reload(): void
+    {
+        $this->email(['subject' => 'Was already here']);
+
+        $component = Livewire::test('mailbox::inbox');
+
+        $this->assertSame(['Was already here'], $this->subjectsListed($component));
+
+        $this->email(['subject' => 'Arrived a minute later', 'received_at' => now()->addMinute()]);
+
+        $component->call('checkForNewMail');
+
+        $this->assertSame(
+            ['Arrived a minute later', 'Was already here'],
+            $this->subjectsListed($component),
+        );
+
+        $this->assertNotEmpty(
+            $component->effects['islandFragments'] ?? [],
+            'The poll found new mail and did not name the list island, so the browser keeps the old rows.',
+        );
+    }
+
+    /**
+     * And the half that makes the interval affordable.
+     *
+     * A poll that found nothing must not render. Without `skipRender()` every
+     * quiet tick rebuilds the folder rail, the header and the toolbar, runs
+     * every query behind them and morphs the result over an identical DOM —
+     * once per open tab, for ever.
+     */
+    public function test_a_poll_that_finds_nothing_asks_one_question_and_renders_nothing(): void
+    {
+        Email::factory()->count(5)->for($this->account, 'account')->create();
+
+        $component = Livewire::test('mailbox::inbox');
+
+        DB::enableQueryLog();
+        $component->call('checkForNewMail');
+        $queries = collect(DB::getQueryLog());
+        DB::disableQueryLog();
+
+        $this->assertLessThanOrEqual(
+            2,
+            $queries->count(),
+            'A quiet poll made '.$queries->count().' queries: '.$queries->pluck('query')->implode(' | '),
+        );
+
+        $this->assertNull(
+            $queries->first(fn (array $query): bool => str_contains($query['query'], 'list_preview')),
+            'A quiet poll read a page of rows it was never going to draw.',
+        );
+
+        $this->assertEmpty($component->effects['islandFragments'] ?? []);
+    }
+
+    public function test_the_page_polls_for_new_mail(): void
+    {
+        $this->assertStringContainsString('wire:poll.20s="checkForNewMail"', $this->source());
+    }
+
+    /**
+     * The saving the islands were built for, now that the data follows them.
+     *
+     * `with()` used to compute the rows, their customers, the conversation, the
+     * attachments and the cards on every request, including the ones that name
+     * no island and draw none of it. Each is asked for from inside its own
+     * island instead, and a skipped island never runs its body.
+     */
+    public function test_an_action_that_names_no_island_does_not_query_for_what_it_will_not_draw(): void
+    {
+        $thread = EmailThread::factory()->create(['subject' => 'Retainer renewal']);
+        $email = $this->email(['email_thread_id' => $thread->id]);
+        EmailAttachment::factory()->for($email, 'email')->create();
+        Email::factory()->count(10)->for($this->account, 'account')->create();
+
+        $component = Livewire::test('mailbox::inbox')->call('selectEmail', $email->id);
+
+        DB::enableQueryLog();
+        $component->call('toggleChecked', $email->id);
+        $queries = collect(DB::getQueryLog());
+        DB::disableQueryLog();
+
+        $this->assertNull(
+            $queries->first(fn (array $q): bool => str_contains($q['query'], 'list_preview')),
+            'Ticking a checkbox read a page of rows that the skipped list island never drew.',
+        );
+
+        $this->assertNull(
+            $queries->first(fn (array $q): bool => str_contains($q['query'], 'email_attachments')),
+            'Ticking a checkbox read the open message’s attachments, which the skipped pane never drew.',
+        );
+
+        $this->assertLessThanOrEqual(
+            6,
+            $queries->count(),
+            'Ticking a checkbox made '.$queries->count().' queries: '.$queries->pluck('query')->implode(' | '),
+        );
     }
 
     /* The performance criterion ------------------------------------------------------------- */
