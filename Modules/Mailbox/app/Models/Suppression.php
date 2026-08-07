@@ -36,6 +36,17 @@ class Suppression extends Model
     public const INVALID = 'invalid';
 
     /**
+     * Softly refused too many times in a row to still be called temporary.
+     *
+     * Its own reason rather than `INVALID`, because the two are undone
+     * differently by the person reading the page: an invalid address was never
+     * real and should stay blocked, while this one was real and may simply have
+     * been away. It is the reason most worth un-suppressing by hand, and
+     * collapsing it into `INVALID` would hide exactly that.
+     */
+    public const REPEATED_SOFT_BOUNCE = 'repeated_soft_bounce';
+
+    /**
      * How the reasons read on a page, in the order they matter.
      *
      * A map rather than `ucfirst(str_replace(...))` because 'Hard bounce' and
@@ -49,6 +60,7 @@ class Suppression extends Model
             self::HARD_BOUNCE => 'Hard bounce',
             self::COMPLAINT => 'Complaint',
             self::UNSUBSCRIBE => 'Unsubscribed',
+            self::REPEATED_SOFT_BOUNCE => 'Kept bouncing',
             self::INVALID => 'Invalid address',
             self::MANUAL => 'Added by hand',
         ];
@@ -61,6 +73,7 @@ class Suppression extends Model
             self::HARD_BOUNCE => 'kt-badge-destructive',
             self::COMPLAINT => 'kt-badge-destructive',
             self::UNSUBSCRIBE => 'kt-badge-outline',
+            self::REPEATED_SOFT_BOUNCE => 'kt-badge-warning',
             self::INVALID => 'kt-badge-warning',
             self::MANUAL => 'kt-badge-info',
         ];

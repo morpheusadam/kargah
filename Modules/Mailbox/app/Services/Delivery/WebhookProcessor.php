@@ -4,6 +4,7 @@ namespace Modules\Mailbox\Services\Delivery;
 
 use Modules\Mailbox\Models\CampaignRecipient;
 use Modules\Mailbox\Models\DeliveryProvider;
+use Modules\Mailbox\Models\SoftBounceTally;
 use Modules\Mailbox\Models\Suppression;
 
 /**
@@ -74,6 +75,8 @@ class WebhookProcessor
             $suppressionWritten = $before !== $reason;
         }
 
+        $suppressionWritten = $this->tallySoftBounces($provider, $event, $email) || $suppressionWritten;
+
         if ($recipient === null) {
             return $suppressionWritten;
         }
@@ -119,6 +122,57 @@ class WebhookProcessor
         }
 
         $recipient->campaign?->syncCounters();
+
+        return true;
+    }
+
+    /**
+     * Keep the running count of consecutive soft bounces, and act at the
+     * threshold.
+     *
+     * A soft bounce still does not suppress on its own — that judgement has not
+     * changed, and the comment below about why conflating the two destroys a
+     * list still holds. What changes is that a run of them is now counted, and
+     * an address that has refused `soft_threshold` messages with nothing
+     * getting through between them stops being called temporary.
+     *
+     * A delivery clears the tally rather than decrementing it: the mailbox took
+     * a message, so whatever was wrong is over, and carrying two-thirds of a
+     * suppression into the next unrelated bad week is how a working address
+     * gets blocked on its first full mailbox.
+     *
+     * Already-suppressed addresses are left alone. Re-blocking one would
+     * overwrite the reason a person can read — turning a complaint, which must
+     * never be quietly downgraded, into a bounce.
+     *
+     * @return bool Whether this wrote a suppression that was not there before.
+     */
+    private function tallySoftBounces(DeliveryProvider $provider, DeliveryEvent $event, string $email): bool
+    {
+        if ($event->kind === DeliveryEvent::DELIVERED) {
+            SoftBounceTally::clear($email);
+
+            return false;
+        }
+
+        if ($event->kind !== DeliveryEvent::SOFT_BOUNCE) {
+            return false;
+        }
+
+        $threshold = (int) config('mailbox.bounce.soft_threshold', 3);
+
+        $count = SoftBounceTally::record($email);
+
+        if ($threshold < 1 || $count < $threshold || Suppression::blocks($email)) {
+            return false;
+        }
+
+        Suppression::block(
+            $email,
+            Suppression::REPEATED_SOFT_BOUNCE,
+            $provider->driver,
+            $count.' soft bounces in a row, the last of them: '.($event->detail ?? 'no detail given'),
+        );
 
         return true;
     }

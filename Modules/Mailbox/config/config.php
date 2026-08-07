@@ -169,4 +169,32 @@ return [
          */
         'stale_claim_minutes' => (int) env('MAILBOX_STALE_CLAIM_MINUTES', 15),
     ],
+
+    /*
+     * What a provider's report is allowed to conclude.
+     *
+     * Hard bounces and complaints suppress on the first one and always have —
+     * they are statements that the address is wrong or that the person does not
+     * want this, and neither improves with a second opinion. Only the soft
+     * bounce needs a number, because it is the only report that means "not now"
+     * rather than "not ever".
+     */
+    'bounce' => [
+
+        /*
+         * Consecutive soft bounces before an address is blocked.
+         *
+         * Three, because a mailbox is allowed to be full over a holiday and a
+         * greylist is allowed to defer twice, but an address that has refused
+         * three campaigns in a row with nothing getting through between them is
+         * not coming back — and every further attempt is another point of
+         * bounce rate charged against the sending domain, which is what
+         * receiving servers actually score.
+         *
+         * Consecutive is doing the work: a delivery clears the tally, so this
+         * counts a run rather than a lifetime. Set to 0 to switch the behaviour
+         * off entirely and keep recording soft bounces without ever acting.
+         */
+        'soft_threshold' => (int) env('MAILBOX_SOFT_BOUNCE_THRESHOLD', 3),
+    ],
 ];
