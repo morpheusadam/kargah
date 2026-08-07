@@ -4,6 +4,7 @@ namespace Modules\Mailbox\Providers;
 
 use Modules\Core\Support\MorphMap;
 use Modules\Mailbox\Console\DispatchSends;
+use Modules\Mailbox\Console\InboundReport;
 use Modules\Mailbox\Contracts\EmailReader as EmailReaderContract;
 use Modules\Mailbox\Models\Campaign;
 use Modules\Mailbox\Models\Contact;
@@ -31,6 +32,7 @@ class MailboxServiceProvider extends ModuleServiceProvider
     /** @var string[] */
     protected array $commands = [
         DispatchSends::class,
+        InboundReport::class,
     ];
 
     /** @var string[] */
