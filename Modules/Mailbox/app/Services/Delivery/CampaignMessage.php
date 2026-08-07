@@ -3,10 +3,10 @@
 namespace Modules\Mailbox\Services\Delivery;
 
 use Illuminate\Mail\Mailable;
+use Illuminate\Mail\Mailables\Address;
 use Illuminate\Mail\Mailables\Content;
 use Illuminate\Mail\Mailables\Envelope;
 use Illuminate\Mail\Mailables\Headers;
-use Symfony\Component\Mime\Address;
 use Symfony\Component\Mime\Email;
 
 /**
@@ -28,11 +28,24 @@ class CampaignMessage extends Mailable
 {
     public function __construct(public readonly OutboundMessage $message) {}
 
+    /**
+     * ⚠️ `Address` here is **Laravel's**, not Symfony's.
+     *
+     * `Envelope` accepts `Illuminate\Mail\Mailables\Address|string|null` and
+     * nothing else. The two classes have the same short name and the same
+     * constructor signature, so importing the wrong one is a change that reads
+     * correctly, passes static analysis, and throws a TypeError the first time
+     * a real message is built — which is the first time anybody presses Send.
+     *
+     * No test caught that, and none could have: `Mail::fake()` records the
+     * mailable without ever calling `envelope()`, so every driver test passed
+     * against a method that had never run.
+     */
     public function envelope(): Envelope
     {
         return new Envelope(
-            from: new Address($this->message->fromEmail, $this->message->fromName ?? ''),
-            to: [new Address($this->message->toEmail, $this->message->toName ?? '')],
+            from: new Address($this->message->fromEmail, $this->message->fromName),
+            to: [new Address($this->message->toEmail, $this->message->toName)],
             replyTo: $this->message->replyTo === null ? [] : [new Address($this->message->replyTo)],
             subject: $this->message->subject,
         );
