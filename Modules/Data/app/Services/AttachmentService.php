@@ -8,6 +8,7 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
+use Modules\Core\Support\ImageTranscoder;
 use Modules\Data\Contracts\AttachmentService as AttachmentServiceContract;
 use Modules\Data\Models\Attachment;
 use RuntimeException;
@@ -168,12 +169,20 @@ class AttachmentService implements AttachmentServiceContract
         return is_resource($stream) ? $stream : null;
     }
 
-    public function publicUrl(int $attachmentId, int $minutes = 30): ?string
+    public function publicUrl(int $attachmentId, int $minutes = 30, ?string $as = null): ?string
     {
         $attachment = Attachment::query()->find($attachmentId);
 
         if ($attachment === null) {
             return null;
+        }
+
+        $params = ['attachment' => $attachment->getKey()];
+
+        // Omitted rather than sent as null: an old link with no `as` and a new
+        // one explicitly asking for the original should sign identically.
+        if ($as !== null) {
+            $params['as'] = $as;
         }
 
         // A signature the route already checks. `data.file-share` has sat
@@ -182,17 +191,39 @@ class AttachmentService implements AttachmentServiceContract
         return URL::temporarySignedRoute(
             'data.file-share',
             now()->addMinutes(max(1, $minutes)),
-            ['attachment' => $attachment->getKey()],
+            $params,
         );
     }
 
-    public function stream(int $attachmentId, bool $inline = false): StreamedResponse
+    public function stream(int $attachmentId, bool $inline = false, ?string $as = null): StreamedResponse
     {
         $attachment = Attachment::query()->findOrFail($attachmentId);
         $disk = Storage::disk($attachment->disk);
 
         if (! $disk->exists($attachment->path)) {
             throw new RuntimeException('The stored file for attachment '.$attachmentId.' is missing from disk '.$attachment->disk.'.');
+        }
+
+        // The re-encode path: only taken when a caller asked for a mime the
+        // stored file is not already, and only when `ImageTranscoder` can
+        // actually decode it — a request for `as=image/jpeg` against a PDF, or
+        // against a source GD cannot read, falls straight through to serving
+        // the original rather than answering with a broken "jpeg".
+        if ($as !== null && $as !== $attachment->mime && ImageTranscoder::canConvert((string) $attachment->mime)) {
+            $converted = ImageTranscoder::toJpeg((string) $disk->get($attachment->path), (string) $attachment->mime);
+
+            if ($converted !== null) {
+                $name = preg_replace('/\.[^.\/\\\\]+$/', '', $attachment->original_name).'.jpg';
+
+                return response()->streamDownload(
+                    function () use ($converted): void {
+                        echo $converted;
+                    },
+                    $name,
+                    ['Content-Type' => 'image/jpeg'],
+                    $inline ? 'inline' : 'attachment',
+                );
+            }
         }
 
         $headers = $attachment->mime === null ? [] : ['Content-Type' => $attachment->mime];

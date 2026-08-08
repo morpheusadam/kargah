@@ -3,6 +3,7 @@
 namespace Modules\Data\Http\Controllers;
 
 use App\Http\Controllers\Controller;
+use Illuminate\Http\Request;
 use Modules\Data\Contracts\AttachmentService;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
@@ -41,9 +42,16 @@ class AttachmentController extends Controller
      * signature *is* the authorisation, and it expires. Making the storage disk
      * public to achieve the same thing would grant permanent access to every
      * file on it, including the ones nobody meant to share.
+     *
+     * `as` is part of the signed URL itself — see `AttachmentService::publicUrl()`
+     * — so reading it from the request rather than trusting a default is safe:
+     * the `signed` middleware has already rejected anything where it was
+     * tampered with after the link was built.
      */
-    public function share(AttachmentService $attachments, int $attachment): StreamedResponse
+    public function share(Request $request, AttachmentService $attachments, int $attachment): StreamedResponse
     {
-        return $attachments->stream($attachment, inline: true);
+        $as = $request->query('as');
+
+        return $attachments->stream($attachment, inline: true, as: is_string($as) ? $as : null);
     }
 }

@@ -9,6 +9,7 @@ use Modules\Data\Contracts\AttachmentService;
 use Modules\Social\Models\Post;
 use Modules\Social\Models\PostTarget;
 use Modules\Social\Models\SocialAccount;
+use Modules\Core\Support\ImageTranscoder;
 use Modules\Social\Services\PostPublisher;
 use Modules\Social\Support\Networks;
 
@@ -321,10 +322,15 @@ class extends Component
             $mime = (string) $upload->getMimeType();
 
             if (! in_array($mime, $rules['mimes'], true)) {
-                $found[] = $label.' does not accept '.$mime.', so “'.$name.'” cannot go to it.';
+                // Not a block when it is a mime `HttpPublisher::acceptableMedia()`
+                // will re-encode to JPEG before it ever leaves — Instagram
+                // refusing a PNG is exactly this case. Nothing further to say
+                // either way: the size and shape of the *original* file are
+                // beside the point once it is going out as a different one.
+                if (! in_array('image/jpeg', $rules['mimes'], true) || ! ImageTranscoder::canConvert($mime)) {
+                    $found[] = $label.' does not accept '.$mime.', so “'.$name.'” cannot go to it.';
+                }
 
-                // Nothing further to say about a file this network will not
-                // take at all; its size and shape are beside the point.
                 continue;
             }
 

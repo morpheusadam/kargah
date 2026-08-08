@@ -330,6 +330,15 @@ abstract class HttpPublisher implements Publisher
      * post page. Cheap, and it fails before the first byte leaves rather than
      * after three of four uploads have succeeded.
      *
+     * **A mime this network refuses is not an automatic rejection.** If the
+     * network takes JPEG — every image-taking network in the catalogue except
+     * Reddit, which takes none — and `ImageTranscoder` can decode the source,
+     * the item is silently re-encoded to JPEG here rather than failing the
+     * post. This is the same rule `⚡publish.blade.php`'s `problemsFor()` uses
+     * to decide what is worth blocking a person over at compose time; this is
+     * what actually performs it, once, right before the bytes would otherwise
+     * leave rejected.
+     *
      * @param  list<MediaItem>  $media
      * @return list<MediaItem>
      *
@@ -351,12 +360,18 @@ abstract class HttpPublisher implements Publisher
             );
         }
 
-        foreach ($media as $item) {
+        foreach ($media as $index => $item) {
             if (! in_array($item->mime, $rules['mimes'], true)) {
-                throw PublishFailed::rejected(
-                    $this->network(),
-                    'it does not accept '.$item->mime.' — “'.$item->name.'” cannot go to this network',
-                );
+                $converted = in_array('image/jpeg', $rules['mimes'], true) ? $item->convertedToJpeg() : null;
+
+                if ($converted === null) {
+                    throw PublishFailed::rejected(
+                        $this->network(),
+                        'it does not accept '.$item->mime.' — “'.$item->name.'” cannot go to this network',
+                    );
+                }
+
+                $media[$index] = $item = $converted;
             }
 
             if ($item->sizeBytes > $rules['max_bytes']) {

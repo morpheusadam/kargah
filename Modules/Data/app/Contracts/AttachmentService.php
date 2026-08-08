@@ -183,16 +183,29 @@ interface AttachmentService
      * are still on the disk: that would cost a storage round trip on every
      * attach, and the route behind the signature answers 404 for a missing file
      * anyway — which is the same thing Meta would make of it.
+     *
+     * `$as` asks the route to serve a re-encode rather than the stored bytes —
+     * today, only `'image/jpeg'` is meaningful. This exists for the same
+     * reason the whole method does: a network that only takes a URL cannot be
+     * handed converted bytes the way `contents()` can hand them to one that
+     * reads a body directly, so the conversion has to happen here, at fetch
+     * time, on the same route Meta is about to call. A source `stream()`
+     * cannot decode (see `Modules\Core\Support\ImageTranscoder`) falls back to
+     * serving the original — a link is still better than a 404.
      */
-    public function publicUrl(int $attachmentId, int $minutes = 30): ?string;
+    public function publicUrl(int $attachmentId, int $minutes = 30, ?string $as = null): ?string;
 
     /**
      * Stream one attachment to the browser.
      *
      * `$inline` decides between showing it in the tab and offering it as a
      * download; the bytes and the path they come from are identical either way.
+     *
+     * `$as` mirrors `publicUrl()`'s — see there for why this exists. A `null`
+     * is the ordinary path and costs nothing extra: the file streams straight
+     * from disk exactly as before.
      */
-    public function stream(int $attachmentId, bool $inline = false): StreamedResponse;
+    public function stream(int $attachmentId, bool $inline = false, ?string $as = null): StreamedResponse;
 
     /**
      * Soft delete an attachment. Returns false when there was nothing to delete.

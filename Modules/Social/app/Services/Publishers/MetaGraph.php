@@ -5,7 +5,6 @@ namespace Modules\Social\Services\Publishers;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
-use Modules\Data\Contracts\AttachmentService;
 use Modules\Social\Support\Networks;
 
 /**
@@ -394,7 +393,11 @@ trait MetaGraph
             throw PublishFailed::rejected($this->graphName(), $reason);
         }
 
-        $url = app(AttachmentService::class)->publicUrl($item->id);
+        // Through the item, not `AttachmentService` directly: when
+        // `HttpPublisher::acceptableMedia()` converted this item to JPEG, this
+        // is what asks Data to serve that re-encode instead of the PNG (or
+        // whatever it was) actually on disk.
+        $url = $item->publicUrl();
 
         if ($url === null) {
             throw PublishFailed::rejected(

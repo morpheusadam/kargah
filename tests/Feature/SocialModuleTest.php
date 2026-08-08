@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
@@ -781,6 +782,28 @@ class SocialModuleTest extends TestCase
         $this->assertSame(Post::PUBLISHED, $post->status);
         $this->assertSame(PostTarget::PUBLISHED, $post->targets()->sole()->status);
         $this->assertSame(1, $mastodon->sendCount());
+    }
+
+    /**
+     * A regression guard for the compose page itself, not just the publisher
+     * behind it: `mediaProblems()` renders on every keystroke and file pick
+     * (see `⚡publish.blade.php`'s `with()`), so a wrong class reference in its
+     * `ImageTranscoder::canConvert()` call — the exact shape of mistake a
+     * class move leaves behind — would 500 this page rather than fail quietly.
+     * A PNG against Instagram is the one real case that check exists for.
+     */
+    public function test_a_png_attached_with_instagram_selected_is_not_reported_as_a_problem(): void
+    {
+        $account = $this->account(Networks::INSTAGRAM);
+
+        $this->actingAs(User::factory()->create());
+
+        Livewire::test('social::publish')
+            ->set('targets', [$account->id])
+            ->set('uploads', [UploadedFile::fake()->image('screenshot.png')])
+            ->assertOk()
+            ->assertDontSee('does not accept')
+            ->assertDontSee('cannot go to it');
     }
 
     public function test_the_publish_page_schedules_rather_than_sending_when_asked_to(): void

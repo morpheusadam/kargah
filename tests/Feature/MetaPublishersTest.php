@@ -420,6 +420,149 @@ class MetaPublishersTest extends TestCase
         Http::assertNothingSent();
     }
 
+    /**
+     * The bug this exists for: Instagram's image container is JPEG-only, and a
+     * PNG used to be a hard refusal — "Instagram does not accept image/png" —
+     * that named a network problem nobody attaching a screenshot expects to
+     * hit. `HttpPublisher::acceptableMedia()` now re-encodes it, and because
+     * Instagram never receives bytes (see `images()`'s docblock), the proof is
+     * fetching the exact URL Instagram was handed and finding a JPEG behind it,
+     * not just that publish did not throw.
+     */
+    public function test_a_png_attached_to_instagram_is_served_as_the_jpeg_it_requires(): void
+    {
+        Http::fake([
+            'graph.instagram.com/*/media_publish' => Http::response(['id' => '17900000000000005']),
+            'graph.instagram.com/*/media' => Http::response(['id' => '17800000000000006']),
+        ]);
+
+        $result = (new InstagramPublisher)->publish(
+            $this->instagramAccount(),
+            'A screenshot, not a photo.',
+            [$this->testImage('image/png')],
+        );
+
+        $this->assertSame('17900000000000005', $result->remoteId);
+
+        [$container] = $this->sent();
+        $imageUrl = (string) $container['image_url'];
+
+        // The conversion is visible on the link itself before it is ever
+        // fetched: `as=image/jpeg` is what tells `data.file-share` to re-encode
+        // rather than stream the stored PNG.
+        $this->assertStringContainsString('as=image%2Fjpeg', $imageUrl);
+
+        // And the link actually serves a JPEG — the part Meta relies on, since
+        // it never sees the mime this test asserted above, only the bytes.
+        $response = $this->get($imageUrl);
+
+        $response->assertOk();
+        $this->assertSame('image/jpeg', $response->headers->get('Content-Type'));
+
+        $info = getimagesizefromstring($response->streamedContent());
+        $this->assertNotFalse($info, 'the served bytes did not decode as an image at all');
+        $this->assertSame(IMAGETYPE_JPEG, $info[2]);
+    }
+
+    /**
+     * `FacebookPagePublisher` reads bytes directly rather than handing Graph a
+     * URL (see `images()`'s docblock) — the other half of the conversion path,
+     * and the one `MediaItem::contents()` serves without Data's involvement.
+     *
+     * WebP, not PNG: Facebook Page's catalogue entry already takes PNG (see
+     * `Networks::all()`), so a PNG here would prove nothing about conversion.
+     * WebP is the one raster format its `mimes` list leaves out.
+     */
+    public function test_a_webp_attached_to_facebook_uploads_as_jpeg_bytes(): void
+    {
+        Http::fake([
+            'graph.facebook.com/*/photos' => Http::response(['id' => '10160000000000009']),
+            'graph.facebook.com/*/feed' => Http::response(['id' => self::PAGE_ID.'_9988776655']),
+        ]);
+
+        (new FacebookPagePublisher)->publish(
+            $this->facebookAccount(),
+            'A screenshot, not a photo.',
+            [$this->testImage('image/webp')],
+        );
+
+        [$upload] = $this->sent();
+
+        $this->assertTrue($upload->hasFile('source'));
+
+        $bytes = (string) $this->part($upload, 'source');
+
+        // The JPEG magic number. What went up is not the RIFF/WEBP header
+        // `testImage()` built.
+        $this->assertSame("\xFF\xD8\xFF", substr($bytes, 0, 3));
+    }
+
+    /**
+     * Nothing here should turn a genuine refusal into a broken publish. A
+     * source `ImageTranscoder` cannot decode (SVG: vectors, not GD's problem —
+     * see the class) falls straight through to the original message.
+     */
+    public function test_instagram_still_refuses_a_mime_it_cannot_convert(): void
+    {
+        Http::fake();
+
+        $post = Post::factory()->create();
+        $stored = app(AttachmentService::class)->attachContents(
+            $post,
+            '<svg xmlns="http://www.w3.org/2000/svg"></svg>',
+            'icon.svg',
+            'image/svg+xml',
+        );
+        $item = MediaItem::fromAttachment($stored);
+        $this->assertNotNull($item);
+
+        try {
+            (new InstagramPublisher)->publish($this->instagramAccount(), 'This should not go out.', [$item]);
+
+            $this->fail('Instagram published an SVG.');
+        } catch (PublishFailed $e) {
+            $this->assertStringContainsString('does not accept image/svg+xml', $e->getMessage());
+        }
+
+        Http::assertNothingSent();
+    }
+
+    /**
+     * A real, tiny, GD-decodable image in the given format — `images()` next
+     * door stores literal text under an `image/jpeg` label, which is fine for
+     * request-shape assertions but cannot exercise `ImageTranscoder`, which
+     * reads actual pixels.
+     */
+    private function testImage(string $mime): MediaItem
+    {
+        $canvas = imagecreatetruecolor(2, 2);
+        imagesavealpha($canvas, true);
+        imagefill($canvas, 0, 0, imagecolorallocatealpha($canvas, 0, 0, 0, 127));
+
+        ob_start();
+        match ($mime) {
+            'image/png' => imagepng($canvas),
+            'image/webp' => imagewebp($canvas),
+            'image/gif' => imagegif($canvas),
+            default => throw new \InvalidArgumentException("no encoder wired up for {$mime} in this test"),
+        };
+        $bytes = (string) ob_get_clean();
+        imagedestroy($canvas);
+
+        $extension = match ($mime) {
+            'image/png' => 'png',
+            'image/webp' => 'webp',
+            'image/gif' => 'gif',
+        };
+
+        $post = Post::factory()->create();
+        $stored = app(AttachmentService::class)->attachContents($post, $bytes, 'screenshot.'.$extension, $mime);
+        $item = MediaItem::fromAttachment($stored);
+        $this->assertNotNull($item);
+
+        return $item;
+    }
+
     /* Threads ------------------------------------------------------------------ */
 
     public function test_a_text_only_threads_post_creates_a_text_container_then_publishes_it(): void

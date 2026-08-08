@@ -3,7 +3,6 @@
 namespace Modules\Social\Services\Publishers;
 
 use Illuminate\Http\Client\Response;
-use Modules\Data\Contracts\AttachmentService;
 use Modules\Social\Models\SocialAccount;
 use Modules\Social\Support\Networks;
 
@@ -267,7 +266,8 @@ class SlackPublisher extends HttpPublisher
             throw PublishFailed::rejected($this->network(), $reason);
         }
 
-        $url = app(AttachmentService::class)->publicUrl($item->id);
+        // Through the item, not `AttachmentService` directly — see `MediaItem::publicUrl()`.
+        $url = $item->publicUrl();
 
         if ($url === null) {
             throw PublishFailed::rejected(

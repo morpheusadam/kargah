@@ -2,6 +2,7 @@
 
 namespace Modules\Social\Services\Publishers;
 
+use Modules\Core\Support\ImageTranscoder;
 use Modules\Data\Contracts\AttachmentService;
 
 /**
@@ -30,6 +31,9 @@ use Modules\Data\Contracts\AttachmentService;
 final class MediaItem
 {
     private ?string $bytes = null;
+
+    /** Set only by `convertedToJpeg()` — asks `publicUrl()` to serve a re-encode rather than the stored bytes. */
+    private ?string $urlMime = null;
 
     public function __construct(
         /** The attachment id, so a failure can name a row rather than a filename. */
@@ -100,6 +104,47 @@ final class MediaItem
         }
 
         return $this->bytes = $bytes;
+    }
+
+    /**
+     * A link Meta (or Slack) can fetch the picture from — this item's mime,
+     * unless `convertedToJpeg()` built it, in which case the link asks Data to
+     * serve the re-encode rather than the stored file.
+     *
+     * `AttachmentService::publicUrl()`'s bytes and this item's `contents()` are
+     * two independent reads of the same conversion decision: a network that
+     * takes bytes directly (Facebook Page) gets the JPEG this instance already
+     * holds in memory, and a network that only takes a URL (Instagram,
+     * Threads, Slack) gets Data's file-share route re-encoding the original on
+     * its way out. Neither path downloads the other's copy.
+     */
+    public function publicUrl(int $minutes = 30): ?string
+    {
+        return app(AttachmentService::class)->publicUrl($this->id, $minutes, $this->urlMime);
+    }
+
+    /**
+     * The same picture, re-encoded as the JPEG a network that refused its
+     * original mime will actually take.
+     *
+     * Null rather than a throw for the same reason `ImageTranscoder::toJpeg()`
+     * is: a source GD cannot decode is a reason to fall back to the ordinary
+     * mime rejection, not a reason to fail the whole publish differently than
+     * an unconvertible file would have.
+     */
+    public function convertedToJpeg(): ?self
+    {
+        $jpeg = ImageTranscoder::toJpeg($this->contents(), $this->mime);
+
+        if ($jpeg === null) {
+            return null;
+        }
+
+        $clone = new self(id: $this->id, name: $this->name, mime: 'image/jpeg', sizeBytes: strlen($jpeg));
+        $clone->bytes = $jpeg;
+        $clone->urlMime = 'image/jpeg';
+
+        return $clone;
     }
 
     /** A filename safe to put in a multipart part, never the one a browser sent. */
