@@ -145,6 +145,29 @@ trait MetaGraph
      */
     private const CONTAINER_RETRY_SECONDS = 2;
 
+    /**
+     * `createContainer()`'s own timeout, longer than every other call in this
+     * family.
+     *
+     * **Measured against the live Threads host on 8 August 2026.** A real
+     * `imageContainer()` call — the exact fields Kargah sends, replayed with a
+     * sixty-second ceiling — answered `200` in 11.44 seconds. `HttpPublisher::
+     * TIMEOUT` is ten. That is not a hang and not a refusal; it is Meta fetching
+     * `image_url` from Kargah's own file-share route before it answers at all,
+     * which is the same fetch `MEDIA_NOT_READY` exists for — except that error
+     * is Meta answering quickly to say the fetch has not finished, while this is
+     * Meta not answering yet because the fetch is still running. Ten seconds is
+     * cutting it close enough that ordinary latency loses the race.
+     *
+     * Twenty seconds rather than something closer to eleven, because the
+     * measurement is one data point on one image on one day, not a bound Meta
+     * publishes. Kept off `publishContainer()` — see the class docblock's
+     * `MEDIA_NOT_READY` note — because by that step the image is already
+     * fetched or Meta has already said so; only the call that triggers the
+     * fetch needs the extra room.
+     */
+    private const CONTAINER_CREATE_TIMEOUT = 20;
+
     /** `https://graph.facebook.com/v23.0/<path>`. */
     protected function graphUrl(string $path): string
     {
@@ -187,9 +210,13 @@ trait MetaGraph
      *
      * @throws PublishFailed
      */
-    protected function graphSend(string $method, string $url, array $fields = []): array
+    protected function graphSend(string $method, string $url, array $fields = [], ?int $timeoutSeconds = null): array
     {
         $request = $method === 'post' ? $this->request()->asForm() : $this->request();
+
+        if ($timeoutSeconds !== null) {
+            $request = $request->timeout($timeoutSeconds);
+        }
 
         return $this->refuseGraphError($this->graphBody($request, $method, $url, $fields));
     }
@@ -254,7 +281,7 @@ trait MetaGraph
      */
     protected function createContainer(string $url, array $fields): string
     {
-        return $this->graphId($this->graphSend('post', $url, $fields), 'container id');
+        return $this->graphId($this->graphSend('post', $url, $fields, self::CONTAINER_CREATE_TIMEOUT), 'container id');
     }
 
     /**
