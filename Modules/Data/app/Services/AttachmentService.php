@@ -44,7 +44,16 @@ class AttachmentService implements AttachmentServiceContract
             target: $target,
             contents: (string) file_get_contents($path),
             originalName: $file->getClientOriginalName(),
-            mime: $file->getClientMimeType(),
+            // The bytes' own mime, not the browser's `Content-Type` header —
+            // `getMimeType()` reads the file through `finfo`, `getClientMimeType()`
+            // repeats whatever the browser sent. A real PNG mislabelled
+            // `application/octet-stream` by the client is not `image/*` to
+            // `MediaItem::fromAttachment()`, which drops it silently rather
+            // than refusing it: the post goes out with no picture at all, and
+            // a network with no text-only post (Instagram) fails claiming one
+            // was never attached. Falls back to the header only on the rare
+            // file `finfo` cannot read anything from.
+            mime: $file->getMimeType() ?? $file->getClientMimeType(),
             uploadedBy: $uploadedBy,
         );
     }

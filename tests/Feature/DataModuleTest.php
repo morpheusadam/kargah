@@ -165,6 +165,45 @@ class DataModuleTest extends TestCase
         $this->assertSame($user->id, $stored['uploaded_by']);
     }
 
+    /**
+     * The bug: a browser that sends `application/octet-stream` for a real
+     * PNG — Symfony's `UploadedFile` defaults its client mime to exactly that
+     * string when the client sends none, and it happened for real against
+     * `panel.lavzen.com/social/posts/1` on 8 August 2026. Stored as-is,
+     * `MediaItem::fromAttachment()` (Social) reads it as "not a picture" and
+     * drops it silently, so a post with a real image attached went out with
+     * none — and Instagram then refused it for having no image at all,
+     * naming a problem that was never the real one.
+     *
+     * `UploadedFile::fake()` cannot reproduce this: `Illuminate\Http\Testing\File`
+     * overrides `getMimeType()` to guess from the extension rather than read
+     * the bytes, so a fake never disagrees with itself the way a real upload
+     * did here. This builds the real Symfony class Laravel's request pipeline
+     * actually hands `attach()`, pointed at genuine PNG bytes, with the
+     * client mime explicitly wrong.
+     */
+    public function test_a_client_mime_that_disagrees_with_the_bytes_is_not_what_gets_stored(): void
+    {
+        $tmpPath = Storage::disk('local')->path('probe.png');
+
+        $canvas = imagecreatetruecolor(4, 4);
+        imagepng($canvas, $tmpPath);
+        imagedestroy($canvas);
+
+        // The real class, in test mode, with the client mime Symfony itself
+        // defaults to when a browser sends none — see `UploadedFile::__construct()`.
+        $file = new UploadedFile($tmpPath, '1.png', 'application/octet-stream', null, true);
+
+        $this->assertSame('application/octet-stream', $file->getClientMimeType(), 'the fixture no longer reproduces a disagreeing client mime');
+
+        $service = app(AttachmentService::class);
+        $company = Company::factory()->create();
+
+        $stored = $service->attach($company, $file);
+
+        $this->assertSame('image/png', $stored['mime']);
+    }
+
     public function test_a_hostile_filename_never_becomes_a_path(): void
     {
         $service = app(AttachmentService::class);
