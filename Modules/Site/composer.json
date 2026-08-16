@@ -1,0 +1,30 @@
+{
+    "name": "kargah/site",
+    "description": "Control a WordPress website from Kargah: content, media, taxonomies, SEO and cache, over the core REST API.",
+    "authors": [
+        {
+            "name": "Kargah",
+            "email": "nima@kargah.local"
+        }
+    ],
+    "extra": {
+        "laravel": {
+            "providers": [],
+            "aliases": {
+
+            }
+        }
+    },
+    "autoload": {
+        "psr-4": {
+            "Modules\\Site\\": "app/",
+            "Modules\\Site\\Database\\Factories\\": "database/factories/",
+            "Modules\\Site\\Database\\Seeders\\": "database/seeders/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Modules\\Site\\Tests\\": "tests/"
+        }
+    }
+}

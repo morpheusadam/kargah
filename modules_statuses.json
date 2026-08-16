@@ -6,5 +6,6 @@
     "Social": true,
     "Core": true,
     "Platform": true,
-    "Blog": true
+    "Blog": true,
+    "Site": true
 }

@@ -1,0 +1,11 @@
+{
+  "name": "Site",
+  "alias": "site",
+  "description": "The website itself: content, media, taxonomies, SEO and cache on a WordPress install, driven from Kargah instead of wp-admin.",
+  "keywords": [],
+  "priority": 10,
+  "providers": [
+    "Modules\\Site\\Providers\\SiteServiceProvider"
+  ],
+  "files": []
+}

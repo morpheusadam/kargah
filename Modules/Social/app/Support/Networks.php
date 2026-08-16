@@ -908,9 +908,39 @@ final class Networks
                         'hint' => 'Stored encrypted. Paste it with the spaces exactly as WordPress showed them; revoking it there is enough to cut Kargah off.',
                     ],
                 ],
+                /*
+                 * ⚠️ This list grew when `Modules\Site` was added, and the line
+                 * it replaced is worth recording rather than deleting.
+                 *
+                 * It used to promise, in as many words, that Kargah could not
+                 * "edit or delete anything that was already on the site". That
+                 * was true while `WordPressPublisher` was the only thing holding
+                 * this credential: publishing an article is a create, and the
+                 * driver has no other verb.
+                 *
+                 * `Modules\Site` holds the same credential and exists to operate
+                 * the site — edit a page, trash a post, upload to the library,
+                 * change an SEO field, purge a cache. Leaving the old sentence
+                 * here would have meant the connect page telling somebody their
+                 * password could not do the thing another page in the same
+                 * application was doing with it. A promise about what a stored
+                 * credential is used for is not something to quietly outgrow, so
+                 * it is rewritten to what is now true, and the reach is stated as
+                 * plainly as the limit used to be.
+                 *
+                 * `SiteModuleTest::test_the_wordpress_connect_page_no_longer_promises_it_cannot_edit_existing_content()`
+                 * fails while the old wording is present. That test is the only
+                 * reason this comment is not a note somebody meant to write.
+                 *
+                 * What is still refused is real and worth keeping: WordPress has
+                 * no notifications to read, so `ingests` is false and nothing in
+                 * Kargah polls this site for anything to show in a feed.
+                 */
                 'permissions' => [
                     ['allowed' => true, 'text' => 'Create posts and upload images as the user above, as drafts or published'],
-                    ['allowed' => false, 'text' => 'Edit or delete anything that was already on the site'],
+                    ['allowed' => true, 'text' => 'Edit, trash and restore existing posts, pages and media from the Website pages'],
+                    ['allowed' => true, 'text' => 'Change SEO fields and purge the site cache, where a plugin exposes them'],
+                    ['allowed' => false, 'text' => 'Anything the WordPress user above cannot do — its role is the real limit'],
                     ['allowed' => false, 'text' => 'Read notifications — WordPress has none to read'],
                 ],
             ],
