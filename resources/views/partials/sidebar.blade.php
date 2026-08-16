@@ -102,6 +102,7 @@
                 ['label' => 'Media',      'route' => 'site.media'],
                 ['label' => 'SEO',        'route' => 'site.seo'],
                 ['label' => 'Cache',      'route' => 'site.cache'],
+                ['label' => 'Settings',   'route' => 'site.settings'],
             ],
         ],
     ];

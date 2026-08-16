@@ -10,18 +10,45 @@ mistake for the parts that are.
 
 ---
 
-## What the brief was, and the one correction it needed
+## What the brief was, and the ambiguity nobody can resolve from here
 
 The instruction was to replace "the Statamic panel", add professional SEO management and cache
 management, and be able to control every part of the website from Kargah.
 
-**`lavzen.com` does not run Statamic. It runs WordPress.** Checked directly: the response carries
-a custom theme at `wp-content/themes/lavtheme`, Rank Math PRO's schema block in the head, and
-Hostinger's LiteSpeed headers. Nothing anywhere in this repository mentions Statamic either. Every
-other part of the brief maps cleanly onto that WordPress install — wp-admin is the panel, Rank Math
-is the SEO plugin, LiteSpeed is the cache — so the work was done against WordPress. If Statamic was
-meant literally, there is a second site somewhere that nobody here has seen, and this module is
-aimed at the wrong one.
+**There are two candidate sites and they run different CMSs.** Both were checked rather than
+assumed.
+
+**`lavzen.com` runs WordPress, not Statamic.** Its response carries a custom theme at
+`wp-content/themes/lavtheme`, Rank Math PRO's schema block in the head, and Hostinger's LiteSpeed
+headers. `GET /wp-json/` answers 200 and `/wp-admin/` redirects to a login. `GET /cp` — Statamic's
+control-panel path — answers **404**, and `cp.`, `admin.`, `static.` and `app.lavzen.com` have no
+DNS at all. There is no Statamic anywhere on that domain.
+
+**`C:\Users\morph\Projects\Drain4Brighton` is a real Statamic install.** Its `CLAUDE.md` says
+plainly: *Laravel 12 + Statamic v6, flat-file, CP at `/d4b-admin`*. That is a different project with
+its own working directory, its own deploy hooks and its own secrets, and its application code
+(`root/`) is not present in the copy on this machine.
+
+So the word in the brief matches Drain4Brighton and everything else in it — SEO, cache, "control
+every part of the website" — matches the WordPress site this session's conversation was entirely
+about. The work here was done against WordPress, because that is the site Kargah is already
+connected to and the one whose credential already exists. **Whether Drain4Brighton was the intended
+target is a question only its owner can answer.**
+
+### If Statamic was meant, read this before starting
+
+🔴 **Statamic's REST API is read-only.** Its own documentation says the Content API exists to
+deliver content to a front end, and it has no POST or PATCH. Writing entries needs either a
+third-party addon (`tv2reg/private-api` is the one that exists) or custom routes written into the
+Statamic application itself.
+
+That makes a Statamic version of this module a fundamentally different job from the WordPress one.
+WordPress exposes reading *and* writing in core, so `Modules/Site` needed nothing installed for
+content, and needed a snippet only for the two things nobody exposes — Rank Math's meta and cache
+purging. Statamic would need code installed on the site before the first page could do anything at
+all, in a repository that is not this one and that auto-syncs to a live server on every edit.
+
+That is a decision with a cost, and it was not taken unilaterally overnight.
 
 ---
 
@@ -45,14 +72,15 @@ Modules/Site/app/
 │   ├── SiteMedia.php          the library, and alt text
 │   ├── SiteTaxonomy.php       categories and tags
 │   ├── SiteComments.php       the moderation queue
+│   ├── SiteSettings.php       the site's own settings, and the two that are refused
 │   └── SiteCache.php          purging, and what to do when nothing exposes it
 └── Support/PostTypes.php      the two content types, their statuses
 
 Modules/Site/resources/views/components/
-    ⚡overview ⚡content ⚡content-edit ⚡comments ⚡taxonomies ⚡media ⚡seo ⚡cache
+    ⚡overview ⚡content ⚡content-edit ⚡comments ⚡taxonomies ⚡media ⚡seo ⚡cache ⚡settings
 ```
 
-Sidebar group **Website**: Connection · Content · Comments · Terms · Media · SEO · Cache.
+Sidebar group **Website**: Connection · Content · Comments · Terms · Media · SEO · Cache · Settings.
 
 ---
 
@@ -109,7 +137,7 @@ stopped.
 
 ## What is proven and what is not
 
-**Proven:** 116 tests, 254 assertions across seven files, every one under
+**Proven:** 127 tests, 279 assertions across eight files, every one under
 `Http::preventStrayRequests()` — which on this machine is not ceremony, because there is no CA bundle
 in `php.ini` and an escaped request dies with cURL error 60 rather than passing quietly. Full suite
 green at **1522 tests, 6947 assertions**, run on a cleared view cache.
@@ -134,10 +162,13 @@ handle credentials.
 
 ## What is deliberately not built
 
-- **Menus, users, settings, plugins, themes.** Each is a real part of wp-admin and none is half-built
-  here; adding one is a service plus a page plus tests, in the shape the seven existing ones set.
-  Menus are the awkward one: `wp/v2/menus` exists only on a block theme, and a classic theme's menus
-  are not exposed by core at all.
+- **Menus, users, plugins, themes.** Each is a real part of wp-admin and none is half-built here;
+  adding one is a service plus a page plus tests, in the shape the eight existing ones set. Menus
+  are the awkward one: `wp/v2/menus` exists only on a block theme, and a classic theme's menus are
+  not exposed by core at all.
+- **The front page and the permalink structure**, which the settings page names as refused and says
+  why. The first is a page id needing a validating picker rather than a text box; the second is not
+  in core's REST settings at all, deliberately, because changing it invalidates every URL at once.
 - **Custom post types and custom taxonomies.** `GET /wp/v2/types` would discover them, but their
   fields, taxonomies and statuses are unknown, so the editor drawn for one would be a guess. Adding a
   known type is a line in `PostTypes::all()`.
