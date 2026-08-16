@@ -26,6 +26,7 @@ Route::middleware('auth')->prefix('site')->name('site.')->group(function () {
     Route::livewire('/content', 'site::content')->name('content');
     Route::livewire('/content/{type}/{id}', 'site::content-edit')->name('content-edit');
 
+    Route::livewire('/comments', 'site::comments')->name('comments');
     Route::livewire('/terms', 'site::taxonomies')->name('taxonomies');
     Route::livewire('/media', 'site::media')->name('media');
     Route::livewire('/seo', 'site::seo')->name('seo');

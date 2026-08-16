@@ -44,14 +44,15 @@ Modules/Site/app/
 │   ├── SiteSeo.php            Rank Math's fields, and what to do when they are not exposed
 │   ├── SiteMedia.php          the library, and alt text
 │   ├── SiteTaxonomy.php       categories and tags
+│   ├── SiteComments.php       the moderation queue
 │   └── SiteCache.php          purging, and what to do when nothing exposes it
 └── Support/PostTypes.php      the two content types, their statuses
 
 Modules/Site/resources/views/components/
-    ⚡overview ⚡content ⚡content-edit ⚡taxonomies ⚡media ⚡seo ⚡cache
+    ⚡overview ⚡content ⚡content-edit ⚡comments ⚡taxonomies ⚡media ⚡seo ⚡cache
 ```
 
-Sidebar group **Website**: Connection · Content · Terms · Media · SEO · Cache.
+Sidebar group **Website**: Connection · Content · Comments · Terms · Media · SEO · Cache.
 
 ---
 
@@ -71,6 +72,8 @@ Sidebar group **Website**: Connection · Content · Terms · Media · SEO · Cac
 | **Capabilities are read from `users/me?context=edit` up front.** | A green badge on a Subscriber's password is a lie that otherwise surfaces as a 403 several pages later. |
 | **Terms are ordered by use and `hide_empty` is never sent.** | Alphabetical order tells you nothing. An unused term is exactly what the page is for. |
 | **The SEO page is an audit, not a score.** | A score invites optimising the score, which means padding a page until a meter turns green. |
+| **The comment queue opens filtered to `hold`, and comment bodies are never rendered as HTML.** | A held comment is invisible to its author until somebody acts. And this is the one screen whose entire content is untrusted text by definition — rendering it would execute the thing being judged. |
+| **Spam and trash stay separate buttons.** | Marking spam teaches the site's filter; trashing does not. Collapsing them degrades filtering over months in a way nobody traces back to the panel. |
 
 ---
 
@@ -106,10 +109,10 @@ stopped.
 
 ## What is proven and what is not
 
-**Proven:** 89 tests, 200 assertions across five files, every one under
+**Proven:** 116 tests, 254 assertions across seven files, every one under
 `Http::preventStrayRequests()` — which on this machine is not ceremony, because there is no CA bundle
 in `php.ini` and an escaped request dies with cURL error 60 rather than passing quietly. Full suite
-green at **1458 tests, 6748 assertions** before this module's last two pages went in.
+green at **1522 tests, 6947 assertions**, run on a cleared view cache.
 
 🔴 **Not proven: any of it against a real site.** Every request shape is `Http::fake()` and nothing
 else, the same standing as the twelve social drivers `NEXT-SESSION.md` describes. Nobody has pointed
@@ -131,9 +134,10 @@ handle credentials.
 
 ## What is deliberately not built
 
-- **Comments, menus, users, settings, plugins, themes.** Each is a real part of wp-admin and none is
-  half-built here; adding one is a service plus a page plus tests, in the shape the six existing ones
-  set.
+- **Menus, users, settings, plugins, themes.** Each is a real part of wp-admin and none is half-built
+  here; adding one is a service plus a page plus tests, in the shape the seven existing ones set.
+  Menus are the awkward one: `wp/v2/menus` exists only on a block theme, and a classic theme's menus
+  are not exposed by core at all.
 - **Custom post types and custom taxonomies.** `GET /wp/v2/types` would discover them, but their
   fields, taxonomies and statuses are unknown, so the editor drawn for one would be a guess. Adding a
   known type is a line in `PostTypes::all()`.

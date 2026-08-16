@@ -97,6 +97,7 @@
             'items' => [
                 ['label' => 'Connection', 'route' => 'site.overview'],
                 ['label' => 'Content',    'route' => 'site.content', 'match' => ['site.content', 'site.content-*']],
+                ['label' => 'Comments',   'route' => 'site.comments'],
                 ['label' => 'Terms',      'route' => 'site.taxonomies'],
                 ['label' => 'Media',      'route' => 'site.media'],
                 ['label' => 'SEO',        'route' => 'site.seo'],
