@@ -85,6 +85,20 @@
                 ['label' => 'Compose',  'route' => 'blog.compose'],
             ],
         ],
+        // Below Blog and not inside it. Blog is where an article is written and
+        // sent; this is where the site it was sent to is administered. They
+        // share a credential and nothing else, and somebody doing one is not
+        // doing the other.
+        [
+            'key'   => 'site',
+            'label' => 'Website',
+            'icon'  => 'ki-global',
+            'match' => 'site.*',
+            'items' => [
+                ['label' => 'Connection', 'route' => 'site.overview'],
+                ['label' => 'Content',    'route' => 'site.content', 'match' => ['site.content', 'site.content-*']],
+            ],
+        ],
     ];
 
     // Drop anything whose module has been disabled rather than blowing up on route().

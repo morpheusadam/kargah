@@ -16,4 +16,13 @@ use Illuminate\Support\Facades\Route;
 
 Route::middleware('auth')->prefix('site')->name('site.')->group(function () {
     Route::livewire('/', 'site::overview')->name('overview');
+
+    // The type is a query parameter on the list and a path segment on the
+    // editor, and that asymmetry is deliberate rather than an oversight. On the
+    // list it is a filter somebody flips between and `#[Url]` already keeps it
+    // shareable; on the editor it is half the identity of what is being edited,
+    // because id 12 is a different thing under `post` than under `page` and a
+    // URL that did not say which would open the wrong one.
+    Route::livewire('/content', 'site::content')->name('content');
+    Route::livewire('/content/{type}/{id}', 'site::content-edit')->name('content-edit');
 });
