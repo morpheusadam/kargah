@@ -84,6 +84,19 @@ through the API, and scheduled backups stored outside the web root.
 Notifications from every connected network in a single stream, and a composer that publishes one
 post to several networks at once with per-network character limits enforced live.
 
+### Website
+
+A WordPress site driven over its own REST API with an application password: posts and pages edited
+where they are stored rather than where they are rendered, the media library with the alternative
+text most of it is missing, categories and tags ordered by what the site actually uses, an SEO audit
+that names the missing field and the page it belongs to, and cache purging.
+
+Nothing is mirrored into Kargah's database — a website has other editors, and a stale copy shown
+confidently is worse than being honestly slower. Two features need a few lines added to the site
+because WordPress exposes neither over REST to anybody: Rank Math's SEO fields, and cache purging.
+Both pages detect the situation and hand over the mu-plugin rather than offering a control that
+silently does nothing.
+
 ## Architecture
 
 Each area is a self-contained [`nwidart/laravel-modules`](https://github.com/nWidart/laravel-modules)
@@ -95,7 +108,8 @@ Modules/
 ├── Accounting/   invoices, expenses, clients, reports
 ├── Mailbox/      IMAP inbox, campaigns, contacts, providers
 ├── Data/         files, vault, links, repos, backups
-└── Social/       notifications, publishing, accounts
+├── Social/       notifications, publishing, accounts
+└── Site/         a WordPress website: content, media, terms, SEO, cache
 ```
 
 Deleting a module directory removes that feature. Adding one requires no change to the app shell
