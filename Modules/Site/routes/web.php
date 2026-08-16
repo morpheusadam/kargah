@@ -25,4 +25,6 @@ Route::middleware('auth')->prefix('site')->name('site.')->group(function () {
     // URL that did not say which would open the wrong one.
     Route::livewire('/content', 'site::content')->name('content');
     Route::livewire('/content/{type}/{id}', 'site::content-edit')->name('content-edit');
+
+    Route::livewire('/cache', 'site::cache')->name('cache');
 });

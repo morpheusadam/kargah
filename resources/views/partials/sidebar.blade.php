@@ -97,6 +97,7 @@
             'items' => [
                 ['label' => 'Connection', 'route' => 'site.overview'],
                 ['label' => 'Content',    'route' => 'site.content', 'match' => ['site.content', 'site.content-*']],
+                ['label' => 'Cache',      'route' => 'site.cache'],
             ],
         ],
     ];
