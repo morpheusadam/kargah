@@ -243,10 +243,18 @@ class WordPressSite
      */
     public function delete(string $route, bool $force = false): array
     {
-        $url = $this->url($route);
+        // 🔴 `force` goes in the query string, not in the body.
+        //
+        // `Http::delete($url, $data)` sends `$data` as the JSON body, and
+        // WordPress reads `force` off the request's query parameters for a
+        // DELETE. Passing it as the body is a request that looks correct, gets
+        // a 200 back, and trashes rather than deletes — or, on an attachment,
+        // fails with `rest_trash_not_supported` because a trash is exactly what
+        // WordPress will not do to one.
+        $url = $this->url($route).($force ? '?force=true' : '');
 
         try {
-            $response = $this->request(retry: false)->delete($url, $force ? ['force' => true] : []);
+            $response = $this->request(retry: false)->delete($url);
         } catch (ConnectionException $e) {
             throw SiteRequestFailed::unreachable($url, $e->getMessage());
         }

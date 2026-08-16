@@ -11,6 +11,7 @@ use Modules\Platform\Services\Assistant\ChatMessage;
 use Modules\Platform\Services\Assistant\CompletionFailed;
 use Modules\Platform\Services\Assistant\CompletionRequest;
 use Modules\Platform\Support\AssistantDrivers;
+use Modules\Platform\Support\ConnectionHealth;
 
 /**
  * Assistant providers — add, edit, enable, disable, pick a default, test.
@@ -27,12 +28,25 @@ use Modules\Platform\Support\AssistantDrivers;
  * failures `CompletionFailed` distinguishes rather than a bare "failed",
  * because on this machine the likely cause is a missing CA bundle, not a
  * wrong key, and those look identical from "connection failed" alone.
+ *
+ * ⚠️ **The one-word connection state is now
+ * `ConnectionHealth::forAssistantProvider()` rather than a `match` in
+ * `with()`.** It answers the same question the notifications page asks about
+ * social tokens and the application-passwords page asks about credentials, and
+ * one class answering it means the three pages cannot start disagreeing about
+ * what "untested" or "broken" looks like. It also draws the distinction this
+ * page's own `match` did not: a provider with no key and a provider whose last
+ * test failed are both unusable, but only one of them can be fixed by pasting
+ * something.
  */
 new
 #[Title('Assistant — Kargah')]
 class extends Component
 {
     use InteractsWithToasts;
+
+    /** The settings-nav search box. See `partials/settings-nav.blade.php`. */
+    public string $settingsFilter = '';
 
     public bool $editing = false;
 
@@ -69,12 +83,26 @@ class extends Component
         ];
     }
 
-    /** Whole class strings — see docs/frontend-conventions.md on Tailwind's scanner. */
-    private const RESULT_TONES = [
-        'ok' => 'kt-badge kt-badge-sm kt-badge-success',
-        'failed' => 'kt-badge kt-badge-sm kt-badge-destructive',
-        'unknown' => 'kt-badge kt-badge-sm kt-badge-outline',
-    ];
+    /**
+     * Sentences, not rule names.
+     *
+     * ⚠️ Nothing in here interpolates `$this->apiKey`. A validation message is
+     * rendered into the page, and a message quoting back "the key
+     * AIzaSy… is too long" would print the secret the rest of this file works
+     * to keep out of the HTML.
+     */
+    protected function messages(): array
+    {
+        return [
+            'name.required' => 'Give this provider a name, so the list below tells you which is which.',
+            'name.min' => 'That name is too short to recognise later. Use at least two characters.',
+            'driver.in' => 'Kargah has no driver by that name. Pick one from the list.',
+            'apiKey.required' => 'This provider will not answer without an API key, so one is needed before it can be added.',
+            'apiKey.max' => 'That key is longer than 1,000 characters, which is longer than any provider issues. Check it was pasted whole and not doubled.',
+            'baseUrl.required' => 'This driver talks to a server you host, so it needs the address of that server.',
+            'baseUrl.url' => 'That is not an address Kargah can reach. It needs a scheme and a host, like https://ollama.example.com.',
+        ];
+    }
 
     public function with(): array
     {
@@ -84,33 +112,33 @@ class extends Component
             ->get();
 
         return [
-            'providers' => $providers->map(fn (AssistantProvider $provider): array => [
-                'id' => $provider->id,
-                'name' => $provider->label(),
-                'driver' => $provider->driver,
-                'driverLabel' => AssistantDrivers::label($provider->driver),
-                'icon' => $provider->icon(),
-                'tone' => $provider->tone(),
-                'model' => $provider->effectiveModel(),
-                'hasKey' => $provider->hasApiKey(),
-                'requiresKey' => $provider->requiresApiKey(),
-                'baseUrl' => $provider->base_url,
-                'requiresBaseUrl' => $provider->requiresBaseUrl(),
-                'isActive' => $provider->is_active,
-                'isDefault' => $provider->is_default,
-                'lastTested' => $provider->last_tested_at?->diffForHumans() ?? 'Never tested',
-                'testResult' => match (true) {
-                    $provider->last_test_ok === true => 'ok',
-                    $provider->last_test_ok === false => 'failed',
-                    default => 'unknown',
-                },
-                'testError' => $provider->last_test_error,
-                'testTone' => self::RESULT_TONES[match (true) {
-                    $provider->last_test_ok === true => 'ok',
-                    $provider->last_test_ok === false => 'failed',
-                    default => 'unknown',
-                }],
-            ])->all(),
+            // Scalars only, chosen deliberately. `AssistantProvider` carries an
+            // `api_key` behind a decrypting cast exactly like `SocialAccount`'s
+            // credentials, so the model itself never enters this payload —
+            // only `hasKey`, which is a boolean.
+            'providers' => $providers->map(function (AssistantProvider $provider): array {
+                $health = ConnectionHealth::forAssistantProvider($provider);
+
+                return [
+                    'id' => $provider->id,
+                    'name' => $provider->label(),
+                    'driver' => $provider->driver,
+                    'driverLabel' => AssistantDrivers::label($provider->driver),
+                    'icon' => $provider->icon(),
+                    'tone' => $provider->tone(),
+                    'model' => $provider->effectiveModel(),
+                    'hasKey' => $provider->hasApiKey(),
+                    'requiresKey' => $provider->requiresApiKey(),
+                    'baseUrl' => $provider->base_url,
+                    'requiresBaseUrl' => $provider->requiresBaseUrl(),
+                    'isActive' => $provider->is_active,
+                    'isDefault' => $provider->is_default,
+                    'lastTested' => $health['tested'],
+                    'health' => $health['headline'],
+                    'healthTone' => $health['tone'],
+                    'healthDetail' => $health['detail'],
+                ];
+            })->all(),
             'driverOptions' => AssistantDrivers::all(),
         ];
     }
@@ -342,7 +370,7 @@ class extends Component
             </div>
 
             @if ($editing)
-                <div class="kt-card">
+                <div class="kt-card" id="edit">
                     <div class="kt-card-header">
                         <h3 class="kt-card-title">{{ $editingId === null ? 'Add provider' : 'Edit provider' }}</h3>
                     </div>
@@ -354,6 +382,7 @@ class extends Component
                                 <input id="asst-name" type="text" placeholder="Gemini (default)"
                                        class="kt-input @error('name') border-destructive @enderror"
                                        wire:model="name">
+                                <span class="text-xs text-muted-foreground mt-1">Changes the label this provider carries in the list below.</span>
                                 @error('name')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
                             </div>
 
@@ -364,7 +393,10 @@ class extends Component
                                         <option value="{{ $key }}">{{ $option['label'] }}</option>
                                     @endforeach
                                 </select>
-                                <span class="text-xs text-muted-foreground mt-1">{{ $driverOptions[$driver]['summary'] }}</span>
+                                <span class="text-xs text-muted-foreground mt-1">
+                                    Changes which company's service answers, and therefore which fields below are needed.
+                                    {{ $driverOptions[$driver]['summary'] }}
+                                </span>
                             </div>
                         </div>
 
@@ -374,13 +406,21 @@ class extends Component
                                 <input id="asst-model" type="text" placeholder="{{ $driverOptions[$driver]['modelPlaceholder'] }}"
                                        class="kt-input @error('model') border-destructive @enderror"
                                        wire:model="model">
-                                <span class="text-xs text-muted-foreground mt-1">Leave blank to use {{ $driverOptions[$driver]['modelPlaceholder'] }}.</span>
+                                <span class="text-xs text-muted-foreground mt-1">
+                                    Changes which of that provider's models answers, which changes both the quality and the
+                                    price of every reply. Leave blank to use {{ $driverOptions[$driver]['modelPlaceholder'] }}.
+                                </span>
                                 @error('model')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
                             </div>
 
-                            <div class="flex items-center gap-2.5 pt-6">
-                                <input id="asst-active" type="checkbox" class="kt-checkbox" wire:model="isActive">
-                                <label class="text-sm text-mono cursor-pointer" for="asst-active">Active</label>
+                            <div class="flex flex-col gap-1 pt-6">
+                                <div class="flex items-center gap-2.5">
+                                    <input id="asst-active" type="checkbox" class="kt-checkbox" wire:model="isActive">
+                                    <label class="text-sm text-mono cursor-pointer" for="asst-active">Active</label>
+                                </div>
+                                <span class="text-xs text-muted-foreground mt-1">
+                                    Unticking takes this provider out of the assistant's reach without deleting its stored key.
+                                </span>
                             </div>
                         </div>
 
@@ -392,6 +432,7 @@ class extends Component
                                        class="kt-input @error('apiKey') border-destructive @enderror"
                                        wire:model="apiKey">
                                 <span class="text-xs text-muted-foreground mt-1">
+                                    Replaces the stored key, so a wrong one makes the assistant fail on the very next question.
                                     {{ $driverOptions[$driver]['keyHint'] }}
                                     @if ($editingId !== null)
                                         Leave blank to keep the key already stored.
@@ -408,7 +449,9 @@ class extends Component
                                 <input id="asst-base-url" type="text" placeholder="{{ $driverOptions[$driver]['baseUrlPlaceholder'] }}"
                                        class="kt-input @error('baseUrl') border-destructive @enderror"
                                        wire:model="baseUrl">
-                                <span class="text-xs text-muted-foreground mt-1">{{ $driverOptions[$driver]['baseUrlHint'] }}</span>
+                                <span class="text-xs text-muted-foreground mt-1">
+                                    Changes which server Kargah sends every question to. {{ $driverOptions[$driver]['baseUrlHint'] }}
+                                </span>
                                 @error('baseUrl')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
                             </div>
                         @endif
@@ -427,7 +470,7 @@ class extends Component
                 </div>
             @endif
 
-            <div class="kt-card">
+            <div class="kt-card" id="providers">
                 <div class="kt-card-header"><h3 class="kt-card-title">Configured providers</h3></div>
                 <div class="kt-card-table">
                     <div class="kt-scrollable-x-auto">
@@ -437,7 +480,7 @@ class extends Component
                                     <th class="min-w-[200px]">Provider</th>
                                     <th class="min-w-[160px]">Model</th>
                                     <th class="w-[110px]">Key</th>
-                                    <th class="w-[140px]">Connection</th>
+                                    <th class="min-w-[240px]">Connection</th>
                                     <th class="w-[90px]">State</th>
                                     <th class="w-[220px] text-end"></th>
                                 </tr>
@@ -470,10 +513,9 @@ class extends Component
                                             @endif
                                         </td>
                                         <td>
-                                            <span class="{{ $provider['testTone'] }}" title="{{ $provider['testError'] }}">
-                                                {{ $provider['testResult'] === 'unknown' ? 'Untested' : ucfirst($provider['testResult']) }}
-                                            </span>
-                                            <div class="text-xs text-muted-foreground">{{ $provider['lastTested'] }}</div>
+                                            <span class="{{ $provider['healthTone'] }}">{{ $provider['health'] }}</span>
+                                            <div class="text-xs text-muted-foreground mt-1">{{ $provider['healthDetail'] }}</div>
+                                            <div class="text-[11px] text-muted-foreground">Tested {{ $provider['lastTested'] }}</div>
                                         </td>
                                         <td>
                                             <span class="{{ $provider['isActive'] ? 'kt-badge kt-badge-sm kt-badge-success' : 'kt-badge kt-badge-sm kt-badge-outline' }}">
@@ -485,16 +527,21 @@ class extends Component
                                                 <button type="button" class="kt-btn kt-btn-sm kt-btn-outline"
                                                         wire:click="test({{ $provider['id'] }})"
                                                         wire:loading.attr="disabled" wire:target="test({{ $provider['id'] }})">
-                                                    Test
+                                                    <span wire:loading.remove wire:target="test({{ $provider['id'] }})">Test</span>
+                                                    <span wire:loading wire:target="test({{ $provider['id'] }})" class="inline-flex items-center gap-1.5">
+                                                        <i class="ki-filled ki-loading animate-spin text-sm"></i> Asking…
+                                                    </span>
                                                 </button>
                                                 @unless ($provider['isDefault'])
                                                     <button type="button" class="kt-btn kt-btn-sm kt-btn-ghost"
-                                                            wire:click="makeDefault({{ $provider['id'] }})">
+                                                            wire:click="makeDefault({{ $provider['id'] }})"
+                                                            wire:loading.attr="disabled" wire:target="makeDefault({{ $provider['id'] }})">
                                                         Make default
                                                     </button>
                                                 @endunless
                                                 <button type="button" class="kt-btn kt-btn-icon kt-btn-ghost size-7"
                                                         wire:click="toggleActive({{ $provider['id'] }})"
+                                                        wire:loading.attr="disabled" wire:target="toggleActive({{ $provider['id'] }})"
                                                         title="{{ $provider['isActive'] ? 'Disable' : 'Enable' }}"
                                                         aria-label="{{ $provider['isActive'] ? 'Disable' : 'Enable' }} {{ $provider['name'] }}">
                                                     <i class="ki-filled {{ $provider['isActive'] ? 'ki-toggle-on' : 'ki-toggle-off' }} text-sm"></i>
@@ -506,7 +553,8 @@ class extends Component
                                                 </button>
                                                 <button type="button" class="kt-btn kt-btn-icon kt-btn-ghost size-7 text-destructive"
                                                         wire:click="delete({{ $provider['id'] }})"
-                                                        wire:confirm="Remove {{ $provider['name'] }}? This cannot be undone."
+                                                        wire:loading.attr="disabled" wire:target="delete({{ $provider['id'] }})"
+                                                        wire:confirm="Remove {{ $provider['name'] }}? Its stored API key is deleted with it and cannot be recovered — you would have to paste the key again from the provider's own console. If this is the default, another active provider takes over; if there is no other, the assistant stops answering."
                                                         title="Remove" aria-label="Remove {{ $provider['name'] }}">
                                                     <i class="ki-filled ki-trash text-sm"></i>
                                                 </button>

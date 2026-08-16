@@ -7,11 +7,11 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Route;
-use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rules\Password;
 use Livewire\Attributes\Title;
 use Livewire\Component;
 use Modules\Core\Concerns\InteractsWithToasts;
+use Modules\Platform\Support\ConnectionHealth;
 
 /**
  * Password, two-factor authentication and active sessions — all real.
@@ -35,17 +35,27 @@ use Modules\Core\Concerns\InteractsWithToasts;
  * **Sessions are the real `sessions` table**, because `SESSION_DRIVER=database`
  * on this install. A page that invents devices when the table is genuinely
  * empty is worse than a page with no sessions panel at all — see
- * `project-guaid/DECISIONS.md`.
+ * `project-guaid/DECISIONS.md`. Whether that table exists is now asked once, in
+ * `Modules\Platform\Support\ConnectionHealth::sessionStore()`, so the panel and
+ * the sentence explaining its absence cannot disagree.
  *
  * **API tokens are not here.** `/settings/application-passwords` is the real,
  * hashed, scoped, revocable credential store; a second, fake token list next
  * to it would tell an owner they hold a credential they do not.
+ *
+ * ⚠️ **Every destructive button on this page names its consequence in the
+ * confirmation, not in the tooltip.** "Are you sure?" is a question nobody can
+ * answer; "your recovery codes stop working" is. The four below are the four
+ * actions on this page that cannot be undone by pressing the same button again.
  */
 new
 #[Title('Security — Kargah')]
 class extends Component
 {
     use InteractsWithToasts;
+
+    /** The settings-nav search box. See `partials/settings-nav.blade.php`. */
+    public string $settingsFilter = '';
 
     public string $currentPassword = '';
 
@@ -85,7 +95,8 @@ class extends Component
                 : null,
             'issuedRecoveryCodes' => $this->issuedRecoveryCodes,
             'sessions' => $this->sessions($user),
-            'sessionsAvailable' => $this->sessionsAvailable(),
+            'sessionStore' => ConnectionHealth::sessionStore(),
+            'unknown' => ConnectionHealth::UNKNOWN,
             'applicationPasswordsRoute' => Route::has('platform.application-passwords') ? route('platform.application-passwords') : null,
         ];
     }
@@ -93,14 +104,16 @@ class extends Component
     /* Sessions ---------------------------------------------------------------- */
 
     /**
-     * Whether there is a real `sessions` table to read. Only true when
-     * `SESSION_DRIVER=database` — anything else and this page shows one
-     * sentence explaining why there is nothing here, never an invented list.
+     * Whether there is a real `sessions` table to read.
+     *
+     * Delegates to `ConnectionHealth` rather than asking `config()` and
+     * `Schema` again: this page renders the answer as a health line at the top
+     * of the panel, and a panel that listed rows while the line above it said
+     * there were none would be two answers to one question.
      */
     private function sessionsAvailable(): bool
     {
-        return config('session.driver') === 'database'
-            && Schema::hasTable(config('session.table', 'sessions'));
+        return ConnectionHealth::sessionStore()['state'] === 'healthy';
     }
 
     /**
@@ -237,6 +250,13 @@ class extends Component
         $this->validate([
             'currentPassword' => 'required|string',
             'password' => ['required', 'string', 'confirmed', Password::min(12)->letters()->mixedCase()->numbers()],
+        ], [
+            // Laravel's own password messages are a list of rule names. These
+            // say what was wrong with what was typed — the standard the rest
+            // of Kargah's errors are held to.
+            'currentPassword.required' => 'Type your current password as well, so nobody who finds this page open can change it.',
+            'password.required' => 'Type the new password you want.',
+            'password.confirmed' => 'The two new passwords do not match. Retype the confirmation.',
         ]);
 
         if (! Hash::check($this->currentPassword, $user->password)) {
@@ -333,7 +353,10 @@ class extends Component
             return;
         }
 
-        $this->validate(['totpCode' => 'required|string']);
+        $this->validate(
+            ['totpCode' => 'required|string'],
+            ['totpCode.required' => 'Type the six-digit code your authenticator app is showing right now.'],
+        );
 
         $limiterKey = 'security:2fa-verify:'.$user->id;
 
@@ -416,7 +439,7 @@ class extends Component
             ->event('security.two-factor-disabled')
             ->log('turned off two-factor authentication');
 
-        $this->toastSuccess('Two-factor authentication is off', 'Sign-in no longer asks for a code.');
+        $this->toastSuccess('Two-factor authentication is off', 'Sign-in no longer asks for a code, and your recovery codes have been destroyed.');
     }
 
     public function regenerateRecoveryCodes(): void
@@ -463,30 +486,43 @@ class extends Component
 
         <div class="col-span-12 lg:col-span-9 flex flex-col gap-5">
 
-            <div class="kt-card">
-                <div class="kt-card-header"><h3 class="kt-card-title">Password</h3></div>
-                <div class="kt-card-content p-5 flex flex-col gap-4 max-w-[520px]">
+            <div>
+                <h2 class="text-lg font-semibold text-mono">Security</h2>
+                <p class="text-sm text-secondary-foreground mt-1">
+                    What it takes to sign in as you, and which devices are already signed in.
+                </p>
+            </div>
+
+            <div class="kt-card" id="password">
+                <div class="kt-card-header"><h3 class="kt-card-title">Signing in</h3></div>
+                <div class="kt-card-content p-5 flex flex-col gap-4 max-w-[560px]">
+                    <p class="text-sm text-secondary-foreground">
+                        Changing your password takes effect at once and signs every other device out, so anything
+                        already signed in elsewhere lands back on the sign-in page.
+                    </p>
                     <div class="flex flex-col gap-1">
-                        <label class="kt-form-label font-normal text-mono">Current password</label>
-                        <input type="password" autocomplete="current-password"
+                        <label class="kt-form-label font-normal text-mono" for="current-password">Current password</label>
+                        <input id="current-password" type="password" autocomplete="current-password"
                                class="kt-input @error('currentPassword') border-destructive @enderror"
                                wire:model="currentPassword">
+                        <span class="text-xs text-muted-foreground mt-1">Proves it is you, not somebody who found this page open.</span>
                         @error('currentPassword')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
                     </div>
                     <div class="flex flex-col gap-1">
-                        <label class="kt-form-label font-normal text-mono">New password</label>
-                        <input type="password" autocomplete="new-password"
+                        <label class="kt-form-label font-normal text-mono" for="new-password">New password</label>
+                        <input id="new-password" type="password" autocomplete="new-password"
                                class="kt-input @error('password') border-destructive @enderror"
                                wire:model="password">
                         <span class="text-xs text-muted-foreground mt-1">At least 12 characters, with letters in both cases and a number.</span>
                         @error('password')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
                     </div>
                     <div class="flex flex-col gap-1">
-                        <label class="kt-form-label font-normal text-mono">Confirm new password</label>
-                        <input type="password" autocomplete="new-password" class="kt-input" wire:model="password_confirmation">
+                        <label class="kt-form-label font-normal text-mono" for="confirm-password">Confirm new password</label>
+                        <input id="confirm-password" type="password" autocomplete="new-password" class="kt-input" wire:model="password_confirmation">
                     </div>
                     <div>
-                        <button class="kt-btn kt-btn-primary" wire:click="updatePassword" wire:loading.attr="disabled" wire:target="updatePassword">
+                        <button class="kt-btn kt-btn-primary" wire:click="updatePassword" wire:loading.attr="disabled" wire:target="updatePassword"
+                                wire:confirm="Change your password? Every other signed-in device is signed out immediately and will need the new password.">
                             <span wire:loading.remove wire:target="updatePassword">Update password</span>
                             <span wire:loading wire:target="updatePassword" class="inline-flex items-center gap-2">
                                 <i class="ki-filled ki-loading animate-spin"></i> Updating…
@@ -496,9 +532,9 @@ class extends Component
                 </div>
             </div>
 
-            <div class="kt-card">
+            <div class="kt-card" id="two-factor">
                 <div class="kt-card-header">
-                    <h3 class="kt-card-title">Two-factor authentication</h3>
+                    <h3 class="kt-card-title">A second factor at sign-in</h3>
                     @if ($twoFactorEnabled)
                         <span class="kt-badge kt-badge-sm kt-badge-success">On</span>
                     @endif
@@ -544,11 +580,11 @@ class extends Component
                             </p>
                             <div class="flex flex-wrap gap-2">
                                 <button type="button" class="kt-btn kt-btn-sm kt-btn-outline gap-2" wire:click="regenerateRecoveryCodes"
-                                        wire:confirm="Generate new recovery codes? Your existing codes will stop working.">
+                                        wire:confirm="Generate new recovery codes? Every code you have already written down or printed stops working the moment you confirm, and the new set is shown only once.">
                                     <i class="ki-filled ki-arrows-circle text-sm"></i> New recovery codes
                                 </button>
                                 <button type="button" class="kt-btn kt-btn-sm kt-btn-outline text-destructive gap-2" wire:click="disableTwoFactor"
-                                        wire:confirm="Turn off two-factor authentication? Sign-in will no longer ask for a code.">
+                                        wire:confirm="Turn off two-factor authentication? From the next sign-in, your password alone gets somebody into this account, and your recovery codes are destroyed — turning it back on means enrolling your authenticator app again.">
                                     <i class="ki-filled ki-shield-cross text-sm"></i> Turn off
                                 </button>
                             </div>
@@ -567,7 +603,7 @@ class extends Component
                                 <code class="text-xs px-3 py-2 rounded bg-muted text-secondary-foreground break-all">{{ $provisioningUri }}</code>
                                 <p class="text-sm text-secondary-foreground">Then enter the six-digit code it shows to confirm.</p>
                                 <div class="flex flex-col gap-1 max-w-[200px]">
-                                    <input type="text" inputmode="numeric" maxlength="6" placeholder="000000"
+                                    <input type="text" inputmode="numeric" maxlength="6" placeholder="000000" aria-label="Six-digit code"
                                            class="kt-input tracking-widest text-center @error('totpCode') border-destructive @enderror"
                                            wire:model="totpCode" wire:keydown.enter="confirmTwoFactor">
                                     @error('totpCode')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
@@ -586,7 +622,8 @@ class extends Component
                     @else
                         <div class="flex items-center justify-between gap-3 flex-wrap">
                             <p class="text-sm text-secondary-foreground">
-                                Off. Turning this on requires a code from an authenticator app at every sign-in.
+                                Off. Turning this on makes every sign-in ask for a six-digit code from an
+                                authenticator app after the password, on this device and every other.
                             </p>
                             <button type="button" class="kt-btn kt-btn-primary gap-2" wire:click="startTwoFactorEnrollment">
                                 <i class="ki-filled ki-shield-tick"></i> Set up two-factor authentication
@@ -596,18 +633,26 @@ class extends Component
                 </div>
             </div>
 
-            @if ($sessionsAvailable)
-                <div class="kt-card">
-                    <div class="kt-card-header">
-                        <h3 class="kt-card-title">Active sessions</h3>
-                        @if (count($sessions) > 1)
+            <div class="kt-card" id="sessions">
+                <div class="kt-card-header">
+                    <h3 class="kt-card-title">Where you are signed in</h3>
+                    <div class="flex items-center gap-2">
+                        <span class="{{ $sessionStore['tone'] }}">{{ $sessionStore['headline'] }}</span>
+                        @if ($sessionStore['state'] === 'healthy' && count($sessions) > 1)
                             <button type="button" class="kt-btn kt-btn-sm kt-btn-outline text-destructive"
                                     wire:click="signOutOtherSessions"
-                                    wire:confirm="Sign out every other session? Any other signed-in device will need to sign in again.">
+                                    wire:confirm="Sign out every other session? Every other signed-in device — a phone, a second browser, another computer — lands back on the sign-in page and loses anything half-typed.">
                                 Sign out everywhere else
                             </button>
                         @endif
                     </div>
+                </div>
+
+                <div class="kt-card-content px-5 pt-4 {{ $sessionStore['state'] === 'healthy' ? 'pb-0' : 'pb-4' }}">
+                    <p class="text-sm text-secondary-foreground">{{ $sessionStore['detail'] }}</p>
+                </div>
+
+                @if ($sessionStore['state'] === 'healthy')
                     <div class="kt-card-table">
                         <div class="kt-scrollable-x-auto">
                             <table class="kt-table align-middle text-sm">
@@ -620,12 +665,12 @@ class extends Component
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    @foreach ($sessions as $s)
+                                    @forelse ($sessions as $s)
                                         <tr wire:key="session-{{ $s['id'] }}">
                                             <td>
                                                 <div class="font-medium text-mono">{{ $s['device'] }}</div>
                                             </td>
-                                            <td class="text-secondary-foreground">{{ $s['ip'] ?? '—' }}</td>
+                                            <td class="text-secondary-foreground">{{ $s['ip'] ?? $unknown }}</td>
                                             <td>
                                                 @if ($s['current'])
                                                     <span class="kt-badge kt-badge-sm kt-badge-success">{{ $s['last'] }}</span>
@@ -637,29 +682,32 @@ class extends Component
                                                 @unless ($s['current'])
                                                     <button type="button" class="kt-btn kt-btn-sm kt-btn-ghost text-destructive"
                                                             wire:click="signOutSession('{{ $s['id'] }}')"
-                                                            wire:confirm="Sign out this session?">
+                                                            wire:loading.attr="disabled" wire:target="signOutSession('{{ $s['id'] }}')"
+                                                            wire:confirm="Sign out {{ $s['device'] }}? That device lands back on the sign-in page and loses anything half-typed on it.">
                                                         Sign out
                                                     </button>
                                                 @endunless
                                             </td>
                                         </tr>
-                                    @endforeach
+                                    @empty
+                                        <tr>
+                                            <td colspan="4">
+                                                <div class="flex flex-col items-center py-14 text-center gap-3">
+                                                    <i class="ki-filled ki-security-user text-4xl text-muted-foreground"></i>
+                                                    <p class="text-sm text-secondary-foreground">
+                                                        No session is recorded against this account yet — not even this one, which
+                                                        means the session has not been written to the database on this request.
+                                                    </p>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    @endforelse
                                 </tbody>
                             </table>
                         </div>
                     </div>
-                </div>
-            @else
-                <div class="kt-card">
-                    <div class="kt-card-header"><h3 class="kt-card-title">Active sessions</h3></div>
-                    <div class="kt-card-content p-5">
-                        <p class="text-sm text-secondary-foreground">
-                            This install stores sessions in {{ config('session.driver') }}, not the database, so
-                            Kargah has no per-device record to list here.
-                        </p>
-                    </div>
-                </div>
-            @endif
+                @endif
+            </div>
 
             <div class="kt-card bg-info/5 border-info/30">
                 <div class="kt-card-content flex items-start gap-3 p-4">

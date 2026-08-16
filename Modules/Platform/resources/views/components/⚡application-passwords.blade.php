@@ -7,6 +7,7 @@ use Livewire\Component;
 use Modules\Core\Concerns\InteractsWithToasts;
 use Modules\Platform\Models\ApplicationPassword;
 use Modules\Platform\Services\ApplicationPasswordIssuer;
+use Modules\Platform\Support\ConnectionHealth;
 use Modules\Platform\Support\Scopes;
 
 /**
@@ -25,12 +26,23 @@ use Modules\Platform\Support\Scopes;
  * chose, the first six characters, the scopes, and when it was last used and
  * from where. That is exactly enough to recognise a row and decide to revoke
  * it, and not enough to use it.
+ *
+ * ⚠️ **Health lives in `Modules\Platform\Support\ConnectionHealth`, not here.**
+ * A credential expiring in four days is the same class of problem as a social
+ * token expiring in four days, and the window that counts as "soon" is
+ * `SocialAccount::TOKEN_EXPIRY_WARNING_DAYS` — borrowed, not restated, because
+ * Kargah holding two different answers to "how much warning is enough" makes
+ * both of them untrustworthy. Unlike a social token, nothing scheduled warns
+ * about these at all, so this page's badge is the only warning there is.
  */
 new
 #[Title('Application passwords — Kargah')]
 class extends Component
 {
     use InteractsWithToasts;
+
+    /** The settings-nav search box. See `partials/settings-nav.blade.php`. */
+    public string $settingsFilter = '';
 
     public string $name = '';
 
@@ -67,19 +79,34 @@ class extends Component
             ->get();
 
         return [
-            'credentials' => $credentials->map(fn (ApplicationPassword $credential): array => [
-                'id' => $credential->id,
-                'name' => $credential->name,
-                'prefix' => $credential->prefix,
-                'scopes' => $credential->grantedScopes(),
-                'created' => $credential->created_at?->toDateString() ?? '—',
-                'last_used' => $credential->last_used_at?->diffForHumans() ?? 'Never used',
-                'last_ip' => $credential->last_used_ip ?: '—',
-                'expires' => $credential->expires_at?->toDateString() ?? 'Never',
-                'state' => $credential->state(),
-                'tone' => self::STATE_TONES[$credential->state()],
-                'revoked' => $credential->isRevoked(),
-            ])->all(),
+            'credentials' => $credentials->map(function (ApplicationPassword $credential): array {
+                // Scalars only, chosen by hand. The model carries a `token_hash`
+                // it hides and a scopes array it casts; handing the whole thing
+                // to the view would put both into the component payload for no
+                // gain. `ConnectionHealth` gets the model and gives back four
+                // strings, which is all the template needs.
+                $health = ConnectionHealth::forApplicationPassword($credential);
+
+                return [
+                    'id' => $credential->id,
+                    'name' => $credential->name,
+                    'prefix' => $credential->prefix,
+                    'scopes' => $credential->grantedScopes(),
+                    'created' => $credential->created_at?->toDateString() ?? ConnectionHealth::UNKNOWN,
+                    'last_used' => $credential->last_used_at?->diffForHumans() ?? 'Never used',
+                    // The address a request came from is a fact only a request
+                    // can supply; a credential nothing has used has no address,
+                    // so it prints an em dash rather than a zero or a blank.
+                    'last_ip' => $credential->last_used_ip ?: ConnectionHealth::UNKNOWN,
+                    'expires' => $credential->expires_at?->toDateString() ?? 'Never',
+                    'state' => $credential->state(),
+                    'tone' => self::STATE_TONES[$credential->state()],
+                    'revoked' => $credential->isRevoked(),
+                    'health' => $health['headline'],
+                    'healthTone' => $health['tone'],
+                    'healthDetail' => $health['detail'],
+                ];
+            })->all(),
             'scopeGroups' => Scopes::groups(),
             'scopeDescriptions' => Scopes::describe(),
             'issuedSecret' => $this->issuedSecret,
@@ -121,8 +148,12 @@ class extends Component
             'selectedScopes.*' => ['string', Rule::in(Scopes::all())],
             'expiresOn' => 'nullable|date|after:today',
         ], [
+            'name.required' => 'Give it a name. In six months it is the only way to tell which script this belongs to before revoking it.',
+            'name.min' => 'A name of one character will not tell you anything in six months. Use at least two.',
             'selectedScopes.required' => 'Choose at least one scope. A credential that can do nothing is not worth issuing.',
-            'expiresOn.after' => 'An expiry has to be in the future.',
+            'selectedScopes.*.in' => 'One of those scopes is not a scope Kargah recognises.',
+            'expiresOn.date' => 'That is not a date Kargah can read. Pick one from the calendar, or leave it blank for no expiry.',
+            'expiresOn.after' => 'An expiry has to be in the future. A credential that expired yesterday would be refused the first time a script used it.',
         ]);
 
         $user = auth()->user();
@@ -245,9 +276,14 @@ class extends Component
             @endif
 
             @if ($creating)
-                <div class="kt-card">
+                <div class="kt-card" id="new">
                     <div class="kt-card-header"><h3 class="kt-card-title">New application password</h3></div>
                     <div class="kt-card-content p-5 flex flex-col gap-5">
+
+                        <p class="text-sm text-secondary-foreground">
+                            Issuing one creates a credential a script can sign in with. The secret is shown once,
+                            on the next screen, and never again.
+                        </p>
 
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div class="flex flex-col gap-1">
@@ -255,7 +291,10 @@ class extends Component
                                 <input id="ap-name" type="text" placeholder="Laptop CLI"
                                        class="kt-input @error('name') border-destructive @enderror"
                                        wire:model="name">
-                                <span class="text-xs text-muted-foreground mt-1">What it is for, so you know which one to revoke later.</span>
+                                <span class="text-xs text-muted-foreground mt-1">
+                                    Changes nothing but the label in the list below — which is what you will read when
+                                    deciding which one to revoke.
+                                </span>
                                 @error('name')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
                             </div>
 
@@ -264,7 +303,10 @@ class extends Component
                                 <input id="ap-expires" type="date"
                                        class="kt-input @error('expiresOn') border-destructive @enderror"
                                        wire:model="expiresOn">
-                                <span class="text-xs text-muted-foreground mt-1">Optional. A credential that never expires is a decision, not a default.</span>
+                                <span class="text-xs text-muted-foreground mt-1">
+                                    Sets the day this stops working on its own, with no action from you. Leave it blank
+                                    and it never expires — a decision, not a default.
+                                </span>
                                 @error('expiresOn')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
                             </div>
                         </div>
@@ -273,7 +315,8 @@ class extends Component
                             <div>
                                 <span class="kt-form-label font-normal text-mono">Scopes</span>
                                 <p class="text-xs text-muted-foreground mt-1">
-                                    Give it the least it needs. A credential that can read the boards has no business reading the vault.
+                                    Each tick decides which part of Kargah this one credential may reach. Give it the
+                                    least it needs: a credential that can read the boards has no business reading the vault.
                                 </p>
                                 @error('selectedScopes')<span class="block text-xs text-destructive mt-1">{{ $message }}</span>@enderror
                             </div>
@@ -311,7 +354,7 @@ class extends Component
                 </div>
             @endif
 
-            <div class="kt-card">
+            <div class="kt-card" id="issued">
                 <div class="kt-card-header"><h3 class="kt-card-title">Issued credentials</h3></div>
                 <div class="kt-card-table">
                     <div class="kt-scrollable-x-auto">
@@ -323,7 +366,7 @@ class extends Component
                                     <th class="w-[110px]">Created</th>
                                     <th class="w-[160px]">Last used</th>
                                     <th class="w-[110px]">Expires</th>
-                                    <th class="w-[100px]">State</th>
+                                    <th class="min-w-[220px]">Health</th>
                                     <th class="w-[90px] text-end"></th>
                                 </tr>
                             </thead>
@@ -347,13 +390,17 @@ class extends Component
                                             <div class="text-xs text-muted-foreground">{{ $credential['last_ip'] }}</div>
                                         </td>
                                         <td class="text-secondary-foreground">{{ $credential['expires'] }}</td>
-                                        <td><span class="{{ $credential['tone'] }}">{{ ucfirst($credential['state']) }}</span></td>
+                                        <td>
+                                            <span class="{{ $credential['healthTone'] }}">{{ $credential['health'] }}</span>
+                                            <div class="text-xs text-muted-foreground mt-1">{{ $credential['healthDetail'] }}</div>
+                                        </td>
                                         <td class="text-end">
                                             @unless ($credential['revoked'])
                                                 <button type="button"
                                                         class="kt-btn kt-btn-icon kt-btn-ghost size-7 text-destructive"
                                                         wire:click="revoke({{ $credential['id'] }})"
-                                                        wire:confirm="Revoke {{ $credential['name'] }}? Anything still using it stops working immediately."
+                                                        wire:loading.attr="disabled" wire:target="revoke({{ $credential['id'] }})"
+                                                        wire:confirm="Revoke {{ $credential['name'] }}? Every live script, cron job and command line still using it starts getting a 401 the moment you confirm. The secret cannot be recovered, so anything that breaks has to be given a new credential by hand."
                                                         title="Revoke" aria-label="Revoke {{ $credential['name'] }}">
                                                     <i class="ki-filled ki-trash text-sm"></i>
                                                 </button>
