@@ -91,6 +91,55 @@ final class Hashtags
         'TECHNEWS' => '#اخبار_تکنولوژی',
     ];
 
+    /**
+     * Tags that fit any technology post on this channel, for reaching a floor.
+     *
+     * 🔴 **These exist because asking the model harder did not work, twice.**
+     * Instagram's budget is 18–25 hashtags. The vocabulary above is deliberately
+     * subject-specific, and for one niche story there are simply not eighteen
+     * *relevant* tags in it — the model returned 6, then 8 after the prompt was
+     * strengthened, and it was right to refuse to pad with tags that did not apply.
+     * Fighting that judgement with a firmer instruction would only make it write
+     * something it had already decided was wrong.
+     *
+     * So the floor is reached deterministically instead, from tags that are true
+     * of every post this channel makes: it is a Persian technology channel, so
+     * `#تکنولوژی` and `#اخبار_فناوری` are accurate on every single item. Nothing
+     * here names a subject the story might not be about, which is the line
+     * between reaching a budget and tagging dishonestly.
+     *
+     * ⚠️ Worth knowing while reading this: the 2026 research says keyword-rich
+     * captions now outperform hashtag-heavy ones on Instagram — one measurement
+     * put it at ~30% more reach and twice the likes. Dense tagging is what the
+     * owner asked for and it is what this delivers; the budget is a settings row,
+     * so lowering `hashtags_min` for Instagram is one field if that trade turns
+     * out to be the wrong one.
+     *
+     * @var list<string>
+     */
+    public const BROAD = [
+        '#تکنولوژی',
+        '#اخبار_تکنولوژی',
+        '#فناوری',
+        '#اخبار_فناوری',
+        '#دنیای_فناوری',
+        '#تکنولوژی_روز',
+        '#علم_و_فناوری',
+        '#دیجیتال',
+        '#نوآوری',
+        '#اخبار_روز_تکنولوژی',
+        '#فناوری_اطلاعات',
+        '#تک_نیوز',
+        '#گیک',
+        '#تکنولوژی_جدید',
+        '#اینترنت',
+        '#کامپیوتر',
+        '#آی_تی',
+        '#technology',
+        '#tech',
+        '#technews',
+    ];
+
     /** Every key the model is allowed to name. */
     public static function keys(): array
     {

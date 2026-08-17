@@ -369,6 +369,42 @@ class Copywriter
             }
         }
 
+        return $this->topUp($tags, $brief);
+    }
+
+    /**
+     * Bring a short list up to the network's floor, from tags true of every post.
+     *
+     * Only ever *adds*, only from `Hashtags::BROAD`, and only up to the minimum —
+     * never to the maximum. The distinction matters: the budget's floor is what the
+     * owner asked for, and filling all the way to the ceiling with general tags
+     * would push the specific ones the story actually earned out of view.
+     *
+     * Deterministic rather than another request. Two rounds of asking the model
+     * more firmly produced 6 tags and then 8 against a floor of 18, and it was
+     * right to refuse — the subject vocabulary genuinely has no eighteen relevant
+     * entries for one niche story. Spending more quota to be told the same thing a
+     * third time is not a fix. See the note on `Hashtags::BROAD`.
+     *
+     * @param  list<string>  $tags
+     * @return list<string>
+     */
+    private function topUp(array $tags, NetworkBrief $brief): array
+    {
+        if (count($tags) >= $brief->hashtagsMin) {
+            return $tags;
+        }
+
+        foreach (Hashtags::BROAD as $tag) {
+            if (count($tags) >= min($brief->hashtagsMin, $brief->hashtagsMax)) {
+                break;
+            }
+
+            if (! in_array($tag, $tags, true)) {
+                $tags[] = $tag;
+            }
+        }
+
         return $tags;
     }
 }

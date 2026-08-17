@@ -198,8 +198,54 @@ class CurationCopyTest extends TestCase
 
         // A Persian tag spelled a new way each day accumulates nothing: Telegram
         // and Instagram both match the exact string, so two spellings are two tags
-        // with one post each.
-        $this->assertSame(['#امنیت'], $copy[Networks::LINKEDIN]->hashtags);
+        // with one post each. The invented pair goes; the real one stays first, and
+        // the floor of 2 is then reached from the broad pool.
+        $this->assertSame('#امنیت', $copy[Networks::LINKEDIN]->hashtags[0]);
+        $this->assertNotContains('#هوش‌مصنوعی_جدید', $copy[Networks::LINKEDIN]->hashtags);
+        $this->assertNotContains('#NOT_A_REAL_KEY', $copy[Networks::LINKEDIN]->hashtags);
+    }
+
+    public function test_a_short_list_is_brought_up_to_the_floor_without_tagging_dishonestly(): void
+    {
+        $window = CurationWindow::query()->create([
+            'network' => Networks::INSTAGRAM,
+            'starts_at' => '19:00',
+            'ends_at' => '23:00',
+            'hashtags_min' => 18,
+            'hashtags_max' => 25,
+        ]);
+
+        // What the model actually returns against a floor of 18: the relevant
+        // tags and no more, twice measured on the server at 6 and then 8.
+        $this->driver->willReply($this->answer([
+            'instagram' => ['body' => 'متن', 'hashtags' => ['SECURITY', 'CLOUD', 'DATACENTER']],
+        ]));
+
+        $copy = $this->writer()->write($this->story(), null, [
+            NetworkBrief::for(Networks::INSTAGRAM, $window, withImage: true),
+        ])[Networks::INSTAGRAM];
+
+        // The floor is met, which is what was asked for.
+        $this->assertGreaterThanOrEqual(18, count($copy->hashtags));
+        // Reached from tags true of every post on a Persian technology channel,
+        // never by inventing a subject the story might not be about.
+        $this->assertSame(['#امنیت', '#کلاد', '#دیتاسنتر'], array_slice($copy->hashtags, 0, 3));
+        // Topped up to the floor and not to the ceiling: general tags must not
+        // crowd out the specific ones the story earned.
+        $this->assertLessThanOrEqual(18, count($copy->hashtags));
+    }
+
+    public function test_a_network_already_inside_its_budget_is_not_padded(): void
+    {
+        $this->driver->willReply($this->answer([
+            'linkedin' => ['body' => 'متن', 'hashtags' => ['SECURITY', 'RANSOMWARE', 'BREACH']],
+        ]));
+
+        $copy = $this->writer()->write($this->story(), null, [$this->brief(Networks::LINKEDIN)]);
+
+        // LinkedIn's whole point is restraint. Nothing general is added to a list
+        // that already met its floor.
+        $this->assertSame(['#امنیت', '#باج_افزار', '#نشت_اطلاعات'], $copy[Networks::LINKEDIN]->hashtags);
     }
 
     public function test_a_latin_proper_noun_from_the_article_is_allowed_past_the_closed_vocabulary(): void
@@ -235,8 +281,8 @@ class CurationCopyTest extends TestCase
         $this->assertLessThanOrEqual(280, $copy->length());
         // The tags are a small deliberate set and dropping one changes what the
         // post is filed under; the body's last sentence is the least important
-        // thing in it.
-        $this->assertSame(['#تکنولوژی'], $copy->hashtags);
+        // thing in it. The model's own tag leads, and the trim never touches them.
+        $this->assertSame('#تکنولوژی', $copy->hashtags[0]);
         $this->assertStringEndsWith('…', $copy->body);
     }
 
