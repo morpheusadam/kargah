@@ -695,6 +695,91 @@ truncated title is still the right notification.
 
 ---
 
+## Social — the daily curator
+
+**`Modules\Core\Contracts\TextGenerator` exists so that a feature module can have
+text written without depending on `Modules\Platform`.**
+Platform already carried the whole AI layer — five drivers, `AssistantProvider`
+with an encrypted key, a settings page, a fake driver for tests — and Social
+needed a paragraph of Persian written every day. Writing a second Gemini client
+would have meant a second place a key is configured and a second thing to replace
+when it expires. But the rule from `07-platform.md` is that Platform is the edge
+module and **nothing may depend on it**, which is what an API gateway is. So Core
+owns a two-method interface, `PlatformServiceProvider` binds
+`AssistantTextGenerator` to it, and Social depends on Core — which it already
+does. This is the identical shape to `Modules\Data\Contracts\AttachmentService`,
+which is how Social stores a file without knowing Data exists. The rule is intact:
+every arrow still points at Core.
+
+The interface is deliberately much smaller than the assistant behind it — no
+tools, no conversation, no provider choice. A caller needing any of that belongs
+in Platform. Which provider answers is not a parameter *on purpose*: the operator
+already picks a default on the assistant settings page, and a second control would
+be a second place that decision lives.
+
+**Curation configuration is database rows, and `config/curation.php` is seed-only.**
+The owner's instruction was that everything be manageable from the settings pages.
+Forty outlets, the thresholds and the per-network posting windows are therefore
+`curation_feeds`, `curation_settings` and `curation_windows`. Nothing reads the
+config file at run time; `CurationSeeder` reads it once on a fresh install. A
+service that read config would answer differently from the page the operator is
+looking at.
+
+**`CurationSeeder` writes with `firstOrCreate`, never `updateOrCreate`.**
+It runs from the deploy script and those rows are settings somebody edits. An
+outlet switched off because it went to clickbait must not come back on the next
+deploy. The cost, which is real: changing a default in the config file does not
+change an already-seeded install.
+
+**One `Post` per network rather than one post with several targets.**
+`scheduled_for` lives on the post, so one post is one instant — and the research
+says the good instants are at opposite ends of the day. Instagram in Iran peaks
+19:00–23:00 IRST; LinkedIn is read on weekday mornings and the owner named it the
+most important network. A shared slot means deliberately posting to one of them at
+its worst hour every day. The cost is that `/social/posts` shows several rows a
+day, which is what `curated_story_posts` and `/social/curated` are for.
+
+**Time decay in the ranker runs from a cluster's *latest* coverage, and the
+corroboration bonus applies to outlets *beyond the first*.**
+Both are ported calibrations that came out of real bugs, both read as arbitrary
+formula choices, and both have regression tests. Decaying from when a story broke
+makes the best-corroborated story of the day unwinnable, because corroboration
+takes hours to accumulate. Applying the bonus to the total lifts single-outlet
+stories by just as much, so the gap never moves and the signal does nothing.
+
+**Engagement is not in the score.** It ranks seventeen posts a day out of
+forty-six candidates well. At one post a day the question is which single thing
+mattered most, and the answer is how many independent newsrooms thought so. It
+survives only as the tiebreak for which article represents a cluster — which also
+meant the snapshots table, the per-source medians and Bluesky's eleven accounts
+were not ported at all.
+
+**The hashtag budget is per network, and it is a constraint rather than a
+preference.** The owner asked for hashtag-rich copy. Obeying that uniformly would
+have damaged LinkedIn: ten or more hashtags there risks a 30–50% reach penalty and
+its 2026 algorithm does not read them for classification at all. Instagram allows
+thirty and dense tagging is normal. So the budget is a column on `curation_windows`
+and the ceiling is enforced in `Copywriter` rather than merely asked for in the
+prompt — a model that miscounts is far likelier than one that refuses.
+
+**The hashtag vocabulary is closed.** A Persian tag spelled a new way each day
+accumulates nothing: Telegram's search and Instagram's filing both match the exact
+string, so `#هوش_مصنوعی` and `#هوش‌مصنوعی` are two tags with one post each. A model
+asked to invent Persian hashtags produces exactly that drift and it is invisible in
+review. The one exception is a Latin proper noun **that appears in the article** —
+one spelling, so it cannot drift, and it is how an eighteen-tag Instagram caption
+is reachable without an eighteen-topic vocabulary.
+
+**`social_accounts.last_error` is now written on the publish path.**
+It was written only by `RefreshTokens` and `SyncNotifications`, so an account whose
+token had been invalidated kept reading `Connected` while every post to it failed.
+Tolerable when publishing was a person pressing a button; not tolerable once a post
+goes out at ten at night with nobody watching. Written with a bare `update()`, never
+a `save()` on a hydrated model, because that would rewrite the column whose accessor
+decrypts and re-encrypts the credential.
+
+---
+
 ## Cross-cutting
 
 **Thirty scaffolded API endpoints were removed.**
