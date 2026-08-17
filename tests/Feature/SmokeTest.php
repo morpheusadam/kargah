@@ -86,6 +86,7 @@ class SmokeTest extends TestCase
             'publish' => ['/social/publish'],
             'social calendar' => ['/social/calendar'],
             'social posts' => ['/social/posts'],
+            'social post history' => ['/social/posts/history'],
             'social post' => ['/social/posts/1'],
             'accounts' => ['/social/accounts'],
             'account connect' => ['/social/accounts/connect'],

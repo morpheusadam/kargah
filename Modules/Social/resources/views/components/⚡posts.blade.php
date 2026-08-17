@@ -234,6 +234,9 @@ class extends Component
             <p class="text-sm text-secondary-foreground mt-1">Track what is waiting, what went out and what did not.</p>
         </div>
         <div class="flex items-center gap-2">
+            <a href="{{ route('social.post-history') }}" wire:navigate class="kt-btn kt-btn-outline gap-2">
+                <i class="ki-filled ki-document"></i> History
+            </a>
             <a href="{{ route('social.calendar') }}" wire:navigate class="kt-btn kt-btn-outline gap-2">
                 <i class="ki-filled ki-calendar"></i> Calendar
             </a>
