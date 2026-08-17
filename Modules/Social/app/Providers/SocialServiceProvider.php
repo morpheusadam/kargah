@@ -5,9 +5,11 @@ namespace Modules\Social\Providers;
 use Illuminate\Console\Scheduling\Schedule;
 use Modules\Core\Support\MorphMap;
 use Modules\Social\Console\CheckTokenExpiry;
+use Modules\Social\Console\CurateDaily;
 use Modules\Social\Console\PublishDue;
 use Modules\Social\Console\RefreshTokens;
 use Modules\Social\Console\SyncNotifications;
+use Modules\Social\Models\CurationSetting;
 use Modules\Social\Models\Post;
 use Modules\Social\Models\PostTarget;
 use Modules\Social\Models\SocialAccount;
@@ -43,6 +45,7 @@ class SocialServiceProvider extends ModuleServiceProvider
         SyncNotifications::class,
         CheckTokenExpiry::class,
         RefreshTokens::class,
+        CurateDaily::class,
     ];
 
     /** @var string[] */
@@ -105,6 +108,52 @@ class SocialServiceProvider extends ModuleServiceProvider
         ]);
 
         $this->bootTokenUpkeep();
+        $this->bootDailyCuration();
+    }
+
+    /**
+     * The daily story, chosen once a day and scheduled by the settings row.
+     *
+     * 🔴 **The hour comes from `curation_settings.curate_at_utc`, and it has to be
+     * early.** The earliest posting window of the day is LinkedIn's weekday
+     * morning, 08:00 in Tehran, which is 04:30 UTC. A curator that ran later than
+     * that would choose a story for a window that had already closed and LinkedIn
+     * would silently never be posted to. 01:30 UTC — 05:00 in Tehran — is the
+     * shipped default, and it is also clear of every other entry on Kargah's
+     * schedule, including the 03:00 database backup.
+     *
+     * Read from the database rather than hardcoded because the owner asked for all
+     * of this to be adjustable from the settings pages, and a posting time that
+     * needs a deploy to change is not adjustable.
+     *
+     * `withoutOverlapping()` because a run reads forty endpoints and can outlast
+     * its minute, and two runs would both try to write the same story — the second
+     * would lose on `curated_stories.url_key`, which is a caught exception rather
+     * than a problem, but there is no reason to invite it.
+     *
+     * The command publishes nothing; `social:publish-due` does that when each
+     * post's own hour arrives.
+     */
+    private function bootDailyCuration(): void
+    {
+        if (! $this->app->runningInConsole()) {
+            return;
+        }
+
+        $this->callAfterResolving(Schedule::class, function (Schedule $schedule): void {
+            // A settings read at boot, wrapped: the scheduler is resolved during
+            // `artisan migrate` on a database that does not have this table yet,
+            // and an exception there would break the migration that creates it.
+            try {
+                $at = CurationSetting::current()->curate_at_utc;
+            } catch (\Throwable) {
+                $at = '01:30';
+            }
+
+            $schedule->command('social:curate-daily')
+                ->dailyAt(preg_match('/^\d{2}:\d{2}$/', (string) $at) === 1 ? $at : '01:30')
+                ->withoutOverlapping();
+        });
     }
 
     /**

@@ -75,22 +75,29 @@ class ArticleText
      */
     public function fetch(string $url): ?string
     {
-        if (! str_starts_with($url, 'http')) {
-            return null;
-        }
-
-        $html = $this->download($url);
+        $html = $this->fetchHtml($url);
 
         return $html === null ? null : $this->extract($html);
     }
 
     /**
+     * The page itself, undecoded.
+     *
+     * Public because `Cover` wants the identical page this does — the article's
+     * `og:image` is on it — and fetching it twice would double what this puts on a
+     * publisher's server for no gain. `DailyCurator` gets it once and hands it to
+     * both.
+     *
      * 🔴 A browser user agent, for the reason `HttpSource` gives at length: with a
      * bot-shaped one a large share of publishers answer 403, and the summary
      * quietly degrades to a rewritten headline with nothing in the logs.
      */
-    private function download(string $url): ?string
+    public function fetchHtml(string $url): ?string
     {
+        if (! str_starts_with($url, 'http')) {
+            return null;
+        }
+
         try {
             $response = Http::withHeaders(HttpSource::BROWSER)
                 ->timeout(self::TIMEOUT)
