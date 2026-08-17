@@ -30,8 +30,23 @@ use Illuminate\Support\Facades\Http;
  */
 abstract class HttpAssistantDriver implements AssistantDriver
 {
-    /** Chat completions run longer than a rate fetch; a small model can still take several seconds. */
-    protected const TIMEOUT = 25;
+    /**
+     * Chat completions run longer than a rate fetch; a small model can still take
+     * several seconds.
+     *
+     * Raised from 25 to 50 after a real timeout. The daily curator asks for four
+     * networks' Persian copy in one request — one long Instagram caption among
+     * them — and Gemini returned **zero bytes in 25 seconds**, meaning it was
+     * still generating rather than unreachable. Persian also costs more tokens per
+     * character than English, so the same instruction is a longer generation here
+     * than the interactive assistant usually asks for.
+     *
+     * The cost of the larger number falls on the assistant page, where a provider
+     * that has genuinely stopped answering now takes 50 seconds to say so instead
+     * of 25. That is the right way round: this ceiling exists to stop a hang, and
+     * a request that is working must not be cut off by it.
+     */
+    protected const TIMEOUT = 50;
 
     /** Deliberately short — a host that refuses the connection outright is not going to answer if we wait longer. */
     protected const CONNECT_TIMEOUT = 6;
@@ -57,11 +72,28 @@ abstract class HttpAssistantDriver implements AssistantDriver
         try {
             $response = $this->request()->withHeaders($headers)->post($url, $body);
         } catch (ConnectionException $e) {
-            if (str_contains($e->getMessage(), 'certificate')) {
-                throw CompletionFailed::tlsUnverified($this->driver(), $e->getMessage());
+            // 🔴 Redacted, and this is not caution — it is a leak that happened.
+            // Gemini authenticates with `?key=` in the query string, which is
+            // Google's own documented shape for that API. A cURL timeout's
+            // message quotes the whole URL it was given, so the raw message
+            // carries the API key verbatim — and this message is written to
+            // `post_targets.error`, printed by `social:curate-daily`, rendered on
+            // a page and put in the log. A real key was disclosed exactly this
+            // way on 18 August 2026 and had to be rotated.
+            //
+            // Every driver behind this class pays for one of them putting a
+            // secret in a URL, which is why the redaction lives here rather than
+            // in `GeminiDriver` — the next driver added should not have to
+            // remember. Same reasoning as
+            // `Modules\Social\Services\Publishers\HttpPublisher::cannotReach()`,
+            // which already does this on the publishing side.
+            $message = $this->withoutSecrets($e->getMessage());
+
+            if (str_contains($message, 'certificate')) {
+                throw CompletionFailed::tlsUnverified($this->driver(), $message);
             }
 
-            throw CompletionFailed::unreachable($this->driver(), $e->getMessage());
+            throw CompletionFailed::unreachable($this->driver(), $message);
         }
 
         if ($response->status() === 401 || $response->status() === 403) {
@@ -79,6 +111,32 @@ abstract class HttpAssistantDriver implements AssistantDriver
         }
 
         return $decoded;
+    }
+
+    /**
+     * A message with anything that looks like a credential taken out of it.
+     *
+     * Pattern-based rather than a `str_replace` of the key this call happened to
+     * use, deliberately. A `str_replace` needs the caller to hand the secret in,
+     * which means every future driver has to remember to — and the one that
+     * forgets is the one that leaks. This removes the *shape* of a secret in a
+     * URL, so it works for a key nobody told it about.
+     *
+     * Two shapes are covered, which is every way the drivers behind this class
+     * authenticate today: a query parameter named like a credential, and a
+     * bearer token that has somehow reached a message. The parameter name is
+     * kept and only the value replaced, because "the key parameter was rejected"
+     * is useful and "something was rejected" is not.
+     */
+    protected function withoutSecrets(string $message): string
+    {
+        $message = (string) preg_replace(
+            '/([?&](?:key|api_key|apikey|access_token|token|secret)=)[^&\s"\']+/i',
+            '$1[redacted]',
+            $message,
+        );
+
+        return (string) preg_replace('/\bBearer\s+[A-Za-z0-9._\-]{8,}/i', 'Bearer [redacted]', $message);
     }
 
     /** Whatever detail the provider's own error body offers, kept short enough for a toast. */
