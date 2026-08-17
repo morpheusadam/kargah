@@ -46,6 +46,12 @@ class SocialDatabaseSeeder extends Seeder
             $this->seedPosts($accounts, $user);
             $this->seedNotifications($accounts);
         });
+
+        // The daily curator's settings, outlets and windows. Its own seeder
+        // because its writes obey a different rule from everything above:
+        // `firstOrCreate`, never `updateOrCreate`, since those rows are settings
+        // the owner edits and a deploy must not undo an edit. See its docblock.
+        $this->call(CurationSeeder::class);
     }
 
     /**
