@@ -108,6 +108,28 @@
                     ],
                 ],
                 [
+                    // Belongs to Modules\Social, and reaches this list the same
+                    // way Platform's two do. The `Route::has()` filter below is
+                    // what makes that safe: switch the Social module off and the
+                    // tab disappears rather than fataling inside `route()`.
+                    'route' => 'social.curation-settings',
+                    'label' => 'Curation',
+                    'icon' => 'ki-satellite',
+                    'hint' => 'The daily post: what it reads, and when it goes out',
+                    'settings' => [
+                        ['label' => 'Publish a story every day', 'anchor' => 'general', 'changes' => 'While this is off, nothing is chosen and nothing is posted to any network.'],
+                        ['label' => 'Reader time zone', 'anchor' => 'general', 'changes' => 'Changes the clock every posting window below is read against.'],
+                        ['label' => 'Choose the story at', 'anchor' => 'general', 'changes' => 'Sets when the day\'s story is picked; after a window opens, that network gets nothing.'],
+                        ['label' => 'Weekend days', 'anchor' => 'general', 'changes' => 'Decides which days use the weekend posting window instead of the weekday one.'],
+                        ['label' => 'Backup stories', 'anchor' => 'general', 'changes' => 'How many further stories to try when the best one is judged off-topic.'],
+                        ['label' => 'Story age limit', 'anchor' => 'sources', 'changes' => 'How old a story may be and still be chosen for today\'s post.'],
+                        ['label' => 'Hacker News and Lobsters', 'anchor' => 'sources', 'changes' => 'Switches each aggregator on or off and sets the score a story must reach.'],
+                        ['label' => 'Outlets', 'anchor' => 'feeds', 'changes' => 'Add, edit or switch off any of the news sources the daily story is chosen from.'],
+                        ['label' => 'Posting windows', 'anchor' => 'windows', 'changes' => 'Sets the hours each network is posted within; the exact minute is random inside them.'],
+                        ['label' => 'Hashtag budget', 'anchor' => 'windows', 'changes' => 'How many hashtags each network\'s copy carries — dense on Instagram, few on LinkedIn.'],
+                    ],
+                ],
+                [
                     'route' => 'platform.assistant',
                     'label' => 'Assistant',
                     'icon' => 'ki-message-programming',

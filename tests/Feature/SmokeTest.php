@@ -88,6 +88,7 @@ class SmokeTest extends TestCase
             'social posts' => ['/social/posts'],
             'social post history' => ['/social/posts/history'],
             'social post' => ['/social/posts/1'],
+            'curated' => ['/social/curated'],
             'accounts' => ['/social/accounts'],
             'account connect' => ['/social/accounts/connect'],
             'articles' => ['/blog'],
@@ -98,6 +99,7 @@ class SmokeTest extends TestCase
             'article edit' => ['/blog/1/edit'],
             'application passwords' => ['/settings/application-passwords'],
             'assistant settings' => ['/settings/assistant'],
+            'curation settings' => ['/settings/curation'],
             'settings notifications' => ['/settings/notifications'],
         ];
     }
