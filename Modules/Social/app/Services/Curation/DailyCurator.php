@@ -201,7 +201,10 @@ class DailyCurator
             $briefs = [];
 
             foreach (array_keys($networks) as $network) {
-                $briefs[] = NetworkBrief::for($network, $this->windowFor($network), $cover !== null);
+                $brief = NetworkBrief::for($network, $this->windowFor($network), $cover !== null);
+
+                $briefs[] = $brief;
+                $report->briefs[$network] = $brief;
             }
 
             try {

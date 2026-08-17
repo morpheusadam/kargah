@@ -76,12 +76,22 @@ class CurateDaily extends Command
 
         foreach ($report->copy as $network => $copy) {
             $slot = $report->slots[$network] ?? null;
+            $brief = $report->briefs[$network] ?? null;
+            $tags = count($copy->hashtags);
+
+            // The budget beside the count, because "6 tags" reads as fine until
+            // you know 18 were asked for. The first live run reported exactly that
+            // and the shortfall was invisible.
+            $tagDetail = $brief === null
+                ? $tags.' tags'
+                : $tags.'/'.$brief->hashtagsMin.'–'.$brief->hashtagsMax.' tags'
+                    .($tags < $brief->hashtagsMin ? ' ⚠ under budget' : '');
 
             $this->components->twoColumnDetail(
                 $network.($dryRun ? ' (not created)' : ''),
                 ($slot?->copy()->setTimezone($settings->timezone)->format('H:i') ?? '—')
-                .'  ·  '.$copy->length().' chars'
-                .'  ·  '.count($copy->hashtags).' tags',
+                .'  ·  '.$copy->length().'/'.($brief->limit ?? '?').' chars'
+                .'  ·  '.$tagDetail,
             );
         }
 

@@ -31,6 +31,18 @@ class CurationReport
     /** @var array<string, Carbon> */
     public array $slots = [];
 
+    /**
+     * The brief each network's copy was written against.
+     *
+     * Carried so the command can print what was *asked for* beside what arrived.
+     * The first real run made the case for it: Instagram's budget was 18–25
+     * hashtags and the model returned 6, which the output reported as "6 tags" —
+     * true, and impossible to recognise as a shortfall without the 18 next to it.
+     *
+     * @var array<string, NetworkBrief>
+     */
+    public array $briefs = [];
+
     /** @var array<string, int> network => post id */
     public array $posts = [];
 
