@@ -3,6 +3,7 @@
 namespace Modules\Platform\Providers;
 
 use Illuminate\Contracts\Container\Container;
+use Modules\Core\Contracts\TextGenerator;
 use Modules\Core\Support\MorphMap;
 use Modules\Platform\Console\KargahAsk;
 use Modules\Platform\Http\Middleware\AuthenticateApplicationPassword;
@@ -11,6 +12,7 @@ use Modules\Platform\Models\ApplicationPassword;
 use Modules\Platform\Models\AssistantProvider;
 use Modules\Platform\Services\Assistant\AnthropicDriver;
 use Modules\Platform\Services\Assistant\Assistant;
+use Modules\Platform\Services\Assistant\AssistantTextGenerator;
 use Modules\Platform\Services\Assistant\GeminiDriver;
 use Modules\Platform\Services\Assistant\OllamaDriver;
 use Modules\Platform\Services\Assistant\OpenAiDriver;
@@ -95,10 +97,34 @@ class PlatformServiceProvider extends ModuleServiceProvider
             $assistant->extend(AssistantDrivers::OPENROUTER, fn () => new OpenRouterDriver);
             $assistant->extend(AssistantDrivers::ANTHROPIC, fn () => new AnthropicDriver);
             $assistant->extend(AssistantDrivers::OPENAI, fn () => new OpenAiDriver);
+
             $assistant->extend(AssistantDrivers::OLLAMA, fn () => new OllamaDriver);
 
             return $assistant;
         });
+
+        /*
+         * Generated text, for the modules that may not know Platform exists.
+         *
+         * Platform is the edge module — it may depend on any other module's
+         * `Contracts` and nothing may depend on it. So a feature that wants a
+         * paragraph written cannot call `Assistant` directly, however much it
+         * would like to, and however wasteful a second connection to somebody
+         * else's API with a second key configured elsewhere would be.
+         *
+         * The answer is the one that already lets Social store a file without
+         * knowing `Modules\Data` exists: Core owns a small interface, whoever
+         * can implement it binds it, and every arrow still points at Core. Bound
+         * here rather than in Core because this is where the drivers, the keys
+         * and the settings page already are.
+         *
+         * Not a singleton. The adapter resolves its provider per call, so a
+         * default changed on the settings page takes effect on the next call
+         * rather than on the next deploy.
+         */
+        $this->app->bind(TextGenerator::class, fn ($app): AssistantTextGenerator => new AssistantTextGenerator(
+            $app->make(Assistant::class),
+        ));
 
         /*
          * The tool catalogue, as a singleton, bound the same way for the same
