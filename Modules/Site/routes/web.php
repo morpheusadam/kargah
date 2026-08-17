@@ -31,5 +31,7 @@ Route::middleware('auth')->prefix('site')->name('site.')->group(function () {
     Route::livewire('/media', 'site::media')->name('media');
     Route::livewire('/seo', 'site::seo')->name('seo');
     Route::livewire('/cache', 'site::cache')->name('cache');
+    Route::livewire('/users', 'site::users')->name('users');
+    Route::livewire('/plugins', 'site::plugins')->name('plugins');
     Route::livewire('/settings', 'site::settings')->name('settings');
 });

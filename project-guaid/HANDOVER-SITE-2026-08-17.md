@@ -73,14 +73,18 @@ Modules/Site/app/
 │   ├── SiteTaxonomy.php       categories and tags
 │   ├── SiteComments.php       the moderation queue
 │   ├── SiteSettings.php       the site's own settings, and the two that are refused
+│   ├── SiteUsers.php          who can log in, and the last-administrator guard
+│   ├── SitePlugins.php        what is installed, and on/off
 │   └── SiteCache.php          purging, and what to do when nothing exposes it
 └── Support/PostTypes.php      the two content types, their statuses
 
 Modules/Site/resources/views/components/
-    ⚡overview ⚡content ⚡content-edit ⚡comments ⚡taxonomies ⚡media ⚡seo ⚡cache ⚡settings
+    ⚡overview ⚡content ⚡content-edit ⚡comments ⚡taxonomies ⚡media
+    ⚡seo ⚡cache ⚡users ⚡plugins ⚡settings
 ```
 
-Sidebar group **Website**: Connection · Content · Comments · Terms · Media · SEO · Cache · Settings.
+Sidebar group **Website**, eleven routes: Connection · Content · Comments · Terms · Media · SEO ·
+Cache · People · Plugins · Settings.
 
 ---
 
@@ -102,6 +106,10 @@ Sidebar group **Website**: Connection · Content · Comments · Terms · Media �
 | **The SEO page is an audit, not a score.** | A score invites optimising the score, which means padding a page until a meter turns green. |
 | **The comment queue opens filtered to `hold`, and comment bodies are never rendered as HTML.** | A held comment is invisible to its author until somebody acts. And this is the one screen whose entire content is untrusted text by definition — rendering it would execute the thing being judged. |
 | **Spam and trash stay separate buttons.** | Marking spam teaches the site's filter; trashing does not. Collapsing them degrades filtering over months in a way nobody traces back to the panel. |
+| **Demoting the last administrator is refused.** | It is the one unrecoverable action available: nobody left can promote anybody back, not even from wp-admin. The count is over the page in hand, which can only under-count — the safe direction. |
+| **Users can have their role changed and nothing else.** | Creating one means composing somebody's password here; deleting one means deciding what happens to everything they wrote, with the wrong answer destroying it. |
+| **Plugins can be switched on and off and nothing else.** | Installing runs somebody else's code chosen by a typed slug; updating can white-screen a site and its safe version needs a backup Kargah does not have. Deactivating is reversible and is what anybody does first when a site misbehaves. |
+| **Toggling a plugin busts the snapshot cache.** | A plugin going on or off is exactly what changes the site's REST namespaces, so a stale copy would have the SEO and cache pages disagreeing with the plugins page. |
 
 ---
 
@@ -137,7 +145,7 @@ stopped.
 
 ## What is proven and what is not
 
-**Proven:** 127 tests, 279 assertions across eight files, every one under
+**Proven:** 151 tests, 338 assertions across ten files, every one under
 `Http::preventStrayRequests()` — which on this machine is not ceremony, because there is no CA bundle
 in `php.ini` and an escaped request dies with cURL error 60 rather than passing quietly. Full suite
 green at **1522 tests, 6947 assertions**, run on a cleared view cache.
@@ -162,10 +170,12 @@ handle credentials.
 
 ## What is deliberately not built
 
-- **Menus, users, plugins, themes.** Each is a real part of wp-admin and none is half-built here;
-  adding one is a service plus a page plus tests, in the shape the eight existing ones set. Menus
-  are the awkward one: `wp/v2/menus` exists only on a block theme, and a classic theme's menus are
-  not exposed by core at all.
+- **Menus and themes.** `wp/v2/menus` exists only on a block theme and a classic theme's menus are
+  not exposed by core at all, so a menu editor would work on some sites and silently not on others.
+  `wp/v2/themes` is read-only in core — it can list what is installed and cannot switch between
+  them, and a page that only lists themes is a page nobody opens twice.
+- **Installing, updating or deleting a plugin; creating or deleting a user.** Each is named on its
+  own page with the reason, rather than being quietly missing.
 - **The front page and the permalink structure**, which the settings page names as refused and says
   why. The first is a page id needing a validating picker rather than a text box; the second is not
   in core's REST settings at all, deliberately, because changing it invalidates every URL at once.

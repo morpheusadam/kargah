@@ -102,6 +102,8 @@
                 ['label' => 'Media',      'route' => 'site.media'],
                 ['label' => 'SEO',        'route' => 'site.seo'],
                 ['label' => 'Cache',      'route' => 'site.cache'],
+                ['label' => 'People',     'route' => 'site.users'],
+                ['label' => 'Plugins',    'route' => 'site.plugins'],
                 ['label' => 'Settings',   'route' => 'site.settings'],
             ],
         ],

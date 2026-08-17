@@ -90,7 +90,7 @@ A WordPress site driven over its own REST API with an application password: post
 where they are stored rather than where they are rendered, a comment queue that opens on what is
 waiting, the media library with the alternative text most of it is missing, categories and tags
 ordered by what the site actually uses, an SEO audit that names the missing field and the page it
-belongs to, and cache purging.
+belongs to, cache purging, role changes, plugin switches and the site's own settings.
 
 Nothing is mirrored into Kargah's database — a website has other editors, and a stale copy shown
 confidently is worse than being honestly slower. Two features need a few lines added to the site
