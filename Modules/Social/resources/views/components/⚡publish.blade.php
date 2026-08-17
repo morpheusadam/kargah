@@ -2,6 +2,7 @@
 
 use Illuminate\Support\Collection;
 use Livewire\Attributes\Title;
+use Livewire\Attributes\Url;
 use Livewire\Component;
 use Livewire\WithFileUploads;
 use Modules\Core\Concerns\InteractsWithToasts;
@@ -74,9 +75,21 @@ class extends Component
     /** Per-account copy. A key exists only while that account is overridden. */
     public array $overrides = [];
 
-    /** One of 'now', 'later', 'draft'. */
+    /**
+     * One of 'now', 'later', 'draft'.
+     *
+     * `#[Url]` because the calendar links here to start a post in a slot the
+     * person clicked: ⚡calendar.blade.php builds
+     * `/social/publish?schedule=later&scheduled_at=<UTC>`. Without the
+     * attribute Livewire ignores the query string and the link lands on an
+     * empty composer set to "now" — the time they picked silently thrown away,
+     * which is worse than not offering the link at all.
+     */
+    #[Url]
     public string $schedule = 'now';
 
+    /** Paired with $schedule above; see the note there. */
+    #[Url(as: 'scheduled_at')]
     public string $scheduledAt = '';
 
     /**

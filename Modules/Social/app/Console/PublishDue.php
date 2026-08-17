@@ -3,6 +3,7 @@
 namespace Modules\Social\Console;
 
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Cache;
 use Modules\Social\Jobs\PublishPost;
 use Modules\Social\Models\Post;
 
@@ -30,6 +31,22 @@ class PublishDue extends Command
 
     public function handle(): int
     {
+        // A heartbeat, written before any work and whether or not anything is
+        // due.
+        //
+        // The calendar has to tell an empty schedule apart from a stopped cron,
+        // and those two look identical from the posts table alone. Without this
+        // it inferred trouble from a post sitting overdue, which only notices a
+        // dead cron once something is already late — no use at all on the day
+        // nothing happened to be scheduled, which is most days.
+        //
+        // Written on every tick, including the "nothing is due" path below,
+        // because that path is the normal one; a heartbeat that only fired when
+        // there was work would read as a dead cron most of the time. The day of
+        // expiry is deliberate: a stale key is worse than an absent one, and an
+        // absent key correctly reads as "no tick in the last day".
+        Cache::put('social:publish-due:last-ran', now(), now()->addDay());
+
         $limit = (int) ($this->option('limit') ?? config('social.due_batch', 25));
 
         $posts = Post::query()->due()->limit(max(1, $limit))->get();
