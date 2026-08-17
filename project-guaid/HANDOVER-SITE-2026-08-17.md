@@ -35,6 +35,28 @@ about. The work here was done against WordPress, because that is the site Kargah
 connected to and the one whose credential already exists. **Whether Drain4Brighton was the intended
 target is a question only its owner can answer.**
 
+### Why a Statamic version could not simply be built instead
+
+Four things were checked rather than assumed, and together they are a hard block rather than a
+judgement call:
+
+1. **No Statamic on `lavzen.com`.** `GET /cp` — Statamic's control-panel path — answers **404**;
+   `/wp-json/` answers 200 and `/wp-admin/` redirects to a login. `cp.`, `admin.`, `static.` and
+   `app.lavzen.com` have no DNS.
+2. **The Statamic application is not on this machine.** `Drain4Brighton` exists in three copies here
+   (the project and two worktrees) and every one of them contains only `Strategy/`, `audit/`,
+   `spec/`, `docs/` and similar. The `root/` directory its own `CLAUDE.md` names as holding the
+   Laravel + Statamic app is absent from all three. There is nothing local to read, change or test
+   against.
+3. **Statamic's REST API cannot write.** See below.
+4. **The site is not reachable for testing anyway.** Its `CLAUDE.md` records it as sitting behind a
+   503 maintenance gate with a single admin IP allowed.
+
+So a Statamic module could have been *typed*, and not one line of it could have been exercised
+against anything — which is the standing this project already treats as the weakest evidence
+available, and it would have been weaker still: the twelve unproven social drivers at least talk to
+APIs whose shapes are documented and whose credentials exist somewhere.
+
 ### If Statamic was meant, read this before starting
 
 🔴 **Statamic's REST API is read-only.** Its own documentation says the Content API exists to
