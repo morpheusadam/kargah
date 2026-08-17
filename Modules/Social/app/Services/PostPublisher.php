@@ -288,9 +288,55 @@ class PostPublisher
             'error' => $error,
         ])->save();
 
+        $this->recordAccountError($target, $error);
+
         $report->recordFailed($error);
 
         return false;
+    }
+
+    /**
+     * Tell the account, not only the target, that it just failed.
+     *
+     * 🔴 **Before this, `social_accounts.last_error` was written only by
+     * `RefreshTokens` and `SyncNotifications` — never on the publish path.** The
+     * consequence was observed live rather than reasoned about: an Instagram
+     * account whose token Meta had invalidated kept showing `Connected` on the
+     * accounts page and kept counting toward "4 of 4 ready to publish", while
+     * every post to it failed. The failure was recorded, correctly, on each
+     * `post_targets` row — where you only find it if you already suspect
+     * something and go looking post by post.
+     *
+     * `CheckTokenExpiry` cannot cover this: it only examines rows with a non-null
+     * `token_expires_at`, so a credential pasted without a recorded lifetime is
+     * invisible to it, and a token revoked early is invisible to it whatever it
+     * says.
+     *
+     * This matters far more now than it did. A person pressing publish sees the
+     * red row in front of them; a daily curated post goes out at ten at night
+     * with nobody watching, and an account that has been silently failing for a
+     * fortnight is exactly the failure this feature is prone to.
+     *
+     * Written with a bare `update()` rather than through the model: nothing here
+     * may touch `credentials_encrypted`, and a `save()` on a hydrated account
+     * would rewrite every column it holds — including one whose accessor decrypts
+     * and re-encrypts. `last_checked_at` moves with it so the page can say when.
+     * Success does **not** clear the column, deliberately: `RefreshTokens` and
+     * `SyncNotifications` own clearing it, and a target that happened to work
+     * does not mean the expiry warning they recorded has stopped being true.
+     */
+    private function recordAccountError(PostTarget $target, string $error): void
+    {
+        $accountId = $target->social_account_id;
+
+        if ($accountId === null) {
+            return;
+        }
+
+        SocialAccount::query()->whereKey($accountId)->update([
+            'last_error' => $error,
+            'last_checked_at' => now(),
+        ]);
     }
 
     /**
