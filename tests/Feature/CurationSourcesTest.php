@@ -372,12 +372,16 @@ class CurationSourcesTest extends TestCase
         $this->assertGreaterThan(30, CurationFeed::query()->count());
         $this->assertTrue(CurationFeed::query()->where('label', 'Krebs on Security')->exists());
 
-        // LinkedIn's window is the one the whole per-network design exists for:
-        // a weekday morning, where Instagram's is an Iranian evening.
+        // LinkedIn's window is the one the whole per-network design exists for.
+        // It sits inside the working day where Instagram's is an Iranian evening,
+        // and the gap between them is the thing being asserted — not the exact
+        // hours, which the owner tunes on the settings page. LinkedIn moved from
+        // 08:00 to 12:00 on 18 August 2026 for exactly that reason.
         $linkedin = CurationWindow::query()->where('network', 'linkedin')->firstOrFail();
         $instagram = CurationWindow::query()->where('network', 'instagram')->firstOrFail();
 
-        $this->assertSame('08:00', $linkedin->starts_at);
+        $this->assertLessThan((int) $instagram->starts_at, (int) $linkedin->starts_at);
+        $this->assertLessThanOrEqual(15, (int) $linkedin->starts_at);
         $this->assertSame('19:00', $instagram->starts_at);
 
         // 🔴 The hashtag budgets are the resolution of a real conflict: dense

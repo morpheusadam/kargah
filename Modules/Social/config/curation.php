@@ -86,9 +86,15 @@ return [
      * ceiling is 25 rather than 30.
      */
     'windows' => [
-        // Weekday mornings, and a later, narrower window at the Iranian weekend
-        // rather than no post at all.
-        'linkedin' => ['starts_at' => '08:00', 'ends_at' => '11:30', 'weekend_starts_at' => '10:00', 'weekend_ends_at' => '12:00', 'hashtags_min' => 2, 'hashtags_max' => 3],
+        // Midday rather than early morning, chosen by the owner on 18 August 2026
+        // as the compromise between two real pulls. LinkedIn's own best hour is a
+        // weekday morning; the channel's readers are Iranian and start being
+        // active later. 12:00–15:00 Tehran is inside the working day, so it is
+        // still a LinkedIn hour, and it is close enough to the audience's own day
+        // not to be shouting into an empty room. The weekend pair is set equal
+        // rather than left null, to record that it was decided rather than
+        // inherited.
+        'linkedin' => ['starts_at' => '12:00', 'ends_at' => '15:00', 'weekend_starts_at' => '12:00', 'weekend_ends_at' => '15:00', 'hashtags_min' => 2, 'hashtags_max' => 3],
         'instagram' => ['starts_at' => '19:00', 'ends_at' => '23:00', 'hashtags_min' => 18, 'hashtags_max' => 25],
         'telegram' => ['starts_at' => '20:00', 'ends_at' => '23:30', 'hashtags_min' => 2, 'hashtags_max' => 3],
         'threads' => ['starts_at' => '20:00', 'ends_at' => '23:00', 'hashtags_min' => 3, 'hashtags_max' => 5],
