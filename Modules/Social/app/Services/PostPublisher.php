@@ -57,6 +57,7 @@ class PostPublisher
     public function __construct(
         private readonly Publishing $publishing,
         private readonly PostMedia $media,
+        private readonly PublishAnnouncer $announcer,
     ) {}
 
     /**
@@ -82,6 +83,18 @@ class PostPublisher
         }
 
         $this->syncPostStatus($post);
+
+        // Announced here rather than inside `publishTarget()`, so a post that
+        // reached three networks is one message and not three — three is how a
+        // bot gets muted, and muting it costs the one case it exists for, which
+        // is the failure nobody was watching.
+        //
+        // Only when this run actually sent something. A second run that claims
+        // nothing and sends nothing is not an event, and announcing it would mean
+        // every stale-claim sweep pinged the operator about yesterday's post.
+        if ($report->published > 0) {
+            $this->announcer->announce($post);
+        }
 
         return $report;
     }

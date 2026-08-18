@@ -76,6 +76,22 @@ class extends Component
 
     public int $lobstersMinEngagement = 25;
 
+    // ── Announcing a post once it has gone out ──────────────────────────────
+
+    public bool $notifyEnabled = false;
+
+    /**
+     * Write-only, exactly as the assistant page treats an API key.
+     *
+     * Always blank when the page opens, even when a token is stored: leaving it
+     * blank on save keeps whatever is there, and typing replaces it. The page
+     * therefore never has the secret to render, so `NoSecretsInHtmlTest` has
+     * nothing to find here even in principle.
+     */
+    public string $notifyBotToken = '';
+
+    public string $notifyChatId = '';
+
     // ── The feed being edited, if any ───────────────────────────────────────
 
     public ?int $editingFeedId = null;
@@ -106,6 +122,75 @@ class extends Component
         $this->hackernewsMinPoints = $settings->hackernews_min_points;
         $this->lobstersEnabled = $settings->lobsters_enabled;
         $this->lobstersMinEngagement = $settings->lobsters_min_engagement;
+        $this->notifyEnabled = $settings->notify_enabled;
+        $this->notifyChatId = (string) $settings->notify_chat_id;
+        // `notifyBotToken` is deliberately not filled. See its declaration.
+    }
+
+    /**
+     * Save the announcement settings on their own.
+     *
+     * Separate from `save()` because the two halves of this page fail
+     * differently: the curation form refuses when the curation hour would miss a
+     * window, and there is no reason a bad time should also block somebody from
+     * pasting a bot token.
+     */
+    public function saveNotifications(): void
+    {
+        $this->validate([
+            'notifyBotToken' => ['nullable', 'string', 'regex:/^\d{6,12}:[A-Za-z0-9_-]{30,}$/'],
+            'notifyChatId' => ['nullable', 'string', 'max:100'],
+        ], [
+            'notifyBotToken.regex' => 'That does not look like a bot token. BotFather gives you '
+                .'digits, a colon, then a long string.',
+        ]);
+
+        $settings = CurationSetting::current();
+
+        $values = [
+            'notify_enabled' => $this->notifyEnabled,
+            'notify_chat_id' => trim($this->notifyChatId) ?: null,
+        ];
+
+        // Blank means "leave the stored one alone", which is what makes the
+        // field safe to render empty on every load.
+        if (trim($this->notifyBotToken) !== '') {
+            $values['notify_bot_token'] = trim($this->notifyBotToken);
+        }
+
+        $settings->update($values);
+
+        $this->notifyBotToken = '';
+
+        $this->toastSuccess(
+            $settings->fresh()->canNotify()
+                ? 'Announcements are on.'
+                : 'Saved. Announcements stay off until both the token and the chat are set.',
+        );
+    }
+
+    /**
+     * Send one now, so the operator finds out here rather than at ten at night.
+     *
+     * Reaches Telegram only from this explicit click and never from a page load,
+     * the same rule the assistant page's "test this connection" follows.
+     */
+    public function testNotification(): void
+    {
+        $settings = CurationSetting::current();
+
+        if (! $settings->canNotify()) {
+            $this->toastError('Set the bot token and the chat first.');
+
+            return;
+        }
+
+        $ok = app(\Modules\Social\Services\PublishAnnouncer::class)->test();
+
+        $ok
+            ? $this->toastSuccess('Sent. Check the chat.')
+            : $this->toastError('Telegram refused it. The reason is in the log — usually the chat id, '
+                .'or the bot not having been started by you.');
     }
 
     public function save(): void
@@ -314,8 +399,13 @@ class extends Component
     public function with(): array
     {
         $accounts = SocialAccount::query()->active()->get()->groupBy('network');
+        $settings = CurationSetting::current();
 
         return [
+            // Booleans, never the token itself. The page has no reason to hold a
+            // secret and therefore cannot leak one.
+            'hasToken' => $settings->notify_bot_token !== null,
+            'canNotify' => $settings->canNotify(),
             'feeds' => CurationFeed::query()
                 ->when($this->feedSearch !== '', fn ($q) => $q->where('label', 'like', '%'.$this->feedSearch.'%'))
                 ->orderBy('sort_order')
@@ -449,6 +539,84 @@ class extends Component
                                 <i class="ki-filled ki-loading animate-spin"></i> Saving…
                             </span>
                         </button>
+                    </div>
+
+                </div>
+            </div>
+
+            {{-- ── Announcing a post once it has gone out ───────────────────── --}}
+
+            <div class="kt-card" id="announce">
+                <div class="kt-card-header">
+                    <h3 class="kt-card-title">Tell me when something is published</h3>
+                </div>
+                <div class="kt-card-content p-5 flex flex-col gap-5">
+
+                    <p class="text-sm text-secondary-foreground">
+                        Posts go out at an hour chosen at random with nobody watching, which is the point and
+                        also the problem. A Telegram bot can send you each one as it happens, with the picture
+                        that went out and the opening of the copy. It covers every published post, not only the
+                        curated ones.
+                    </p>
+
+                    <label class="flex items-start gap-3 cursor-pointer">
+                        <input type="checkbox" class="kt-switch mt-0.5" wire:model.live="notifyEnabled">
+                        <span>
+                            <span class="block text-sm font-medium text-mono">Send an announcement for each published post</span>
+                            <span class="block text-xs text-secondary-foreground mt-0.5">
+                                One message per post, however many networks it reached.
+                            </span>
+                        </span>
+                    </label>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="kt-form-label" for="notify-token">Bot token</label>
+                            <input id="notify-token" type="password" autocomplete="new-password"
+                                   class="kt-input @error('notifyBotToken') border-destructive @enderror"
+                                   placeholder="{{ $hasToken ? 'stored — type to replace it' : '8464432090:AA…' }}"
+                                   wire:model="notifyBotToken">
+                            <span class="block text-xs text-muted-foreground mt-1">
+                                From @BotFather. Stored encrypted and never shown again — leave this blank to
+                                keep the one already saved.
+                            </span>
+                            @error('notifyBotToken')<span class="text-xs text-destructive mt-1">{{ $message }}</span>@enderror
+                        </div>
+
+                        <div>
+                            <label class="kt-form-label" for="notify-chat">Chat</label>
+                            <input id="notify-chat" type="text" class="kt-input"
+                                   placeholder="@your_channel or 123456789" wire:model="notifyChatId">
+                            <span class="block text-xs text-muted-foreground mt-1">
+                                A channel username, or your own numeric id. For a private chat you have to send
+                                the bot a message first — a bot cannot open a conversation with you.
+                            </span>
+                        </div>
+                    </div>
+
+                    <div class="flex flex-wrap items-center gap-2">
+                        <button class="kt-btn kt-btn-primary" wire:click="saveNotifications" wire:loading.attr="disabled">
+                            <span wire:loading.remove wire:target="saveNotifications">Save</span>
+                            <span wire:loading wire:target="saveNotifications" class="flex items-center gap-2">
+                                <i class="ki-filled ki-loading animate-spin"></i> Saving…
+                            </span>
+                        </button>
+
+                        <button class="kt-btn kt-btn-outline gap-2" wire:click="testNotification"
+                                wire:loading.attr="disabled" @disabled(! $canNotify)>
+                            <span wire:loading.remove wire:target="testNotification" class="flex items-center gap-2">
+                                <i class="ki-filled ki-paper-plane"></i> Send a test
+                            </span>
+                            <span wire:loading wire:target="testNotification" class="flex items-center gap-2">
+                                <i class="ki-filled ki-loading animate-spin"></i> Sending…
+                            </span>
+                        </button>
+
+                        @unless ($canNotify)
+                            <span class="text-xs text-muted-foreground">
+                                Both the token and the chat are needed before anything can be sent.
+                            </span>
+                        @endunless
                     </div>
 
                 </div>

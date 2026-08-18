@@ -2,7 +2,9 @@
 
 namespace Modules\Social\Models;
 
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Crypt;
 
 /**
  * The daily curator's own settings — one row, and `current()` is the only way in.
@@ -40,6 +42,12 @@ class CurationSetting extends Model
         'lobsters_enabled',
         'lobsters_authority',
         'lobsters_min_engagement',
+        'notify_enabled',
+        // `notify_bot_token` is the name everything outside this class uses; the
+        // `_encrypted` column is deliberately absent from `$fillable` so a form
+        // cannot mass-assign past the accessor that does the encrypting.
+        'notify_bot_token',
+        'notify_chat_id',
     ];
 
     protected function casts(): array
@@ -55,7 +63,50 @@ class CurationSetting extends Model
             'lobsters_enabled' => 'boolean',
             'lobsters_authority' => 'float',
             'lobsters_min_engagement' => 'integer',
+            'notify_enabled' => 'boolean',
+            'notify_bot_token_encrypted' => 'encrypted',
         ];
+    }
+
+    /** The raw column is never rendered, and neither is the value read off it. */
+    protected $hidden = [
+        'notify_bot_token_encrypted',
+        'notify_bot_token',
+    ];
+
+    /**
+     * The bot token, encrypted on the way in.
+     *
+     * 🔴 **The encryption happens inside the setter, not by returning the raw
+     * column name.** `Attribute::make(set: fn ($v) => ['..._encrypted' => $v])` is
+     * the form Laravel's documentation shows, and a mutator's return value is
+     * merged straight into the raw attribute array — so the `encrypted` cast never
+     * runs and the token is written in clear text. It fails silently and looks
+     * right. This is the form that works, and it is the same one
+     * `Modules\Social\Models\SocialAccount::credentials()` uses for the same
+     * reason; see project-guaid/DECISIONS.md under "Phase 4 — Mailbox" for the
+     * full account of how that was found.
+     */
+    protected function notifyBotToken(): Attribute
+    {
+        return Attribute::make(
+            get: fn (): ?string => is_string($this->notify_bot_token_encrypted) && $this->notify_bot_token_encrypted !== ''
+                ? $this->notify_bot_token_encrypted
+                : null,
+            set: fn (?string $value): array => [
+                'notify_bot_token_encrypted' => $value === null || trim($value) === ''
+                    ? null
+                    : Crypt::encryptString(trim($value)),
+            ],
+        );
+    }
+
+    /** Whether a post can actually be announced: switched on, with both halves set. */
+    public function canNotify(): bool
+    {
+        return $this->notify_enabled
+            && $this->notify_bot_token !== null
+            && trim((string) $this->notify_chat_id) !== '';
     }
 
     /**
