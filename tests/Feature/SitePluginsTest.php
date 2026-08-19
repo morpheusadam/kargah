@@ -32,7 +32,7 @@ class SitePluginsTest extends TestCase
 {
     use RefreshDatabase;
 
-    private const SITE = 'https://lavzen.test';
+    private const SITE = 'https://bineret.test';
 
     protected function setUp(): void
     {
@@ -44,7 +44,7 @@ class SitePluginsTest extends TestCase
     private function site(): SocialAccount
     {
         return SocialAccount::factory()->onNetwork(Networks::WORDPRESS)->create([
-            'handle' => 'lavzen.test',
+            'handle' => 'bineret.test',
             'credentials' => [
                 'site_url' => self::SITE,
                 'username' => 'nima',

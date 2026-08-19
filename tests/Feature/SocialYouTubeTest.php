@@ -60,7 +60,7 @@ class SocialYouTubeTest extends TestCase
         return SocialAccount::factory()
             ->onNetwork(Networks::YOUTUBE)
             ->connected()
-            ->create(['handle' => 'lavzencom']);
+            ->create(['handle' => 'bineretcom']);
     }
 
     /**
@@ -315,11 +315,11 @@ class SocialYouTubeTest extends TestCase
         Http::fake([
             self::TOKEN => Http::response(['access_token' => 'ya29.short-lived']),
             self::CHANNELS => Http::response([
-                'items' => [['snippet' => ['title' => 'Lavzen', 'customUrl' => '@lavzencom']]],
+                'items' => [['snippet' => ['title' => 'Bineret', 'customUrl' => '@bineretcom']]],
             ]),
         ]);
 
-        $this->assertSame('Lavzen (@lavzencom)', (new YouTubePublisher)->verify($this->account()));
+        $this->assertSame('Bineret (@bineretcom)', (new YouTubePublisher)->verify($this->account()));
     }
 
     /**

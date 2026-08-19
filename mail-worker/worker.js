@@ -1,13 +1,13 @@
 /**
- * Cloudflare Email Worker — lavzen.com mail ingestion for Kargah.
+ * Cloudflare Email Worker — bineret.com mail ingestion for Kargah.
  *
  * Bound to the Email Routing rules for the domain. Every incoming message is
  * streamed as raw RFC822 to Kargah's inbound endpoint, which parses and stores
- * it so it appears in panel.lavzen.com/mail/inbox.
+ * it so it appears in panel.bineret.com/mail/inbox.
  *
  * Secrets / vars (set via wrangler or the dashboard):
  *   INBOUND_SECRET : must match Kargah's MAILBOX_INBOUND_SECRET
- *   KARGAH_URL     : https://panel.lavzen.com/mail/inbound
+ *   KARGAH_URL     : https://panel.bineret.com/mail/inbound
  *
  * `message.forward()` is deliberately not called. A rule that both stores and
  * forwards would put every message in two places and make "have I dealt with

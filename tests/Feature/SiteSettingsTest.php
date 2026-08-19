@@ -36,7 +36,7 @@ class SiteSettingsTest extends TestCase
 {
     use RefreshDatabase;
 
-    private const SITE = 'https://lavzen.test';
+    private const SITE = 'https://bineret.test';
 
     protected function setUp(): void
     {
@@ -48,7 +48,7 @@ class SiteSettingsTest extends TestCase
     private function site(): SocialAccount
     {
         return SocialAccount::factory()->onNetwork(Networks::WORDPRESS)->create([
-            'handle' => 'lavzen.test',
+            'handle' => 'bineret.test',
             'credentials' => [
                 'site_url' => self::SITE,
                 'username' => 'nima',
@@ -68,7 +68,7 @@ class SiteSettingsTest extends TestCase
         return array_replace([
             'title' => 'Lavzen Web',
             'description' => 'AI marketplace',
-            'email' => 'nima@lavzen.com',
+            'email' => 'nima@bineret.com',
             'timezone' => 'Europe/Istanbul',
             'date_format' => 'F j, Y',
             'time_format' => 'H:i',
@@ -228,7 +228,7 @@ class SiteSettingsTest extends TestCase
 
         Livewire::actingAs($this->actor())
             ->test('site::settings')
-            ->set('values.email', 'new@lavzen.com')
+            ->set('values.email', 'new@bineret.com')
             ->call('save')
             ->assertSet('pending', ['email'])
             ->assertDispatched('toast');

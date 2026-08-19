@@ -33,7 +33,7 @@ class SiteModuleTest extends TestCase
 {
     use RefreshDatabase;
 
-    private const SITE = 'https://lavzen.test';
+    private const SITE = 'https://bineret.test';
 
     private const PASSWORD = 'abcd EFGH 1234 ijkl';
 
@@ -57,7 +57,7 @@ class SiteModuleTest extends TestCase
     private function site(string $url = self::SITE, array $overrides = []): SocialAccount
     {
         return SocialAccount::factory()->onNetwork(Networks::WORDPRESS)->create([
-            'handle' => 'lavzen.test',
+            'handle' => 'bineret.test',
             'credentials' => [
                 'site_url' => $url,
                 'username' => 'nima',
@@ -214,9 +214,9 @@ class SiteModuleTest extends TestCase
 
     public function test_a_site_url_without_a_scheme_is_assumed_to_be_https(): void
     {
-        $this->site('lavzen.test');
+        $this->site('bineret.test');
 
-        $this->assertSame('https://lavzen.test/wp-json/wp/v2/posts', WordPressSite::require()->url('wp/v2/posts'));
+        $this->assertSame('https://bineret.test/wp-json/wp/v2/posts', WordPressSite::require()->url('wp/v2/posts'));
     }
 
     public function test_a_trailing_slash_does_not_become_a_double_slash(): void
@@ -236,7 +236,7 @@ class SiteModuleTest extends TestCase
      */
     public function test_a_plain_http_site_is_refused_rather_than_downgraded_to(): void
     {
-        $this->site('http://lavzen.test');
+        $this->site('http://bineret.test');
 
         $this->expectException(SiteRequestFailed::class);
         $this->expectExceptionMessage('cleartext');

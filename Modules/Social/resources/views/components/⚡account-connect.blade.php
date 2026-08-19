@@ -428,7 +428,7 @@ class extends Component
                             <label class="kt-form-label" for="account-handle">Handle</label>
                             {{--
                                 🔴 Every input on this form refuses autofill, and this is not tidiness.
-                                Chrome matched a saved password-manager entry for panel.lavzen.com against
+                                Chrome matched a saved password-manager entry for panel.bineret.com against
                                 these fields three times in one afternoon: it put the panel's login email in
                                 "Threads user ID", a stored password in "Access token", and a Telegram chat id
                                 in "OAuth client ID". Saved unchanged, the first of those would have encrypted

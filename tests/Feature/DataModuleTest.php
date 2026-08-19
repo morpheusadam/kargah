@@ -169,7 +169,7 @@ class DataModuleTest extends TestCase
      * The bug: a browser that sends `application/octet-stream` for a real
      * PNG — Symfony's `UploadedFile` defaults its client mime to exactly that
      * string when the client sends none, and it happened for real against
-     * `panel.lavzen.com/social/posts/1` on 8 August 2026. Stored as-is,
+     * `panel.bineret.com/social/posts/1` on 8 August 2026. Stored as-is,
      * `MediaItem::fromAttachment()` (Social) reads it as "not a picture" and
      * drops it silently, so a post with a real image attached went out with
      * none — and Instagram then refused it for having no image at all,

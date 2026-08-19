@@ -11,7 +11,7 @@ use Illuminate\Support\Facades\Schema;
  * columns that describe one were `NOT NULL` because there was no other kind of
  * account. Cloudflare Email Routing hands a message to a Worker the moment it
  * arrives, and the Worker posts it here — so the account that receives
- * `info@lavzen.com` has no host to connect to, no username to log in as, and no
+ * `info@bineret.com` has no host to connect to, no username to log in as, and no
  * cursor to resume from. Those columns are not "unknown" for such a row; they
  * are *inapplicable*, which is what null is for.
  *

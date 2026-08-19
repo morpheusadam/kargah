@@ -58,8 +58,8 @@ class CampaignTrackingTest extends TestCase
     public function test_every_link_is_registered_before_it_is_rewritten(): void
     {
         [$campaign, $recipient] = $this->campaign(
-            '<p><a href="https://lavzen.com/pricing">Pricing</a> and '
-            .'<a href="https://lavzen.com/contact">Contact</a></p>{{unsubscribe_url}}'
+            '<p><a href="https://bineret.com/pricing">Pricing</a> and '
+            .'<a href="https://bineret.com/contact">Contact</a></p>{{unsubscribe_url}}'
         );
 
         $html = $this->build($campaign, $recipient);
@@ -68,17 +68,17 @@ class CampaignTrackingTest extends TestCase
 
         sort($registered);
 
-        $this->assertSame(['https://lavzen.com/contact', 'https://lavzen.com/pricing'], $registered);
+        $this->assertSame(['https://bineret.com/contact', 'https://bineret.com/pricing'], $registered);
 
         // The destinations are gone from the body: what is left is Kargah's own
         // redirect, which is what makes the row the only way to reach them.
-        $this->assertStringNotContainsString('https://lavzen.com/pricing', $html);
+        $this->assertStringNotContainsString('https://bineret.com/pricing', $html);
         $this->assertStringContainsString('/mail/c/', $html);
     }
 
     public function test_the_same_link_across_a_chunk_registers_once(): void
     {
-        [$campaign, $first] = $this->campaign('<a href="https://lavzen.com/pricing">Pricing</a>{{unsubscribe_url}}');
+        [$campaign, $first] = $this->campaign('<a href="https://bineret.com/pricing">Pricing</a>{{unsubscribe_url}}');
 
         $second = CampaignRecipient::query()->create([
             'campaign_id' => $campaign->id,
@@ -118,7 +118,7 @@ class CampaignTrackingTest extends TestCase
     {
         [$campaign, $recipient] = $this->campaign(
             '<a href="{{unsubscribe_url}}">Unsubscribe</a>'
-            .'<a href="mailto:info@lavzen.com">Mail us</a>'
+            .'<a href="mailto:info@bineret.com">Mail us</a>'
             .'<a href="tel:+441234567890">Ring us</a>'
             .'<a href="#top">Top</a>'
             .'<a href="javascript:alert(1)">No</a>'
@@ -128,7 +128,7 @@ class CampaignTrackingTest extends TestCase
 
         $this->assertSame(0, CampaignLink::query()->count());
 
-        $this->assertStringContainsString('href="mailto:info@lavzen.com"', $html);
+        $this->assertStringContainsString('href="mailto:info@bineret.com"', $html);
         $this->assertStringContainsString('href="tel:+441234567890"', $html);
         $this->assertStringContainsString('href="#top"', $html);
 
@@ -144,15 +144,15 @@ class CampaignTrackingTest extends TestCase
 
     public function test_the_plain_text_body_is_never_rewritten(): void
     {
-        [$campaign, $recipient] = $this->campaign('<a href="https://lavzen.com/pricing">Pricing</a>{{unsubscribe_url}}');
+        [$campaign, $recipient] = $this->campaign('<a href="https://bineret.com/pricing">Pricing</a>{{unsubscribe_url}}');
 
         $campaign->forceFill([
-            'body_text' => "Our pricing is at https://lavzen.com/pricing\n{{unsubscribe_url}}",
+            'body_text' => "Our pricing is at https://bineret.com/pricing\n{{unsubscribe_url}}",
         ])->save();
 
         $message = $this->app->make(MessageBuilder::class)->build($campaign, $recipient, $campaign->provider);
 
-        $this->assertStringContainsString('https://lavzen.com/pricing', $message->text);
+        $this->assertStringContainsString('https://bineret.com/pricing', $message->text);
         $this->assertStringNotContainsString('/mail/c/', (string) $message->text);
         $this->assertStringNotContainsString('<img', (string) $message->text);
     }
@@ -160,25 +160,25 @@ class CampaignTrackingTest extends TestCase
     public function test_the_entity_encoded_query_is_stored_decoded(): void
     {
         [$campaign, $recipient] = $this->campaign(
-            '<a href="https://lavzen.com/x?a=1&amp;b=2">Go</a>{{unsubscribe_url}}'
+            '<a href="https://bineret.com/x?a=1&amp;b=2">Go</a>{{unsubscribe_url}}'
         );
 
         $this->build($campaign, $recipient);
 
         // The row holds where the person is actually going. Storing the encoded
         // form would send them to a different page.
-        $this->assertSame('https://lavzen.com/x?a=1&b=2', CampaignLink::query()->value('url'));
+        $this->assertSame('https://bineret.com/x?a=1&b=2', CampaignLink::query()->value('url'));
     }
 
     public function test_switching_tracking_off_leaves_the_body_as_written(): void
     {
         config(['mailbox.tracking.opens' => false, 'mailbox.tracking.clicks' => false]);
 
-        [$campaign, $recipient] = $this->campaign('<a href="https://lavzen.com/pricing">Pricing</a>{{unsubscribe_url}}');
+        [$campaign, $recipient] = $this->campaign('<a href="https://bineret.com/pricing">Pricing</a>{{unsubscribe_url}}');
 
         $html = $this->build($campaign, $recipient);
 
-        $this->assertStringContainsString('href="https://lavzen.com/pricing"', $html);
+        $this->assertStringContainsString('href="https://bineret.com/pricing"', $html);
         $this->assertStringNotContainsString('<img', $html);
         $this->assertSame(0, CampaignLink::query()->count());
     }
@@ -272,7 +272,7 @@ class CampaignTrackingTest extends TestCase
 
     public function test_a_click_redirects_to_the_registered_url_and_is_counted(): void
     {
-        [$campaign, $recipient] = $this->campaign('<a href="https://lavzen.com/pricing">Pricing</a>{{unsubscribe_url}}');
+        [$campaign, $recipient] = $this->campaign('<a href="https://bineret.com/pricing">Pricing</a>{{unsubscribe_url}}');
 
         $this->build($campaign, $recipient);
 
@@ -280,7 +280,7 @@ class CampaignTrackingTest extends TestCase
 
         $response = $this->get($this->app->make(Tracking::class)->clickUrl($recipient, $link));
 
-        $response->assertRedirect('https://lavzen.com/pricing');
+        $response->assertRedirect('https://bineret.com/pricing');
 
         $recipient->refresh();
 
@@ -302,7 +302,7 @@ class CampaignTrackingTest extends TestCase
 
     public function test_repeated_clicks_add_to_one_row_rather_than_making_more(): void
     {
-        [$campaign, $recipient] = $this->campaign('<a href="https://lavzen.com/pricing">Pricing</a>{{unsubscribe_url}}');
+        [$campaign, $recipient] = $this->campaign('<a href="https://bineret.com/pricing">Pricing</a>{{unsubscribe_url}}');
 
         $this->build($campaign, $recipient);
 
@@ -350,7 +350,7 @@ class CampaignTrackingTest extends TestCase
 
     public function test_a_forged_link_token_cannot_be_redirected_to(): void
     {
-        [$campaign, $recipient] = $this->campaign('<a href="https://lavzen.com/pricing">Pricing</a>{{unsubscribe_url}}');
+        [$campaign, $recipient] = $this->campaign('<a href="https://bineret.com/pricing">Pricing</a>{{unsubscribe_url}}');
 
         $this->build($campaign, $recipient);
 
@@ -370,7 +370,7 @@ class CampaignTrackingTest extends TestCase
 
     public function test_an_unsigned_click_url_is_refused(): void
     {
-        [$campaign, $recipient] = $this->campaign('<a href="https://lavzen.com/pricing">Pricing</a>{{unsubscribe_url}}');
+        [$campaign, $recipient] = $this->campaign('<a href="https://bineret.com/pricing">Pricing</a>{{unsubscribe_url}}');
 
         $this->build($campaign, $recipient);
 
@@ -392,7 +392,7 @@ class CampaignTrackingTest extends TestCase
      */
     public function test_a_click_from_a_deleted_recipient_still_arrives(): void
     {
-        [$campaign, $recipient] = $this->campaign('<a href="https://lavzen.com/pricing">Pricing</a>{{unsubscribe_url}}');
+        [$campaign, $recipient] = $this->campaign('<a href="https://bineret.com/pricing">Pricing</a>{{unsubscribe_url}}');
 
         $this->build($campaign, $recipient);
 
@@ -400,7 +400,7 @@ class CampaignTrackingTest extends TestCase
 
         $recipient->delete();
 
-        $this->get($url)->assertRedirect('https://lavzen.com/pricing');
+        $this->get($url)->assertRedirect('https://bineret.com/pricing');
 
         $this->assertSame(0, CampaignLinkClick::query()->count());
     }
@@ -408,12 +408,12 @@ class CampaignTrackingTest extends TestCase
     public function test_a_recipient_cannot_be_counted_against_another_campaigns_link(): void
     {
         [$mine, $recipient] = $this->campaign('<p>Hello</p>{{unsubscribe_url}}');
-        [$theirs] = $this->campaign('<a href="https://lavzen.com/pricing">Pricing</a>{{unsubscribe_url}}', 'other@example.com');
+        [$theirs] = $this->campaign('<a href="https://bineret.com/pricing">Pricing</a>{{unsubscribe_url}}', 'other@example.com');
 
         $link = CampaignLink::query()->create([
             'campaign_id' => $theirs->id,
-            'url' => 'https://lavzen.com/pricing',
-            'url_hash' => CampaignLink::fingerprint('https://lavzen.com/pricing'),
+            'url' => 'https://bineret.com/pricing',
+            'url_hash' => CampaignLink::fingerprint('https://bineret.com/pricing'),
         ]);
 
         $this->assertNotSame((int) $mine->id, (int) $theirs->id);
@@ -422,7 +422,7 @@ class CampaignTrackingTest extends TestCase
 
         // Still sent to a registered destination — the person is not punished
         // for a URL somebody else assembled — but attributed to nobody.
-        $response->assertRedirect('https://lavzen.com/pricing');
+        $response->assertRedirect('https://bineret.com/pricing');
 
         $this->assertSame(0, $recipient->refresh()->click_count);
         $this->assertSame(0, CampaignLinkClick::query()->count());
@@ -436,7 +436,7 @@ class CampaignTrackingTest extends TestCase
 
     public function test_the_report_counts_people_and_times_separately(): void
     {
-        [$campaign, $ada] = $this->campaign('<a href="https://lavzen.com/pricing">Pricing</a>{{unsubscribe_url}}');
+        [$campaign, $ada] = $this->campaign('<a href="https://bineret.com/pricing">Pricing</a>{{unsubscribe_url}}');
 
         $grace = CampaignRecipient::query()->create([
             'campaign_id' => $campaign->id,
@@ -464,7 +464,7 @@ class CampaignTrackingTest extends TestCase
         $rows = $campaign->linkBreakdown();
 
         $this->assertCount(1, $rows);
-        $this->assertSame('https://lavzen.com/pricing', $rows[0]['url']);
+        $this->assertSame('https://bineret.com/pricing', $rows[0]['url']);
         $this->assertSame(1, $rows[0]['people']);
         $this->assertSame(2, $rows[0]['clicks']);
     }
@@ -472,7 +472,7 @@ class CampaignTrackingTest extends TestCase
     /** And the report page itself, because a figure nobody can see is not a report. */
     public function test_the_report_page_shows_the_links_and_what_was_done_with_them(): void
     {
-        [$campaign, $recipient] = $this->campaign('<a href="https://lavzen.com/pricing">Pricing</a>{{unsubscribe_url}}');
+        [$campaign, $recipient] = $this->campaign('<a href="https://bineret.com/pricing">Pricing</a>{{unsubscribe_url}}');
 
         $this->build($campaign, $recipient);
 
@@ -487,13 +487,13 @@ class CampaignTrackingTest extends TestCase
             ->assertSee('Opened')
             ->assertSee('Clicked')
             ->assertSee('Links followed')
-            ->assertSee('https://lavzen.com/pricing');
+            ->assertSee('https://bineret.com/pricing');
     }
 
     public function test_a_link_nobody_followed_is_still_on_the_report(): void
     {
         [$campaign, $recipient] = $this->campaign(
-            '<a href="https://lavzen.com/pricing">Pricing</a><a href="https://lavzen.com/quiet">Quiet</a>{{unsubscribe_url}}'
+            '<a href="https://bineret.com/pricing">Pricing</a><a href="https://bineret.com/quiet">Quiet</a>{{unsubscribe_url}}'
         );
 
         $this->build($campaign, $recipient);
@@ -527,9 +527,9 @@ class CampaignTrackingTest extends TestCase
     private function campaign(string $html, string $email = 'ada@example.com'): array
     {
         $provider = DeliveryProvider::factory()->create([
-            'from_email' => 'info@lavzen.com',
+            'from_email' => 'info@bineret.com',
             'from_name' => 'Lavzen',
-            'sending_domain' => 'lavzen.com',
+            'sending_domain' => 'bineret.com',
         ]);
 
         $campaign = Campaign::factory()->create([

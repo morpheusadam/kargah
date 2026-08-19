@@ -12,7 +12,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * This table is the whole of Kargah's answer to the open redirect. The click
  * route takes an id, looks the row up, and redirects to the `url` column — it
  * never reads a destination from the request, so there is no `?url=` to edit and
- * no way to make lavzen.com forward a person to somewhere it has not already
+ * no way to make bineret.com forward a person to somewhere it has not already
  * agreed to. That matters twice over: an open redirect on a sending domain is a
  * vulnerability, and it is also a spam signal, because a domain that will
  * forward anywhere is exactly what a phishing campaign looks for in somebody

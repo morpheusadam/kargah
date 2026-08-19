@@ -201,7 +201,7 @@ return [
          * Rewriting each link in an HTML body to a redirect that records it.
          *
          * Off is a real choice and not only a privacy one: a rewritten link
-         * means the destination a person sees on hover is panel.lavzen.com
+         * means the destination a person sees on hover is panel.bineret.com
          * rather than where they are going, which some recipients — and a few
          * filters — read as a warning sign. On is the default because a campaign
          * report with no click rate cannot tell a subject line that got opened

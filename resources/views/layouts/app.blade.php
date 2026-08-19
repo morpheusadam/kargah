@@ -19,7 +19,7 @@
          request root, which is the only thing that knows whether this install
          is at a domain root or under a directory. Every one of these was a
          literal `/assets/…` until 5 August 2026, and on the first deployment to
-         `lavzen.com/panel` the browser asked `lavzen.com` for all of them,
+         `bineret.com/panel` the browser asked `bineret.com` for all of them,
          collected four 404s dressed as HTML, and drew the login page in Times
          New Roman. Nothing errored server-side; the page was simply naked. --}}
     <link href="{{ asset('assets/vendors/keenicons/styles.bundle.css') }}" rel="stylesheet">

@@ -32,11 +32,11 @@ class CampaignMessageTest extends TestCase
 
         $envelope = $mailable->envelope();
 
-        $this->assertSame('info@lavzen.com', $envelope->from->address);
+        $this->assertSame('info@bineret.com', $envelope->from->address);
         $this->assertSame('Lavzen', $envelope->from->name);
         $this->assertSame('ada@example.com', $envelope->to[0]->address);
         $this->assertSame('Ada Lovelace', $envelope->to[0]->name);
-        $this->assertSame('replies@lavzen.com', $envelope->replyTo[0]->address);
+        $this->assertSame('replies@bineret.com', $envelope->replyTo[0]->address);
         $this->assertSame('Quote for the side return', $envelope->subject);
     }
 
@@ -50,7 +50,7 @@ class CampaignMessageTest extends TestCase
         $email = $this->render($this->message());
 
         $this->assertSame('Quote for the side return', $email->getSubject());
-        $this->assertSame('info@lavzen.com', $email->getFrom()[0]->getAddress());
+        $this->assertSame('info@bineret.com', $email->getFrom()[0]->getAddress());
         $this->assertSame('ada@example.com', $email->getTo()[0]->getAddress());
         $this->assertStringContainsString('rough estimate', (string) $email->getHtmlBody());
 
@@ -70,7 +70,7 @@ class CampaignMessageTest extends TestCase
         $email = $this->render($this->message());
 
         $this->assertSame(
-            '<quote-1@lavzen.com>',
+            '<quote-1@bineret.com>',
             $email->getHeaders()->get('Message-ID')?->getBodyAsString(),
         );
     }
@@ -81,7 +81,7 @@ class CampaignMessageTest extends TestCase
         $email = $this->render($this->message());
 
         $this->assertSame(
-            '<https://panel.lavzen.com/mail/unsubscribe/abc>',
+            '<https://panel.bineret.com/mail/unsubscribe/abc>',
             $email->getHeaders()->get('List-Unsubscribe')?->getBodyAsString(),
         );
         $this->assertSame(
@@ -124,15 +124,15 @@ class CampaignMessageTest extends TestCase
         return new OutboundMessage(
             toEmail: 'ada@example.com',
             toName: 'Ada Lovelace',
-            fromEmail: 'info@lavzen.com',
+            fromEmail: 'info@bineret.com',
             fromName: 'Lavzen',
-            replyTo: 'replies@lavzen.com',
+            replyTo: 'replies@bineret.com',
             subject: 'Quote for the side return',
             html: '<p>Here is a rough estimate for the work.</p>',
             text: "Here is a rough estimate for the work.\n",
-            messageId: '<quote-1@lavzen.com>',
+            messageId: '<quote-1@bineret.com>',
             headers: [
-                'List-Unsubscribe' => '<https://panel.lavzen.com/mail/unsubscribe/abc>',
+                'List-Unsubscribe' => '<https://panel.bineret.com/mail/unsubscribe/abc>',
                 'List-Unsubscribe-Post' => 'List-Unsubscribe=One-Click',
             ],
         );

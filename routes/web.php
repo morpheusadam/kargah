@@ -20,7 +20,7 @@ use Illuminate\Support\Facades\Route;
  * `Route::redirect()` hands its target to `RedirectController` as a literal
  * string and Laravel emits it unchanged, so an install served from a
  * subdirectory answers `Location: /login` — the site root, not the panel's.
- * Measured on 5 August 2026 deploying to `lavzen.com/panel`: the root URL sent
+ * Measured on 5 August 2026 deploying to `bineret.com/panel`: the root URL sent
  * the browser to the WordPress login page one level up, while every other route
  * redirected correctly, because every other route builds its URL through
  * `route()` and `route()` knows the base path.

@@ -44,7 +44,7 @@ class InboundMailTest extends TestCase
 
     public function test_a_posted_message_becomes_an_email_on_the_inbound_account(): void
     {
-        $account = MailAccount::factory()->inbound()->create(['email' => 'info@lavzen.com']);
+        $account = MailAccount::factory()->inbound()->create(['email' => 'info@bineret.com']);
 
         $this->send()->assertNoContent();
 
@@ -55,7 +55,7 @@ class InboundMailTest extends TestCase
         $this->assertSame('Quote for the extension', $email->subject);
         $this->assertSame('ada@sender.example', $email->from_email);
         $this->assertSame('Ada Lovelace', $email->from_name);
-        $this->assertSame(['info@lavzen.com'], $email->to);
+        $this->assertSame(['info@bineret.com'], $email->to);
         $this->assertStringContainsString('rough idea of cost', (string) $email->body_text);
         $this->assertSame('INBOX', $email->folder);
 
@@ -156,7 +156,7 @@ class InboundMailTest extends TestCase
      */
     public function test_an_imap_account_is_never_used_for_pushed_mail(): void
     {
-        MailAccount::factory()->create(['email' => 'info@lavzen.com']);
+        MailAccount::factory()->create(['email' => 'info@bineret.com']);
 
         $this->send()->assertStatus(503);
 
@@ -170,7 +170,7 @@ class InboundMailTest extends TestCase
     public function test_the_envelope_recipient_chooses_between_inbound_accounts(): void
     {
         MailAccount::factory()->inbound()->create(['email' => 'other@example.com']);
-        $wanted = MailAccount::factory()->inbound()->create(['email' => 'info@lavzen.com']);
+        $wanted = MailAccount::factory()->inbound()->create(['email' => 'info@bineret.com']);
 
         $this->send()->assertNoContent();
 
@@ -207,7 +207,7 @@ class InboundMailTest extends TestCase
         $headers = array_merge([
             'CONTENT_TYPE' => 'message/rfc822',
             'HTTP_X_INBOUND_SECRET' => self::SECRET,
-            'HTTP_X_MAIL_TO' => 'info@lavzen.com',
+            'HTTP_X_MAIL_TO' => 'info@bineret.com',
             'HTTP_X_MAIL_FROM' => 'ada@sender.example',
         ], $server);
 
@@ -228,7 +228,7 @@ class InboundMailTest extends TestCase
             'Message-ID: <first@sender.example>',
             'Date: Fri, 7 Aug 2026 09:45:00 +0000',
             'From: Ada Lovelace <ada@sender.example>',
-            'To: info@lavzen.com',
+            'To: info@bineret.com',
             'Subject: Quote for the extension',
             'Content-Type: text/plain; charset=utf-8',
             '',
@@ -244,7 +244,7 @@ class InboundMailTest extends TestCase
             'In-Reply-To: <first@sender.example>',
             'Date: Fri, 7 Aug 2026 11:20:00 +0000',
             'From: Ada Lovelace <ada@sender.example>',
-            'To: info@lavzen.com',
+            'To: info@bineret.com',
             'Subject: Re: Quote for the extension',
             'Content-Type: text/plain; charset=utf-8',
             '',

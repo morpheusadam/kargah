@@ -4,7 +4,7 @@ compatibility_date = "2026-08-07"
 account_id = "2c8d31a2d7fc9c07ef8e1a30520212d4"
 
 [vars]
-KARGAH_URL = "https://panel.lavzen.com/mail/inbound"
+KARGAH_URL = "https://panel.bineret.com/mail/inbound"
 # INBOUND_SECRET is a secret, not a var — it never belongs in a file this
 # repository tracks, and the repository is public:
 #   wrangler secret put INBOUND_SECRET

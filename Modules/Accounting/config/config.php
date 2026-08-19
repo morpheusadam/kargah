@@ -190,7 +190,7 @@ return [
          * on the page: an invoice that shouts is an invoice that reads as
          * marketing.
          */
-        'footer' => env('ACCOUNTING_DOCUMENT_FOOTER', 'lavzen.com'),
+        'footer' => env('ACCOUNTING_DOCUMENT_FOOTER', 'bineret.com'),
 
         /*
          * The name under the signature line. Printed whether or not an image

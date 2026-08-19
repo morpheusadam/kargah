@@ -30,7 +30,7 @@ class SiteUsersTest extends TestCase
 {
     use RefreshDatabase;
 
-    private const SITE = 'https://lavzen.test';
+    private const SITE = 'https://bineret.test';
 
     protected function setUp(): void
     {
@@ -42,7 +42,7 @@ class SiteUsersTest extends TestCase
     private function site(): SocialAccount
     {
         return SocialAccount::factory()->onNetwork(Networks::WORDPRESS)->create([
-            'handle' => 'lavzen.test',
+            'handle' => 'bineret.test',
             'credentials' => [
                 'site_url' => self::SITE,
                 'username' => 'nima',
@@ -63,7 +63,7 @@ class SiteUsersTest extends TestCase
             'id' => $id,
             'name' => $name,
             'slug' => strtolower($name),
-            'email' => strtolower($name).'@lavzen.test',
+            'email' => strtolower($name).'@bineret.test',
             'roles' => [$role],
         ];
     }
@@ -219,7 +219,7 @@ class SiteUsersTest extends TestCase
             ->test('site::users')
             ->assertOk()
             ->assertSee('Nima')
-            ->assertSee('nima@lavzen.test')
+            ->assertSee('nima@bineret.test')
             ->assertSee('Administrator');
     }
 

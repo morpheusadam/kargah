@@ -63,11 +63,11 @@ class InstagramPublisher extends HttpPublisher implements RefreshesToken
      *
      * 🔴 **A token minted by Instagram Login is refused by `graph.facebook.com`,
      * and the refusal does not mention the host.** Measured against the live
-     * hosts on 6 August 2026 with a real credential for `@lavzencom`:
+     * hosts on 6 August 2026 with a real credential for `@bineretcom`:
      *
      * ```
      * graph.instagram.com/v23.0/me?fields=id,username,account_type
-     *   → {"id":"27848143088180376","username":"lavzencom","account_type":"BUSINESS"}
+     *   → {"id":"27848143088180376","username":"bineretcom","account_type":"BUSINESS"}
      * graph.facebook.com/v23.0/me?fields=id,username
      *   → {"error":{"message":"Invalid OAuth access token - Cannot parse access
      *      token","type":"OAuthException","code":190}}

@@ -22,7 +22,7 @@ use Modules\Mailbox\Support\Tokens;
  * from a `campaign_links` row that was written when the message was built, and
  * from nowhere else. There is no parameter naming a URL, so there is nothing to
  * edit: the endpoint can only ever send somebody to a page this campaign already
- * agreed to. An `?url=` here would have made lavzen.com an open redirect, which
+ * agreed to. An `?url=` here would have made bineret.com an open redirect, which
  * is a vulnerability and — because a domain that will forward anywhere is what a
  * phishing campaign goes looking for — a spam signal charged against the
  * reputation the rest of this module exists to protect.

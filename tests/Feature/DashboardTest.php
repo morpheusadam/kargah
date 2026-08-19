@@ -313,7 +313,7 @@ class DashboardTest extends TestCase
         // ⚠️ Matched from the first slash rather than from `src="`, because the
         // tag is now built with `asset()` and carries the request root in front
         // of it — `src="http://localhost/assets/…"` in a test, and
-        // `src="https://lavzen.com/panel/assets/…"` on an install served from a
+        // `src="https://bineret.com/panel/assets/…"` on an install served from a
         // subdirectory. What this still catches is the thing it exists to
         // catch: escaped JSON renders `\/assets\/…`, which does not match, and
         // a missing tag does not match either.
