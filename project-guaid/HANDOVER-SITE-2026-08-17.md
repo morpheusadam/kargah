@@ -1,5 +1,12 @@
 # Handover — the Site module, 17 August 2026
 
+> **Domain note, 21 August 2026.** This file was written while the host was `lavzen.com`. Every
+> address in it has been rewritten to `bineret.com`, which is where the system actually runs: the old
+> zone is not being renewed and both `lavzen.com` and `panel.lavzen.com` have stopped answering.
+> Account *names* are deliberately left alone — `@lavzencom`, `@lavzenbot`, `r/lavzen` and the Worker
+> `lavzen-mail-ingest` are the real handles of live things, not addresses, and renaming them here
+> would describe a world that does not exist. See `HANDOVER-DOMAIN-2026-08-21.md`.
+
 Kargah can now operate the website rather than only publish to it. Written so the next session can
 continue without re-deriving anything, and so the parts that are **not** proven are impossible to
 mistake for the parts that are.
@@ -18,10 +25,10 @@ management, and be able to control every part of the website from Kargah.
 **There are two candidate sites and they run different CMSs.** Both were checked rather than
 assumed.
 
-**`lavzen.com` runs WordPress, not Statamic.** Its response carries a custom theme at
+**`bineret.com` runs WordPress, not Statamic.** Its response carries a custom theme at
 `wp-content/themes/lavtheme`, Rank Math PRO's schema block in the head, and Hostinger's LiteSpeed
 headers. `GET /wp-json/` answers 200 and `/wp-admin/` redirects to a login. `GET /cp` — Statamic's
-control-panel path — answers **404**, and `cp.`, `admin.`, `static.` and `app.lavzen.com` have no
+control-panel path — answers **404**, and `cp.`, `admin.`, `static.` and `app.bineret.com` have no
 DNS at all. There is no Statamic anywhere on that domain.
 
 **`C:\Users\morph\Projects\Drain4Brighton` is a real Statamic install.** Its `CLAUDE.md` says
@@ -40,9 +47,9 @@ target is a question only its owner can answer.**
 Four things were checked rather than assumed, and together they are a hard block rather than a
 judgement call:
 
-1. **No Statamic on `lavzen.com`.** `GET /cp` — Statamic's control-panel path — answers **404**;
+1. **No Statamic on `bineret.com`.** `GET /cp` — Statamic's control-panel path — answers **404**;
    `/wp-json/` answers 200 and `/wp-admin/` redirects to a login. `cp.`, `admin.`, `static.` and
-   `app.lavzen.com` have no DNS.
+   `app.bineret.com` have no DNS.
 2. **The Statamic application is not on this machine.** `Drain4Brighton` exists in three copies here
    (the project and two worktrees) and every one of them contains only `Strategy/`, `audit/`,
    `spec/`, `docs/` and similar. The `root/` directory its own `CLAUDE.md` names as holding the
@@ -174,12 +181,12 @@ green at **1522 tests, 6947 assertions**, run on a cleared view cache.
 
 🔴 **Not proven: any of it against a real site.** Every request shape is `Http::fake()` and nothing
 else, the same standing as the twelve social drivers `NEXT-SESSION.md` describes. Nobody has pointed
-this module at `lavzen.com`, because doing so needs an application password and this session did not
+this module at `bineret.com`, because doing so needs an application password and this session did not
 handle credentials.
 
 **The highest-value work available is one real connection.** In order:
 
-1. Paste a WordPress application password for `lavzen.com` on the connect page, open
+1. Paste a WordPress application password for `bineret.com` on the connect page, open
    `/site`, and press **Check the connection**. That single call proves the auth header, the URL
    building, the capability read and the namespace discovery at once.
 2. Open a post in the editor and see whether `meta` carries any `rank_math_*` key. That answers fact

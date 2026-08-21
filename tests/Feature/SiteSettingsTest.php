@@ -66,7 +66,7 @@ class SiteSettingsTest extends TestCase
     private function settings(array $overrides = []): array
     {
         return array_replace([
-            'title' => 'Lavzen Web',
+            'title' => 'Bineret Web',
             'description' => 'AI marketplace',
             'email' => 'nima@bineret.com',
             'timezone' => 'Europe/Istanbul',
@@ -118,7 +118,7 @@ class SiteSettingsTest extends TestCase
             ->test('site::settings')
             ->assertOk()
             ->assertSet('loaded', true)
-            ->assertSet('values.title', 'Lavzen Web')
+            ->assertSet('values.title', 'Bineret Web')
             ->assertSet('values.posts_per_page', '10');
     }
 
@@ -156,17 +156,17 @@ class SiteSettingsTest extends TestCase
 
         $this->fakeSettingsSequence(
             [$this->settings()],
-            [$this->settings(['title' => 'Lavzen'])],
-            [$this->settings(['title' => 'Lavzen'])],
+            [$this->settings(['title' => 'Bineret'])],
+            [$this->settings(['title' => 'Bineret'])],
         );
 
         Livewire::actingAs($this->actor())
             ->test('site::settings')
-            ->set('values.title', 'Lavzen')
+            ->set('values.title', 'Bineret')
             ->call('save');
 
         Http::assertSent(function ($request): bool {
-            return $request->method() === 'POST' && $request->data() === ['title' => 'Lavzen'];
+            return $request->method() === 'POST' && $request->data() === ['title' => 'Bineret'];
         });
     }
 

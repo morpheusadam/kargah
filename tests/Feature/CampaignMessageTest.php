@@ -33,7 +33,7 @@ class CampaignMessageTest extends TestCase
         $envelope = $mailable->envelope();
 
         $this->assertSame('info@bineret.com', $envelope->from->address);
-        $this->assertSame('Lavzen', $envelope->from->name);
+        $this->assertSame('Bineret', $envelope->from->name);
         $this->assertSame('ada@example.com', $envelope->to[0]->address);
         $this->assertSame('Ada Lovelace', $envelope->to[0]->name);
         $this->assertSame('replies@bineret.com', $envelope->replyTo[0]->address);
@@ -125,7 +125,7 @@ class CampaignMessageTest extends TestCase
             toEmail: 'ada@example.com',
             toName: 'Ada Lovelace',
             fromEmail: 'info@bineret.com',
-            fromName: 'Lavzen',
+            fromName: 'Bineret',
             replyTo: 'replies@bineret.com',
             subject: 'Quote for the side return',
             html: '<p>Here is a rough estimate for the work.</p>',

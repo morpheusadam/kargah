@@ -63,7 +63,7 @@ class SiteCacheTest extends TestCase
                 'capabilities' => ['edit_posts' => true, 'edit_pages' => true, 'upload_files' => true, 'manage_categories' => true],
             ]),
             self::SITE.'/wp-json/' => Http::response([
-                'name' => 'Lavzen Web',
+                'name' => 'Bineret Web',
                 'namespaces' => $namespaces,
             ]),
             self::SITE.'/wp-json/kargah/v1/cache/purge' => Http::response([
@@ -223,7 +223,7 @@ class SiteCacheTest extends TestCase
 
         Http::fake([
             self::SITE.'/wp-json/wp/v2/users/me*' => Http::response(['id' => 1, 'name' => 'Nima', 'roles' => [], 'capabilities' => []]),
-            self::SITE.'/wp-json/' => Http::response(['name' => 'Lavzen Web', 'namespaces' => ['wp/v2', 'kargah/v1']]),
+            self::SITE.'/wp-json/' => Http::response(['name' => 'Bineret Web', 'namespaces' => ['wp/v2', 'kargah/v1']]),
             self::SITE.'/wp-json/kargah/v1/cache/purge' => Http::response([
                 'code' => 'rest_forbidden',
                 'message' => 'Sorry, you are not allowed to do that.',

@@ -1,5 +1,12 @@
 # Handover — mail, 7 August 2026
 
+> **Domain note, 21 August 2026.** This file was written while the host was `lavzen.com`. Every
+> address in it has been rewritten to `bineret.com`, which is where the system actually runs: the old
+> zone is not being renewed and both `lavzen.com` and `panel.lavzen.com` have stopped answering.
+> Account *names* are deliberately left alone — `@lavzencom`, `@lavzenbot`, `r/lavzen` and the Worker
+> `lavzen-mail-ingest` are the real handles of live things, not addresses, and renaming them here
+> would describe a world that does not exist. See `HANDOVER-DOMAIN-2026-08-21.md`.
+
 Paste the block at the bottom into a new session. Everything above it is the
 detail that block refers to.
 
@@ -9,7 +16,7 @@ detail that block refers to.
 
 **Sending.** A `delivery_providers` row named *Resend*, driver `smtp`, pointed at
 `smtp.resend.com:587` with username `resend` and the API key as the password.
-From `info@lavzen.com`, daily quota 100 (Resend's free ceiling). Verified by
+From `info@bineret.com`, daily quota 100 (Resend's free ceiling). Verified by
 sending through the compose window's own code path — `Router::pick`,
 `Delivery::driverFor`, `$driver->send` — not merely through the API.
 mail-tester scored it **10/10**: SPF, DKIM and DMARC all aligned, not
@@ -19,7 +26,7 @@ campaigns — `MessageBuilder` adds it.
 
 **Receiving.** Cloudflare Email Routing holds the MX. `info@`, `support@` and
 `send@` are each routed to the Worker `lavzen-mail-ingest`, which posts the raw
-RFC822 to `POST panel.lavzen.com/mail/inbound`. All three verified with real
+RFC822 to `POST panel.bineret.com/mail/inbound`. All three verified with real
 messages that arrived in the panel. The catch-all still forwards to
 morpheusadam95@gmail.com **on purpose** — it is the safety net while the new
 path beds in.
@@ -77,7 +84,7 @@ deliberately the only place in Mailbox that builds a message for real.
   morpheusadam95 has `drainage-plumbing.co.uk` verified and its single free-plan
   domain slot is used — that domain is live and sent FOI requests to London
   councils in July, so do not free the slot. The account whose API key sits at
-  the end of `ssh.txt` is the one with **lavzen.com verified**.
+  the end of `ssh.txt` is the one with **bineret.com verified**.
 - The hPanel account is `fazlipournima@gmail.com` and the user reaches it as an
   admin managing that account. The user's own address is
   **morpheusadam95@gmail.com**.
@@ -87,7 +94,7 @@ Email Sending beta (needs Workers Paid), Amazon SES.
 
 ## Cron — done, and one trap worth knowing
 
-The scheduler now runs, in hPanel → Advanced → Cron Jobs on panel.lavzen.com:
+The scheduler now runs, in hPanel → Advanced → Cron Jobs on panel.bineret.com:
 
 ```
 * * * * *   /opt/alt/php83/usr/bin/php /home/u523965318/kargah/artisan schedule:run
@@ -229,7 +236,7 @@ the owner's real book.
 > `project-guaid/HANDOVER-MAIL-2026-08-07.md` first — it has the full state.
 >
 > Mail is finished and verified on production: Resend over SMTP for sending, a
-> Cloudflare Email Worker posting into `panel.lavzen.com/mail/inbound` for
+> Cloudflare Email Worker posting into `panel.bineret.com/mail/inbound` for
 > `info@`, `support@` and `send@`, and the scheduler running every minute so
 > campaigns and scheduled sends work too. Open and click tracking is built on
 > top of it: signed routes carrying an HMAC, every link registered in

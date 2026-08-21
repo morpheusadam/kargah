@@ -1,5 +1,12 @@
 # Prompt for the next session — Social
 
+> **Domain note, 21 August 2026.** This file was written while the host was `lavzen.com`. Every
+> address in it has been rewritten to `bineret.com`, which is where the system actually runs: the old
+> zone is not being renewed and both `lavzen.com` and `panel.lavzen.com` have stopped answering.
+> Account *names* are deliberately left alone — `@lavzencom`, `@lavzenbot`, `r/lavzen` and the Worker
+> `lavzen-mail-ingest` are the real handles of live things, not addresses, and renaming them here
+> would describe a world that does not exist. See `HANDOVER-DOMAIN-2026-08-21.md`.
+
 Paste everything below the line into a fresh context.
 
 ---
@@ -44,7 +51,7 @@ project-guaid/HANDOVER-SITE-2026-08-17.md the newest module, and the house style
 
 ## 2. The server, and syncing it down
 
-Kargah is live at **`https://panel.lavzen.com`**, on Hostinger shared hosting.
+Kargah is live at **`https://panel.bineret.com`**, on Hostinger shared hosting.
 
 Everything needed to reach it — SSH host, user, port, panel login, hPanel account — is in
 **`.data/ssh.txt`**, which is gitignored and stays that way. Read it; do not print its contents into

@@ -77,7 +77,7 @@ class SiteModuleTest extends TestCase
     private function rootBody(array $namespaces = ['oembed/1.0', 'wp/v2']): array
     {
         return [
-            'name' => 'Lavzen Web',
+            'name' => 'Bineret Web',
             'description' => 'AI marketplace',
             'url' => self::SITE,
             'namespaces' => $namespaces,
@@ -391,7 +391,7 @@ class SiteModuleTest extends TestCase
         $snapshot = SiteSnapshot::of(WordPressSite::require());
 
         $this->assertTrue($snapshot->connected);
-        $this->assertSame('Lavzen Web', $snapshot->name);
+        $this->assertSame('Bineret Web', $snapshot->name);
         $this->assertSame('Nima', $snapshot->userName);
         $this->assertSame(['administrator'], $snapshot->roles);
         $this->assertTrue($snapshot->hasRankMath());
@@ -518,7 +518,7 @@ class SiteModuleTest extends TestCase
         Livewire::actingAs($this->actor())
             ->test('site::overview')
             ->assertOk()
-            ->assertSee('Lavzen Web')
+            ->assertSee('Bineret Web')
             ->assertSee('administrator')
             ->assertSee('Rank Math');
     }

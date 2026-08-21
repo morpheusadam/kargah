@@ -1,6 +1,13 @@
 # Handover — the day Kargah left the laptop, 5 August 2026
 
-Kargah is deployed. It runs at **`https://panel.lavzen.com`** on the owner's Hostinger account,
+> **Domain note, 21 August 2026.** This file was written while the host was `lavzen.com`. Every
+> address in it has been rewritten to `bineret.com`, which is where the system actually runs: the old
+> zone is not being renewed and both `lavzen.com` and `panel.lavzen.com` have stopped answering.
+> Account *names* are deliberately left alone — `@lavzencom`, `@lavzenbot`, `r/lavzen` and the Worker
+> `lavzen-mail-ingest` are the real handles of live things, not addresses, and renaming them here
+> would describe a world that does not exist. See `HANDOVER-DOMAIN-2026-08-21.md`.
+
+Kargah is deployed. It runs at **`https://panel.bineret.com`** on the owner's Hostinger account,
 serving the owner's real book: four invoices, ₺80,000, all paid.
 
 Everything needed to reach it — SSH, the panel login, server paths, the DNS record, the hPanel
@@ -60,12 +67,12 @@ Three `.htaccess` rules earn their place, each commented at the site of the deci
 
 1. **`AddHandler … alt-php83 .php`** — the account serves PHP 8.2 and Kargah needs 8.3. Without it the
    response is a bare 500 with **nothing in the Laravel log**, because Composer's platform check
-   aborts before Laravel boots. Setting the version in hPanel would change it for `lavzen.com` as a
+   aborts before Laravel boots. Setting the version in hPanel would change it for `bineret.com` as a
    whole, WordPress included.
 2. **No `RewriteBase`, deliberately.** The directory answers to two hostnames and no single value is
    right for both. Without it, a relative substitution resolves against the directory the file sits
    in, which is correct under either.
-3. **Canonical host.** Anything that is not `panel.lavzen.com` over HTTPS is 301'd there, path intact.
+3. **Canonical host.** Anything that is not `panel.bineret.com` over HTTPS is 301'd there, path intact.
    Two working URLs for one login page is one more than anybody needs: sessions are scoped per host,
    so signing in at one leaves you signed out at the other.
 
@@ -73,7 +80,7 @@ Three `.htaccess` rules earn their place, each commented at the site of the deci
 
 ## 3. DNS, and the measurement that found it
 
-`panel.lavzen.com` pointed at `<the old address>` — a different live machine, running Caddy — while the
+`panel.bineret.com` pointed at `<the old address>` — a different live machine, running Caddy — while the
 Hostinger server is `<host>`. The subdomain and its document root existed in hPanel the whole
 time; only the record was wrong.
 
@@ -81,7 +88,7 @@ time; only the record was wrong.
 the server you *think* should answer, with the hostname you *think* is configured.
 
 ```powershell
-curl.exe -s -i --resolve panel.lavzen.com:80:<host> "http://panel.lavzen.com/"
+curl.exe -s -i --resolve panel.bineret.com:80:<host> "http://panel.bineret.com/"
 ```
 
 LiteSpeed answered `302 → /login`. That one line proved the vhost existed and the document root was
@@ -89,13 +96,13 @@ right, so the only remaining suspect was DNS. Chrome can be pinned the same way,
 whole application worked under the subdomain **before** the record was touched:
 
 ```js
-chromium.launch({ args: ['--host-resolver-rules=MAP panel.lavzen.com <host>'] })
+chromium.launch({ args: ['--host-resolver-rules=MAP panel.bineret.com <host>'] })
 ```
 
 The record is now `<host>`, **DNS only**. Proxy is off on purpose: Hostinger then issues and
 renews the certificate itself and the zone's SSL/TLS mode is never touched. Turning the proxy on would
-require mode Flexible, which is zone-wide and would weaken `lavzen.com`. Hostinger issued
-`CN=panel.lavzen.com` (Let's Encrypt, expires 3 November 2026) within about fifteen minutes of the
+require mode Flexible, which is zone-wide and would weaken `bineret.com`. Hostinger issued
+`CN=panel.bineret.com` (Let's Encrypt, expires 3 November 2026) within about fifteen minutes of the
 correction, unprompted.
 
 ---

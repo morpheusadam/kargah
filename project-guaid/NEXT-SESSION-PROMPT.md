@@ -1,3 +1,11 @@
+
+> **Domain note, 21 August 2026.** This file was written while the host was `lavzen.com`. Every
+> address in it has been rewritten to `bineret.com`, which is where the system actually runs: the old
+> zone is not being renewed and both `lavzen.com` and `panel.lavzen.com` have stopped answering.
+> Account *names* are deliberately left alone — `@lavzencom`, `@lavzenbot`, `r/lavzen` and the Worker
+> `lavzen-mail-ingest` are the real handles of live things, not addresses, and renaming them here
+> would describe a world that does not exist. See `HANDOVER-DOMAIN-2026-08-21.md`.
+
 You are continuing **Kargah**, a self-hosted freelance workspace at `C:\Users\morph\Projects\kargah`.
 Laravel 13.23 · Livewire 4.3 · `nwidart/laravel-modules` 13 · PHP 8.3 · SQLite. Eight modules:
 `Accounting` `Blog` `Core` `Data` `Mailbox` `Platform` `Project` `Social`. Branch `main`, clean and
@@ -14,7 +22,7 @@ them by the account's name.
 
 ## It is deployed. There is a real server.
 
-Kargah is live at **`https://panel.lavzen.com`**, on the owner's Hostinger account, serving the
+Kargah is live at **`https://panel.bineret.com`**, on the owner's Hostinger account, serving the
 owner's real book: four invoices, ₺80,000, all paid.
 
 **`.data/ssh.txt` has every access detail** — SSH, the panel login, server paths, the DNS record, the

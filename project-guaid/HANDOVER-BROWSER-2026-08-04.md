@@ -1,5 +1,12 @@
 # Handover — the day somebody looked, 4 August 2026
 
+> **Domain note, 21 August 2026.** This file was written while the host was `lavzen.com`. Every
+> address in it has been rewritten to `bineret.com`, which is where the system actually runs: the old
+> zone is not being renewed and both `lavzen.com` and `panel.lavzen.com` have stopped answering.
+> Account *names* are deliberately left alone — `@lavzencom`, `@lavzenbot`, `r/lavzen` and the Worker
+> `lavzen-mail-ingest` are the real handles of live things, not addresses, and renaming them here
+> would describe a world that does not exist. See `HANDOVER-DOMAIN-2026-08-21.md`.
+
 The previous handover ended with a sentence: *"The first thing the next session should do is open the
 dashboard and the reports page in a browser and look at them."*
 
@@ -272,7 +279,7 @@ compose modal fine at 375, zero JS errors.
 ## 4. The invoice builder
 
 The owner bills as a developer: one line carries the price and the name of the engagement, and the
-work sits underneath it **unpriced**. Plus a working period, a signature, and `lavzen.com`.
+work sits underneath it **unpriced**. Plus a working period, a signature, and `bineret.com`.
 
 **Schema — three columns, all added, nothing dropped.**
 `invoice_lines.tasks` (JSON, nullable, cast to `array`), `invoices.starts_on`, `invoices.ends_on`.
@@ -280,7 +287,7 @@ work sits underneath it **unpriced**. Plus a working period, a signature, and `l
 and copy the rows, which fires every `ON DELETE CASCADE` pointing at it — and `PRAGMA foreign_keys`
 is a documented no-op inside an open transaction.
 
-**Config** — `accounting.document.footer` (`lavzen.com`), `signature_name` (`Hesam Ahmadpour`),
+**Config** — `accounting.document.footer` (`bineret.com`), `signature_name` (`Hesam Ahmadpour`),
 `signature_image` (a path under `public/`, and **a missing file is not an error**).
 
 **The document.** Verified by decoding the actual PDF bytes rather than by reading the template:
@@ -297,7 +304,7 @@ Full website SEO
 …
 Hesam Ahmadpour
 2 June 2026
-lavzen.com
+bineret.com
 ```
 
 One figure on the priced line, **none against any task**. A line with no tasks and an invoice with no

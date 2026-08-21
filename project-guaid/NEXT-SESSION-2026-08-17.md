@@ -1,5 +1,12 @@
 # Prompt for the next session — 2026-08-17
 
+> **Domain note, 21 August 2026.** This file was written while the host was `lavzen.com`. Every
+> address in it has been rewritten to `bineret.com`, which is where the system actually runs: the old
+> zone is not being renewed and both `lavzen.com` and `panel.lavzen.com` have stopped answering.
+> Account *names* are deliberately left alone — `@lavzencom`, `@lavzenbot`, `r/lavzen` and the Worker
+> `lavzen-mail-ingest` are the real handles of live things, not addresses, and renaming them here
+> would describe a world that does not exist. See `HANDOVER-DOMAIN-2026-08-21.md`.
+
 Paste everything below the line into a fresh context.
 
 ---
@@ -9,8 +16,8 @@ Livewire 4.3 · `nwidart/laravel-modules` 13 · PHP 8.3 · SQLite locally, MySQL
 production. Nine modules: `Accounting` `Blog` `Core` `Data` `Mailbox` `Platform`
 `Project` `Site` `Social`.
 
-Branch `main`, clean. Live at **https://lavzen.com/panel/**, served from
-`~/domains/lavzen.com/public_html/panel/index.php`, which points at
+Branch `main`, clean. Live at **https://bineret.com/panel/**, served from
+`~/domains/bineret.com/public_html/panel/index.php`, which points at
 `/home/u523965318/kargah`. Server PHP is `/opt/alt/php83/usr/bin/php` — plain
 `php` there is 8.2 and will fail.
 

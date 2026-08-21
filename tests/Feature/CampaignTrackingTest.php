@@ -528,7 +528,7 @@ class CampaignTrackingTest extends TestCase
     {
         $provider = DeliveryProvider::factory()->create([
             'from_email' => 'info@bineret.com',
-            'from_name' => 'Lavzen',
+            'from_name' => 'Bineret',
             'sending_domain' => 'bineret.com',
         ]);
 
